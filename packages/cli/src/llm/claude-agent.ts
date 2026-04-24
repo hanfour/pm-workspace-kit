@@ -31,6 +31,11 @@ export class ClaudeAgentSdkProvider implements LlmProvider {
   ): Promise<string> {
     const prompt = serialiseHistory(messages);
 
+    // Pin the main thread to a pmk-owned agent definition with an
+    // empty skills array — this stops Claude Code from autoloading
+    // the user's `~/.claude/skills/*` (e.g. superpowers) which
+    // otherwise leak their own deprecation notices / reminders into
+    // our pure chat turns.
     const q = query({
       prompt,
       options: {
@@ -39,6 +44,15 @@ export class ClaudeAgentSdkProvider implements LlmProvider {
         includePartialMessages: true,
         allowedTools: [],
         permissionMode: "default",
+        agent: "pmk",
+        agents: {
+          pmk: {
+            description: "pmk isolated chat agent",
+            prompt: systemPrompt,
+            tools: [],
+            skills: [],
+          },
+        },
         ...(this.executablePath
           ? { pathToClaudeCodeExecutable: this.executablePath }
           : {}),
@@ -77,7 +91,9 @@ function serialiseHistory(messages: ChatMessage[]): string {
   const lines: string[] = ["=== Conversation so far ==="];
   for (let i = 0; i < messages.length - 1; i++) {
     const m = messages[i];
-    lines.push(`\n## ${m.role === "user" ? "User" : "Assistant"}\n${m.content}`);
+    lines.push(
+      `\n## ${m.role === "user" ? "User" : "Assistant"}\n${m.content}`,
+    );
   }
   const latest = messages[messages.length - 1];
   lines.push("\n=== Current turn ===\n");

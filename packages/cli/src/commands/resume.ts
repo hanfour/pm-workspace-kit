@@ -14,7 +14,11 @@ export async function resumeCommand(name?: string): Promise<void> {
   if (!name) {
     const parks = listParks();
     if (parks.length === 0) {
-      println(chalk.yellow("No parked sessions. Use `/park <name>` inside any REPL to save."));
+      println(
+        chalk.yellow(
+          "No parked sessions. Use `/park <name>` inside any REPL to save.",
+        ),
+      );
       return;
     }
     println(chalk.bold("Parked sessions:"));
@@ -22,7 +26,22 @@ export async function resumeCommand(name?: string): Promise<void> {
     return;
   }
 
-  const parked = Session.resumeFromPark(name);
+  let parked;
+  try {
+    parked = Session.resumeFromPark(name);
+  } catch {
+    const parks = listParks();
+    println(chalk.red(`[pmk] park not found: ${name}`));
+    if (parks.length) {
+      println(chalk.dim("available parks:"));
+      for (const p of parks) println(chalk.dim(`  · ${p}`));
+    } else {
+      println(
+        chalk.dim("no parks exist yet — use /park <name> inside any REPL."),
+      );
+    }
+    process.exit(1);
+  }
   const config = loadConfig();
   const client = resolveProviderOrExit(config);
   const session = new Session();
@@ -37,7 +56,9 @@ export async function resumeCommand(name?: string): Promise<void> {
       `\npmk resume [${name}] — verb=${parked.verb}, ${parked.messages.length} msgs · provider=${client.displayName}`,
     ),
   );
-  println(chalk.dim(`parked ${parked.createdAt}, updated ${parked.updatedAt}\n`));
+  println(
+    chalk.dim(`parked ${parked.createdAt}, updated ${parked.updatedAt}\n`),
+  );
 
   const last = parked.messages[parked.messages.length - 1];
   if (last?.role === "assistant") {
