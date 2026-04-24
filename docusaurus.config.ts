@@ -4,7 +4,8 @@ import type * as Preset from "@docusaurus/preset-classic";
 
 const config: Config = {
   title: "PM Workspace Kit",
-  tagline: "Opinionated PM / SA templates, scripts, and playbooks for AI-era product teams",
+  tagline:
+    "Opinionated PM / SA templates, scripts, and playbooks for AI-era product teams",
   favicon: "img/favicon.svg",
 
   // Replace with your GitHub Pages URL once the repo is public.
@@ -52,7 +53,11 @@ const config: Config = {
       logo: { alt: "Kit logo", src: "img/logo.svg" },
       items: [
         { to: "/docs/intro", label: "Docs", position: "left" },
-        { to: "/docs/guides/traceability-matrix", label: "Guides", position: "left" },
+        {
+          to: "/docs/guides/traceability-matrix",
+          label: "Guides",
+          position: "left",
+        },
         { to: "/docs/handoff/overview", label: "Handoff", position: "left" },
         {
           type: "localeDropdown",
@@ -105,7 +110,12 @@ const config: Config = {
     },
     colorMode: {
       defaultMode: "light",
-      respectPrefersColorScheme: true,
+      // Simple 2-state toggle (light / dark) instead of tri-state.
+      // The tri-state cycle light -> dark -> system surprises users
+      // because the "system" step looks identical to whichever mode
+      // the OS currently prefers, making it feel like the toggle is
+      // broken on the third click.
+      respectPrefersColorScheme: false,
     },
   } satisfies Preset.ThemeConfig,
 };

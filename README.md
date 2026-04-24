@@ -37,6 +37,13 @@ npm run traceability:check
 npm run traceability:matrix
 
 # Serve the docs site locally
+#   npm start           → single-locale dev mode (hot reload);
+#                         language switcher is disabled by design.
+#   npm start -- --locale zh-TW   → dev mode on the Chinese locale.
+#   npm run build && npm run serve  → production build with both
+#                                     locales and working language
+#                                     switcher at /pm-workspace-kit/
+#                                     and /pm-workspace-kit/zh-TW/.
 npm start
 ```
 

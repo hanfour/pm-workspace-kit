@@ -1,0 +1,8 @@
+{
+  "title": { "message": "PM Workspace Kit" },
+  "item.label.Docs": { "message": "文件" },
+  "item.label.Guides": { "message": "指南" },
+  "item.label.Handoff": { "message": "交接" },
+  "item.label.GitHub": { "message": "GitHub" },
+  "logo.alt": { "message": "Kit logo" }
+}
