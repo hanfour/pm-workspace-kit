@@ -1,10 +1,7 @@
 import { describe, it, beforeEach, afterEach } from "node:test";
 import * as assert from "node:assert/strict";
 import { DEFAULT_CONFIG, type PmkConfig } from "@pmk/shared";
-import {
-  NoProviderAvailableError,
-  resolveProvider,
-} from "../src/llm";
+import { NoProviderAvailableError, resolveProvider } from "../src/llm";
 
 const ORIG_PATH = process.env.PATH;
 const ORIG_API_KEY = process.env.ANTHROPIC_API_KEY;
@@ -16,14 +13,16 @@ function baseConfig(overrides: Partial<PmkConfig> = {}): PmkConfig {
 
 describe("resolveProvider (auto)", () => {
   beforeEach(() => {
-    // Force `which claude` lookups to fail by isolating PATH.
+    // Force `which claude` lookups AND the filesystem fallback to fail.
     process.env.PATH = "/nonexistent-dir";
+    process.env.PMK_SKIP_CLAUDE_PROBE = "1";
     delete process.env.ANTHROPIC_API_KEY;
     delete process.env.PMK_PROVIDER;
   });
   afterEach(() => {
     process.env.PATH = ORIG_PATH;
-    if (ORIG_API_KEY !== undefined) process.env.ANTHROPIC_API_KEY = ORIG_API_KEY;
+    if (ORIG_API_KEY !== undefined)
+      process.env.ANTHROPIC_API_KEY = ORIG_API_KEY;
     if (ORIG_PROVIDER !== undefined) process.env.PMK_PROVIDER = ORIG_PROVIDER;
   });
 
@@ -50,7 +49,8 @@ describe("resolveProvider (explicit provider)", () => {
   });
   afterEach(() => {
     process.env.PATH = ORIG_PATH;
-    if (ORIG_API_KEY !== undefined) process.env.ANTHROPIC_API_KEY = ORIG_API_KEY;
+    if (ORIG_API_KEY !== undefined)
+      process.env.ANTHROPIC_API_KEY = ORIG_API_KEY;
     if (ORIG_PROVIDER !== undefined) process.env.PMK_PROVIDER = ORIG_PROVIDER;
   });
 

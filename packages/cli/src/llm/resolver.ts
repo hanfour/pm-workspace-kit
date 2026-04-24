@@ -1,4 +1,7 @@
 import { execSync } from "node:child_process";
+import { existsSync, statSync } from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 import type { LlmProviderName, PmkConfig } from "@pmk/shared";
 import { AnthropicApiKeyProvider } from "./anthropic-api";
 import { ClaudeAgentSdkProvider } from "./claude-agent";
@@ -68,18 +71,58 @@ export function resolveProviderOrExit(config: PmkConfig): LlmProvider {
 }
 
 /**
- * Exported for tests. Uses `which` (POSIX) or `where` (Windows).
- * Returns absolute path, or undefined if not found.
+ * Exported for tests.
+ *
+ * Two-layer lookup so we find `claude` in GUI-app contexts (Electron
+ * DMG launch, Finder) where PATH is a skeletal Launchd-minimum that
+ * excludes user-local bin dirs:
+ *
+ *   1. `which claude` (POSIX) / `where claude` (Windows) — wins when
+ *      PATH is configured correctly (terminal-launched processes).
+ *   2. Filesystem probe of well-known install locations.
  */
 export function findClaudeExecutable(): string | undefined {
+  if (process.env.PMK_SKIP_CLAUDE_PROBE === "1") return undefined;
   const cmd = process.platform === "win32" ? "where claude" : "which claude";
   try {
     const out = execSync(cmd, { stdio: ["ignore", "pipe", "ignore"] })
       .toString()
       .trim();
     const first = out.split(/\r?\n/)[0];
-    return first || undefined;
+    if (first) return first;
   } catch {
-    return undefined;
+    /* fall through */
+  }
+  return findClaudeOnDisk();
+}
+
+function findClaudeOnDisk(): string | undefined {
+  if (process.platform === "win32") {
+    // Narrow probes on Windows — user may install via npm or scoop.
+    const candidates = [
+      path.join(process.env.USERPROFILE ?? "", ".claude", "bin", "claude.exe"),
+      path.join(process.env.USERPROFILE ?? "", "scoop", "shims", "claude.exe"),
+    ];
+    return candidates.find(isExecutable);
+  }
+
+  const home = os.homedir();
+  const candidates = [
+    path.join(home, ".local", "bin", "claude"),
+    path.join(home, ".claude", "local", "claude"),
+    "/opt/homebrew/bin/claude",
+    "/usr/local/bin/claude",
+    "/usr/bin/claude",
+  ];
+  return candidates.find(isExecutable);
+}
+
+function isExecutable(p: string): boolean {
+  try {
+    if (!existsSync(p)) return false;
+    const s = statSync(p);
+    return s.isFile();
+  } catch {
+    return false;
   }
 }

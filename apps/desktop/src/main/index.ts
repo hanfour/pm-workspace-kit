@@ -2,7 +2,13 @@ import { join } from "node:path";
 import { BrowserWindow, app, shell } from "electron";
 import { electronApp, is, optimizer } from "@electron-toolkit/utils";
 import { registerIpcHandlers } from "./ipc";
+import { augmentUserBinPath } from "./path";
 import { findRepoRoot } from "./workspace";
+
+// Do this BEFORE anything spawns a child process (registerIpcHandlers →
+// resolveProvider → `which claude`). Launchd-launched apps get a
+// skeletal PATH that excludes ~/.local/bin etc.
+augmentUserBinPath();
 
 function createMainWindow(): BrowserWindow {
   const win = new BrowserWindow({
