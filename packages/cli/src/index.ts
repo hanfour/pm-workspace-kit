@@ -23,14 +23,30 @@ program
 
 program
   .command("propose [topic]")
-  .description("Interactive PRD authoring. Produces a markdown file in docs/prds/.")
-  .action(async (topic?: string) => {
-    await proposeCommand(topic);
-  });
+  .description(
+    "PRD authoring → markdown file in docs/prds/. " +
+      "Defaults to interactive interview; pass --from / --paste / pipe stdin for one-shot drafting.",
+  )
+  .option("-f, --from <file>", "draft from a spec file (one-shot, no REPL)")
+  .option("-p, --paste", "draft from pasted multi-line input; Ctrl-D to send")
+  .option(
+    "-i, --interview",
+    "force interactive interview even if stdin is piped",
+  )
+  .action(
+    async (
+      topic: string | undefined,
+      opts: { from?: string; paste?: boolean; interview?: boolean },
+    ) => {
+      await proposeCommand(topic, opts);
+    },
+  );
 
 program
   .command("ingest <path>")
-  .description("Load an existing file into conversation context, then continue the chat.")
+  .description(
+    "Load an existing file into conversation context, then continue the chat.",
+  )
   .action(async (filePath: string) => {
     await ingestCommand(filePath);
   });
@@ -58,7 +74,9 @@ program
 
 program
   .command("debug [symptom...]")
-  .description("Systematic debugging flow (symptom → hypotheses → test one → iterate).")
+  .description(
+    "Systematic debugging flow (symptom → hypotheses → test one → iterate).",
+  )
   .action(async (words?: string[]) => {
     await debugCommand(words?.join(" "));
   });

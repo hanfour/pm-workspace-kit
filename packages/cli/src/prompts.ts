@@ -20,7 +20,7 @@ When you have enough, output ONLY the PRD markdown body with this exact front-ma
 ---
 doc_id: PRD-YYYY-NNNN
 title: <short title>
-owner: "@${'{user}'}"
+owner: "@${"{user}"}"
 status: Draft
 date: <today ISO date>
 related:
@@ -62,6 +62,68 @@ related:
 
 Mark the start of the PRD with the line "=== PRD ==="
 and the end with "=== END ===". The caller will extract between these markers and save to file.
+`;
+
+/**
+ * Used when propose runs in one-shot mode (--from / pipe / --paste).
+ * Unlike PROMPT_PROPOSE this one does NOT interview — it drafts the PRD
+ * directly from whatever spec the user handed in and marks gaps with
+ * TODO comments instead of asking questions.
+ */
+export const PROMPT_DRAFT_PRD = `You are a senior PM converting a brief into a PRD. The user has handed you a spec — possibly rough, possibly incomplete. Your job is to draft the PRD now. Do not ask clarifying questions.
+
+Rules:
+- Draft immediately. One response. No questions, no "before we start" preambles.
+- When a field is missing or ambiguous, fill in a best-guess and append an inline \`<!-- TODO(owner): <what's missing> -->\` marker on the same line or the line below. Never leave a PRD section empty.
+- Keep the user's original phrasing and domain terms verbatim wherever sensible.
+- Do not use emojis.
+- Output ONLY the PRD markdown body between the markers — nothing before or after.
+
+Use this exact front-matter:
+
+---
+doc_id: PRD-YYYY-NNNN
+title: <short title>
+owner: "@${"{user}"}"
+status: Draft
+date: <today ISO date>
+related:
+  requirement: []
+  plan: []
+  spec: []
+  architecture: []
+  adr: []
+  module: []
+  confluence_page_id: null
+---
+
+# <title>
+
+## 1. Executive Summary
+
+## 2. Problem Definition
+- Current pain
+- Desired outcome
+
+## 3. Goals & Success Metrics
+| Goal | Metric | Target |
+|---|---|---|
+
+## 4. Non-Goals
+
+## 5. User Stories
+
+## 6. Functional Requirements
+- Must have
+- Should have
+- Could have
+- Won't (this release)
+
+## 7. Risks
+
+## 8. Open Questions
+
+Wrap the entire PRD with the line "=== PRD ===" before the front-matter opener and "=== END ===" after the last section. The caller extracts between these markers and saves to file.
 `;
 
 export const PROMPT_INGEST = `You are reading a doc the user ingested into our conversation context. Acknowledge what the doc is about in ≤ 3 sentences, then wait for the user's next instruction. Do not offer opinions until asked.`;
