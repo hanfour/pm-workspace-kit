@@ -70,31 +70,47 @@ export function ChatPanel({
     setBusy(true);
     scrollToBottom();
 
+    // Batch streaming tokens into a ref and flush once per animation
+    // frame (~60Hz). Per-token setState re-renders the whole message
+    // list and gets laggy after a few long turns.
+    let pendingChunk = "";
+    let rafHandle: number | null = null;
+    const flush = () => {
+      rafHandle = null;
+      if (!pendingChunk) return;
+      const delta = pendingChunk;
+      pendingChunk = "";
+      setMessages((prev) => {
+        const next = prev.slice();
+        const last = next[next.length - 1];
+        if (last?.role === "assistant") {
+          next[next.length - 1] = {
+            role: "assistant",
+            content: last.content + delta,
+          };
+        }
+        return next;
+      });
+      scrollToBottom();
+    };
+
     try {
       const full = await window.pmk.llm.chat(
         PROMPTS[mode],
         nextHistory,
         (chunk: string) => {
-          setMessages((prev) => {
-            const next = prev.slice();
-            const last = next[next.length - 1];
-            if (last?.role === "assistant") {
-              next[next.length - 1] = {
-                role: "assistant",
-                content: last.content + chunk,
-              };
-            }
-            return next;
-          });
-          scrollToBottom();
+          pendingChunk += chunk;
+          if (rafHandle === null) rafHandle = requestAnimationFrame(flush);
         },
       );
+      if (rafHandle !== null) cancelAnimationFrame(rafHandle);
       setMessages((prev) => {
         const next = prev.slice();
         next[next.length - 1] = { role: "assistant", content: full };
         return next;
       });
     } catch (e) {
+      if (rafHandle !== null) cancelAnimationFrame(rafHandle);
       setError((e as Error).message);
       setMessages((prev) => prev.slice(0, -1));
     } finally {
