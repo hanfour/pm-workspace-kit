@@ -2,13 +2,18 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import chalk from "chalk";
 import { loadConfig } from "../config";
+import { pLimit } from "../concurrency";
 import { resolveProviderOrExit } from "../llm";
 import { Session } from "../session";
 import { PROMPT_APPLY } from "../prompts";
 import { ask, println, writeToken } from "../io";
 
+/** Hard cap on concurrent LLM calls for `apply --parallel`. */
+const PARALLEL_MAX = 3;
+
 export interface ApplyOptions {
   parallel?: boolean;
+  concurrency?: number;
 }
 
 interface Task {
@@ -67,23 +72,33 @@ export async function applyCommand(
   );
 
   if (opts.parallel) {
-    await Promise.all(
-      tasks.map(async (t, i) => {
-        const session = new Session();
-        session.addUser(
-          `Task ${i + 1}/${tasks.length}: ${t.text}\n\nPropose the minimum implementation, no preamble. Output code or concrete actions.`,
-        );
-        const label = chalk.cyan(`[${i + 1}]`);
-        println(`${label} start: ${t.text}`);
-        const response = await client.chat(PROMPT_APPLY, session.history(), {
-          onToken: () => {},
-        });
-        println(`\n${label} ${chalk.bold("proposal:")}`);
-        for (const line of response.split("\n"))
-          println(`${label} ${line}`);
-      }),
+    const concurrency = Math.min(
+      Math.max(1, opts.concurrency ?? PARALLEL_MAX),
+      PARALLEL_MAX,
     );
-    println(chalk.dim("\n(parallel mode — nothing written; review output and run sequentially to apply)"));
+    println(
+      chalk.dim(
+        `(concurrency: ${concurrency} — higher risks provider rate limits)`,
+      ),
+    );
+    await pLimit(tasks, concurrency, async (t, i) => {
+      const session = new Session();
+      session.addUser(
+        `Task ${i + 1}/${tasks.length}: ${t.text}\n\nPropose the minimum implementation, no preamble. Output code or concrete actions.`,
+      );
+      const label = chalk.cyan(`[${i + 1}]`);
+      println(`${label} start: ${t.text}`);
+      const response = await client.chat(PROMPT_APPLY, session.history(), {
+        onToken: () => {},
+      });
+      println(`\n${label} ${chalk.bold("proposal:")}`);
+      for (const line of response.split("\n")) println(`${label} ${line}`);
+    });
+    println(
+      chalk.dim(
+        "\n(parallel mode — nothing written; review output and run sequentially to apply)",
+      ),
+    );
     return;
   }
 
@@ -101,7 +116,9 @@ export async function applyCommand(
     println("");
     session.addAssistant(first);
 
-    const choice = (await ask("proceed (p) / skip (s) / abort (a):")).trim().toLowerCase();
+    const choice = (await ask("proceed (p) / skip (s) / abort (a):"))
+      .trim()
+      .toLowerCase();
     if (choice === "a") {
       println(chalk.yellow("aborted."));
       return;

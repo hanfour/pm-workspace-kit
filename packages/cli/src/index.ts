@@ -31,7 +31,10 @@ program
   )
   .option("-f, --from <file>", "draft from a spec file (one-shot, no REPL)")
   .option("-p, --paste", "draft from pasted multi-line input; Ctrl-D to send")
-  .option("-i, --interview", "force interactive interview even if stdin is piped")
+  .option(
+    "-i, --interview",
+    "force interactive interview even if stdin is piped",
+  )
   .action(
     async (
       topic: string | undefined,
@@ -43,18 +46,32 @@ program
 
 program
   .command("ingest <path>")
-  .description("Load an existing file into conversation context, then continue the chat.")
+  .description(
+    "Load an existing file into conversation context, then continue the chat.",
+  )
   .action(async (filePath: string) => {
     await ingestCommand(filePath);
   });
 
 program
   .command("apply [plan]")
-  .description("Execute a decomposed plan task by task. --parallel runs every task concurrently as a preview.")
-  .option("--parallel", "run all tasks concurrently (dry-run style)")
-  .action(async (plan: string | undefined, opts: { parallel?: boolean }) => {
-    await applyCommand(plan, opts);
-  });
+  .description(
+    "Execute a decomposed plan task by task. --parallel runs tasks concurrently (capped at 3) as a preview.",
+  )
+  .option("--parallel", "run tasks concurrently (dry-run style)")
+  .option(
+    "--concurrency <n>",
+    "max concurrent tasks when --parallel is set (1-3, default 3)",
+    (v: string) => parseInt(v, 10),
+  )
+  .action(
+    async (
+      plan: string | undefined,
+      opts: { parallel?: boolean; concurrency?: number },
+    ) => {
+      await applyCommand(plan, opts);
+    },
+  );
 
 program
   .command("discuss [topic]")
@@ -65,14 +82,18 @@ program
 
 program
   .command("ask [question...]")
-  .description("RAG query over your indexed docs corpus. Requires `pmk index` first.")
+  .description(
+    "RAG query over your indexed docs corpus. Requires `pmk index` first.",
+  )
   .action(async (words?: string[]) => {
     await askCommand(words?.join(" "));
   });
 
 program
   .command("debug [symptom...]")
-  .description("Systematic debugging flow (symptom → hypotheses → test one → iterate).")
+  .description(
+    "Systematic debugging flow (symptom → hypotheses → test one → iterate).",
+  )
   .action(async (words?: string[]) => {
     await debugCommand(words?.join(" "));
   });
@@ -87,21 +108,27 @@ program
 
 program
   .command("resume [name]")
-  .description("Reopen a parked session. Without a name, lists available parks.")
+  .description(
+    "Reopen a parked session. Without a name, lists available parks.",
+  )
   .action(async (name?: string) => {
     await resumeCommand(name);
   });
 
 program
   .command("worktree <action> [args...]")
-  .description("Thin wrapper over `git worktree add|list|remove` for parallel pmk sessions.")
+  .description(
+    "Thin wrapper over `git worktree add|list|remove` for parallel pmk sessions.",
+  )
   .action(async (action: string, rest: string[]) => {
     await worktreeCommand(action, rest);
   });
 
 program
   .command("tdd [feature...]")
-  .description("Red → Green → Refactor TDD session with phase discipline enforced.")
+  .description(
+    "Red → Green → Refactor TDD session with phase discipline enforced.",
+  )
   .action(async (words?: string[]) => {
     await tddCommand(words?.join(" "));
   });
