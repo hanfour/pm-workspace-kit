@@ -54,7 +54,9 @@ export function App() {
             <header className="flex items-center justify-between border-b border-neutral-800 px-4 py-2 text-xs text-neutral-400">
               <span className="truncate">
                 {path ?? "No file open"}
-                {dirty && <span className="ml-2 text-amber-400">● unsaved</span>}
+                {dirty && (
+                  <span className="ml-2 text-amber-400">● unsaved</span>
+                )}
               </span>
               <button
                 type="button"
@@ -87,19 +89,21 @@ export function App() {
           </main>
 
           <aside className="row-start-1 overflow-auto border-l border-neutral-800">
-            <Preview content={content} />
+            <Preview content={content} path={path} />
           </aside>
         </>
       ) : (
         <main className="row-start-1 flex min-w-0 flex-col">
           <header className="flex items-center justify-between border-b border-neutral-800 px-4 py-2 text-xs text-neutral-400">
-            <span className="truncate">{path ?? "Pick a doc from the tree →"}</span>
+            <span className="truncate">
+              {path ?? "Pick a doc from the tree →"}
+            </span>
             <span className="text-[10px] uppercase tracking-widest text-neutral-600">
               read-only · stakeholder view
             </span>
           </header>
           <div className="min-h-0 flex-1 overflow-auto">
-            <Preview content={content} />
+            <Preview content={content} path={path} />
           </div>
         </main>
       )}
@@ -109,7 +113,10 @@ export function App() {
       >
         <span>pmk desktop · provider: {provider ?? "—"}</span>
         <div className="flex items-center gap-1">
-          <ModeButton active={mode === "author"} onClick={() => setMode("author")}>
+          <ModeButton
+            active={mode === "author"}
+            onClick={() => setMode("author")}
+          >
             Author
           </ModeButton>
           <ModeButton

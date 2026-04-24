@@ -3,15 +3,18 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
 import "highlight.js/styles/github-dark.css";
+import { ChatPanel } from "./ChatPanel";
 import { MermaidBlock } from "./MermaidBlock";
 
 interface PreviewProps {
   content: string;
+  path: string | null;
 }
 
-type Mode = "rendered" | "graph";
+type Mode = "rendered" | "graph" | "chat";
+const MODES: Mode[] = ["rendered", "graph", "chat"];
 
-export function Preview({ content }: PreviewProps) {
+export function Preview({ content, path }: PreviewProps) {
   const [mode, setMode] = useState<Mode>("rendered");
 
   const body = useMemo(() => stripFrontMatter(content), [content]);
@@ -19,37 +22,28 @@ export function Preview({ content }: PreviewProps) {
   return (
     <div className="flex h-full flex-col">
       <div className="flex items-center gap-1 border-b border-neutral-800 px-3 py-2 text-[10px] uppercase tracking-widest text-neutral-500">
-        <span className="mr-auto">Preview</span>
-        <button
-          type="button"
-          onClick={() => setMode("rendered")}
-          className={
-            "rounded px-2 py-0.5 " +
-            (mode === "rendered"
-              ? "bg-neutral-800 text-white"
-              : "text-neutral-500 hover:text-neutral-300")
-          }
-        >
-          rendered
-        </button>
-        <button
-          type="button"
-          onClick={() => setMode("graph")}
-          className={
-            "rounded px-2 py-0.5 " +
-            (mode === "graph"
-              ? "bg-neutral-800 text-white"
-              : "text-neutral-500 hover:text-neutral-300")
-          }
-        >
-          graph
-        </button>
+        <span className="mr-auto">{mode === "chat" ? "Chat" : "Preview"}</span>
+        {MODES.map((m) => (
+          <button
+            key={m}
+            type="button"
+            onClick={() => setMode(m)}
+            className={
+              "rounded px-2 py-0.5 " +
+              (mode === m
+                ? "bg-neutral-800 text-white"
+                : "text-neutral-500 hover:text-neutral-300")
+            }
+          >
+            {m}
+          </button>
+        ))}
       </div>
       <div className="min-h-0 flex-1 overflow-auto">
-        {mode === "rendered" ? (
-          <RenderedPane body={body} />
-        ) : (
-          <GraphPane content={content} />
+        {mode === "rendered" && <RenderedPane body={body} />}
+        {mode === "graph" && <GraphPane content={content} />}
+        {mode === "chat" && (
+          <ChatPanel attachablePath={path} attachableContent={content} />
         )}
       </div>
     </div>
