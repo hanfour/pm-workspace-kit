@@ -47,17 +47,21 @@ const api = {
   llm,
 };
 
+console.log("[pmk-preload] loading, contextIsolated=", process.contextIsolated);
+
 if (process.contextIsolated) {
   try {
     contextBridge.exposeInMainWorld("electron", electronAPI);
     contextBridge.exposeInMainWorld("pmk", api);
+    console.log("[pmk-preload] bridge exposed via contextBridge");
   } catch (error) {
-    console.error(error);
+    console.error("[pmk-preload] expose failed:", error);
   }
 } else {
   const g = globalThis as unknown as Record<string, unknown>;
   g.electron = electronAPI;
   g.pmk = api;
+  console.log("[pmk-preload] bridge exposed via globalThis");
 }
 
 export type PmkApi = typeof api;

@@ -19,15 +19,19 @@ export function FirstRun({ onResolved }: FirstRunProps) {
   const [error, setError] = useState<string | null>(null);
 
   const probe = useCallback(async () => {
+    console.log("[pmk-renderer] probe() start, window.pmk=", !!window.pmk);
     setStatus("probing");
     setError(null);
     if (!window.pmk) {
+      console.warn("[pmk-renderer] window.pmk missing");
       setHint("Preload bridge missing — restart the app.");
       setStatus("need-auth");
       return;
     }
     try {
+      console.log("[pmk-renderer] calling window.pmk.llm.status()");
       const s = await window.pmk.llm.status();
+      console.log("[pmk-renderer] status response:", s);
       if (s.providerName === "none") {
         setHint(s.hint ?? "No provider available.");
         setStatus("need-auth");
@@ -36,6 +40,7 @@ export function FirstRun({ onResolved }: FirstRunProps) {
         setStatus("ok");
       }
     } catch (e) {
+      console.error("[pmk-renderer] probe failed:", e);
       setHint(`status probe failed: ${(e as Error).message}`);
       setStatus("need-auth");
     }
