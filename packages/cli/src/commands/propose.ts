@@ -120,9 +120,7 @@ async function runOneShot(
     ),
   );
   const session = new Session();
-  const preamble = ctx.topic
-    ? `Topic: ${ctx.topic}\n\nSpec:\n\n${spec}`
-    : spec;
+  const preamble = ctx.topic ? `Topic: ${ctx.topic}\n\nSpec:\n\n${spec}` : spec;
   session.addUser(preamble);
 
   process.stdout.write(chalk.gray("\nassistant> "));
@@ -196,7 +194,8 @@ async function maybeSavePrd(
   }
   const body = extractPrdBody(response);
   const id = nextPrdId(docsDir);
-  const stamped = body.replace(/doc_id:\s*PRD-YYYY-NNNN/g, `doc_id: ${id}`);
+  // Replace whatever doc_id the model emitted (placeholder or hallucinated) with the authoritative id.
+  const stamped = body.replace(/^doc_id:.*$/m, `doc_id: ${id}`);
   const titleMatch = stamped.match(/^title:\s*(.*)$/m);
   const title = titleMatch ? titleMatch[1].trim() : id;
   const saved = writePrd(stamped, title, docsDir);
