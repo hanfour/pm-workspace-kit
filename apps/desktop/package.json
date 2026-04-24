@@ -1,0 +1,21 @@
+{
+  "name": "@pmk/desktop",
+  "version": "0.3.0",
+  "private": true,
+  "description": "Desktop app for pm-workspace-kit — Electron + React",
+  "license": "MIT",
+  "main": "dist/main/index.js",
+  "scripts": {
+    "dev": "echo 'TBD — see docs/plans/2026-04-24-desktop-app-sprint-plan.md M1'",
+    "build": "echo 'TBD — see sprint plan'"
+  },
+  "dependencies": {
+    "@pmk/core": "*",
+    "@pmk/cli": "*",
+    "@pmk/rag": "*",
+    "@pmk/shared": "*"
+  },
+  "engines": {
+    "node": ">=20.0"
+  }
+}

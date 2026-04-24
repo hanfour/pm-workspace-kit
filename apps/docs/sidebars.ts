@@ -82,6 +82,16 @@ const sidebars: SidebarsConfig = {
       label: "Example: AcmeAds",
       items: ["examples/acme-ads"],
     },
+    {
+      type: "category",
+      label: "Project Planning",
+      collapsed: true,
+      items: [
+        "prds/2026-04-24-desktop-app-prd",
+        "adr/desktop-framework",
+        "plans/2026-04-24-desktop-app-sprint-plan",
+      ],
+    },
   ],
 };
 

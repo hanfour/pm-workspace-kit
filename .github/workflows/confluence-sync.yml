@@ -25,7 +25,7 @@ jobs:
       - name: Restore sync state cache
         uses: actions/cache@v4
         with:
-          path: .confluence-sync-state.json
+          path: apps/docs/.confluence-sync-state.json
           key: confluence-sync-state-${{ github.ref }}-${{ github.run_number }}
           restore-keys: |
             confluence-sync-state-${{ github.ref }}-
