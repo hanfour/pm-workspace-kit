@@ -50,16 +50,26 @@ function tryResolve(): LlmProvider | null {
 
 export function registerLlmHandlers(): void {
   ipcMain.handle("pmk:llm:status", () => {
-    const cfg = buildConfig();
     try {
-      const p = resolveProvider(cfg);
-      return { providerName: p.displayName };
-    } catch (err) {
-      const hint =
-        err instanceof NoProviderAvailableError
-          ? "Add a Claude Code login or an Anthropic API key to continue."
-          : (err as Error).message;
-      return { providerName: "none", hint };
+      const cfg = buildConfig();
+      try {
+        const p = resolveProvider(cfg);
+        console.log(`[pmk] llm provider resolved: ${p.displayName}`);
+        return { providerName: p.displayName };
+      } catch (err) {
+        console.warn(`[pmk] resolveProvider failed: ${(err as Error).message}`);
+        const hint =
+          err instanceof NoProviderAvailableError
+            ? "Add a Claude Code login or an Anthropic API key to continue."
+            : (err as Error).message;
+        return { providerName: "none", hint };
+      }
+    } catch (outer) {
+      console.error(`[pmk] status handler error: ${(outer as Error).message}`);
+      return {
+        providerName: "none",
+        hint: `status handler crashed: ${(outer as Error).message}`,
+      };
     }
   });
 
@@ -70,11 +80,14 @@ export function registerLlmHandlers(): void {
 
   ipcMain.handle(
     "pmk:llm:chat",
-    async (event, payload: {
-      systemPrompt: string;
-      messages: Array<{ role: "user" | "assistant"; content: string }>;
-      channel: string;
-    }) => {
+    async (
+      event,
+      payload: {
+        systemPrompt: string;
+        messages: Array<{ role: "user" | "assistant"; content: string }>;
+        channel: string;
+      },
+    ) => {
       const provider = tryResolve();
       if (!provider) {
         throw new Error("no LLM provider available");

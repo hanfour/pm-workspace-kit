@@ -13,21 +13,31 @@ interface FirstRunProps {
 export function FirstRun({ onResolved }: FirstRunProps) {
   const [hint, setHint] = useState("checking auth…");
   const [key, setKey] = useState("");
-  const [status, setStatus] = useState<"probing" | "need-auth" | "saving" | "ok">(
-    "probing",
-  );
+  const [status, setStatus] = useState<
+    "probing" | "need-auth" | "saving" | "ok"
+  >("probing");
   const [error, setError] = useState<string | null>(null);
 
   const probe = useCallback(async () => {
     setStatus("probing");
     setError(null);
-    const s = await window.pmk!.llm.status();
-    if (s.providerName === "none") {
-      setHint(s.hint ?? "No provider available.");
+    if (!window.pmk) {
+      setHint("Preload bridge missing — restart the app.");
       setStatus("need-auth");
-    } else {
-      onResolved(s.providerName);
-      setStatus("ok");
+      return;
+    }
+    try {
+      const s = await window.pmk.llm.status();
+      if (s.providerName === "none") {
+        setHint(s.hint ?? "No provider available.");
+        setStatus("need-auth");
+      } else {
+        onResolved(s.providerName);
+        setStatus("ok");
+      }
+    } catch (e) {
+      setHint(`status probe failed: ${(e as Error).message}`);
+      setStatus("need-auth");
     }
   }, [onResolved]);
 
@@ -64,7 +74,8 @@ export function FirstRun({ onResolved }: FirstRunProps) {
               Option A · Claude Code login
             </label>
             <p className="mt-1 text-xs text-neutral-400">
-              Run <code className="rounded bg-neutral-800 px-1">claude login</code>{" "}
+              Run{" "}
+              <code className="rounded bg-neutral-800 px-1">claude login</code>{" "}
               in a terminal, then click <strong>Check again</strong>.
             </p>
           </div>
@@ -81,7 +92,8 @@ export function FirstRun({ onResolved }: FirstRunProps) {
               disabled={status === "saving"}
             />
             <p className="mt-1 text-[10px] text-neutral-500">
-              Stored encrypted via OS keychain (Electron safeStorage). Never written in plain text.
+              Stored encrypted via OS keychain (Electron safeStorage). Never
+              written in plain text.
             </p>
           </div>
           {error && (
