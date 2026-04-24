@@ -14,16 +14,25 @@ interface Message {
   content: string;
 }
 
+const COMMON_PREAMBLE = `You are a pure conversational assistant in a desktop chat UI. You have NO tools, NO skills, NO file access, NO shell, and NO agent capabilities available — only prose. Never announce, reference, or attempt to invoke any tool, skill, agent, sub-agent, hook, or capability (e.g. never output text like "Skill tool → …", "I'll use the X tool", "calling agent …", "let me invoke …"). Answer in plain text directly.
+
+Language: when the user writes in Chinese, reply in 繁體中文（台灣用語），不要用簡體或中國大陸詞彙。When the user writes in English, reply in English. Match the user's language; do not mix.
+
+No emojis. No preambles. No "certainly!" or "great question". Get to the answer.`;
+
 const PROMPTS: Record<Mode, string> = {
-  discuss: `You are a senior PM / staff engineer helping the user think through a topic. Be structured, direct, and honest.
+  discuss: `${COMMON_PREAMBLE}
+
+Role: a senior PM / staff engineer helping the user think through a topic.
 
 Rules:
 - Lead every response with a one-line thesis.
 - Break down complex answers into 3–5 bullet clusters.
-- Call out uncertainty explicitly ("This assumes X; if not, then Y").
-- Challenge the user's assumptions when warranted.
-- No emojis.`,
-  debug: `You are helping the user systematically debug an issue. Follow this framework:
+- Call out uncertainty explicitly ("This assumes X; if not, then Y" / 「假設 X；若否則 Y」).
+- Challenge the user's assumptions when warranted.`,
+  debug: `${COMMON_PREAMBLE}
+
+Role: a debugging partner enforcing this framework:
 1. Restate the symptom in the user's words.
 2. Ask for the minimum reproduction — what exactly triggers it.
 3. Enumerate hypotheses (3–5) ranked by likelihood.
@@ -31,14 +40,15 @@ Rules:
 5. Have the user run the cheapest test first; iterate.
 
 Do not propose fixes before the root cause is narrowed to one or two hypotheses.`,
-  tdd: `You are guiding the user through strict Test-Driven Development. Enforce the Red → Green → Refactor loop.
+  tdd: `${COMMON_PREAMBLE}
+
+Role: a strict TDD coach enforcing Red → Green → Refactor.
 
 Rules:
 - Phase 1 (Red): propose ONE failing test first. Show the exact test code. Ask the user to run it and confirm it fails with the expected error.
 - Phase 2 (Green): propose the minimum implementation that makes the test pass — no extras, no refactors. Wait for the user to confirm the test passes.
 - Phase 3 (Refactor): only after green, propose refactors. One at a time. Tests must stay green.
-- Never jump ahead. Never add a second test until the first is green.
-- No emojis.`,
+- Never jump ahead. Never add a second test until the first is green.`,
 };
 
 const MODE_LABELS: Record<Mode, string> = {
@@ -47,7 +57,10 @@ const MODE_LABELS: Record<Mode, string> = {
   tdd: "TDD",
 };
 
-export function ChatPanel({ attachablePath, attachableContent }: ChatPanelProps) {
+export function ChatPanel({
+  attachablePath,
+  attachableContent,
+}: ChatPanelProps) {
   const [mode, setMode] = useState<Mode>("discuss");
   const [messages, setMessages] = useState<Message[]>([]);
   const [draft, setDraft] = useState("");
@@ -58,7 +71,8 @@ export function ChatPanel({ attachablePath, attachableContent }: ChatPanelProps)
 
   const scrollToBottom = () => {
     requestAnimationFrame(() => {
-      if (listRef.current) listRef.current.scrollTop = listRef.current.scrollHeight;
+      if (listRef.current)
+        listRef.current.scrollTop = listRef.current.scrollHeight;
     });
   };
 
@@ -115,7 +129,15 @@ export function ChatPanel({ attachablePath, attachableContent }: ChatPanelProps)
     } finally {
       setBusy(false);
     }
-  }, [attachFile, attachableContent, attachablePath, busy, draft, messages, mode]);
+  }, [
+    attachFile,
+    attachableContent,
+    attachablePath,
+    busy,
+    draft,
+    messages,
+    mode,
+  ]);
 
   const reset = () => {
     if (busy) return;
@@ -219,7 +241,9 @@ export function ChatPanel({ attachablePath, attachableContent }: ChatPanelProps)
             />
             <span>
               Attach open file:{" "}
-              <span className="text-neutral-400">{shortPath(attachablePath)}</span>
+              <span className="text-neutral-400">
+                {shortPath(attachablePath)}
+              </span>
             </span>
           </label>
         )}

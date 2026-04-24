@@ -31,11 +31,19 @@ export class ClaudeAgentSdkProvider implements LlmProvider {
   ): Promise<string> {
     const prompt = serialiseHistory(messages);
 
-    // Pin the main thread to a pmk-owned agent definition with an
-    // empty skills array — this stops Claude Code from autoloading
-    // the user's `~/.claude/skills/*` (e.g. superpowers) which
-    // otherwise leak their own deprecation notices / reminders into
-    // our pure chat turns.
+    // Pass our own systemPrompt as a string — this replaces Claude
+    // Code's `claude_code` preset entirely, so the model should not
+    // think of itself as an agent with tools. `allowedTools: []` is
+    // belt-and-braces: even if a tool sneaks in, it can't execute.
+    //
+    // Note: we previously scoped the main thread to a custom
+    // AgentDefinition to suppress user-skill bleed (e.g. superpowers),
+    // but that *reinforced* agent/tool framing in the model's mind —
+    // responses started announcing "Skill tool → requirement-intake"
+    // instead of just answering. Removing the agent wrapper and
+    // relying on the systemPrompt + prompt discipline produces cleaner
+    // chat turns, at the cost of occasionally seeing a superpowers
+    // banner in the opener. Acceptable trade.
     const q = query({
       prompt,
       options: {
@@ -44,15 +52,6 @@ export class ClaudeAgentSdkProvider implements LlmProvider {
         includePartialMessages: true,
         allowedTools: [],
         permissionMode: "default",
-        agent: "pmk",
-        agents: {
-          pmk: {
-            description: "pmk isolated chat agent",
-            prompt: systemPrompt,
-            tools: [],
-            skills: [],
-          },
-        },
         ...(this.executablePath
           ? { pathToClaudeCodeExecutable: this.executablePath }
           : {}),
