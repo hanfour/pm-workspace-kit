@@ -1,0 +1,57 @@
+name: Confluence sync
+
+on:
+  schedule:
+    - cron: '*/30 * * * *'  # every 30 minutes
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - run: npm ci
+
+      - name: Restore sync state cache
+        uses: actions/cache@v4
+        with:
+          path: .confluence-sync-state.json
+          key: confluence-sync-state-${{ github.ref }}-${{ github.run_number }}
+          restore-keys: |
+            confluence-sync-state-${{ github.ref }}-
+
+      - name: Run sync
+        env:
+          CONFLUENCE_BASE_URL: ${{ secrets.CONFLUENCE_BASE_URL }}
+          CONFLUENCE_EMAIL: ${{ secrets.CONFLUENCE_EMAIL }}
+          CONFLUENCE_API_TOKEN: ${{ secrets.CONFLUENCE_API_TOKEN }}
+        run: npm run confluence:sync
+
+      - name: Create PR if changes
+        uses: peter-evans/create-pull-request@v6
+        with:
+          commit-message: 'chore(confluence): auto-sync comments and status'
+          branch: auto/confluence-sync
+          delete-branch: true
+          title: '[confluence-sync] Pull Confluence comments and status labels'
+          body: |
+            Automated PR produced by `.github/workflows/confluence-sync.yml`.
+
+            Possible changes:
+            - Added or extended the `## Confluence Comments` section
+            - Front-matter `status` updated from a `status-*` label
+
+            Close the PR to discard; next scheduled run will detect the same delta.
+          labels: |
+            confluence-sync
+            automated

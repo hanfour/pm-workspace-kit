@@ -1,0 +1,47 @@
+/**
+ * PM Workspace Kit — site theme.
+ * Conservative palette: slate for chrome, single accent for links & CTAs.
+ */
+
+:root {
+  --ifm-color-primary: #2563eb;
+  --ifm-color-primary-dark: #1e4fd8;
+  --ifm-color-primary-darker: #1d4bcc;
+  --ifm-color-primary-darkest: #183ea8;
+  --ifm-color-primary-light: #3b72ee;
+  --ifm-color-primary-lighter: #4c7ef0;
+  --ifm-color-primary-lightest: #7b9ff5;
+  --ifm-code-font-size: 95%;
+  --docusaurus-highlighted-code-line-bg: rgba(0, 0, 0, 0.06);
+  --ifm-heading-font-weight: 600;
+  --ifm-font-family-base: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "PingFang TC", "Noto Sans TC", sans-serif;
+}
+
+[data-theme="dark"] {
+  --ifm-color-primary: #60a5fa;
+  --ifm-color-primary-dark: #449cf8;
+  --ifm-color-primary-darker: #3598f8;
+  --ifm-color-primary-darkest: #0a83f7;
+  --ifm-color-primary-light: #7cb5fc;
+  --ifm-color-primary-lighter: #8abcfc;
+  --ifm-color-primary-lightest: #b8d5fd;
+  --docusaurus-highlighted-code-line-bg: rgba(255, 255, 255, 0.08);
+}
+
+.hero--primary {
+  --ifm-hero-background-color: #0f172a;
+  --ifm-hero-text-color: #f8fafc;
+}
+
+.button--primary {
+  --ifm-button-border-radius: 0.5rem;
+  font-weight: 600;
+}
+
+article .markdown h1:first-child {
+  margin-bottom: 1rem;
+}
+
+.theme-admonition {
+  border-radius: 0.5rem;
+}

@@ -1,0 +1,12 @@
+{
+  "homepage.title": { "message": "PM Workspace Kit", "description": "Site title" },
+  "homepage.tagline": { "message": "為 AI 時代產品團隊打造的 PM / SA 規範、腳本、playbook 範本集。" },
+  "homepage.ctaPrimary": { "message": "閱讀文件" },
+  "homepage.ctaSecondary": { "message": "10 分鐘快速上手" },
+  "theme.NotFound.title": { "message": "找不到頁面" },
+  "theme.NotFound.p1": { "message": "你追查的頁面不存在。" },
+  "theme.NotFound.p2": { "message": "站長已被通知；請連回首頁。" },
+  "theme.navbar.mobileSidebarSecondaryMenu.backButtonLabel": { "message": "← 返回主選單" },
+  "theme.lastUpdated.atDate": { "message": "於 {date} 更新" },
+  "theme.docs.breadcrumbs.home": { "message": "首頁" }
+}

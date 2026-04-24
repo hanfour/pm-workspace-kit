@@ -1,0 +1,65 @@
+{
+  "name": "pm-workspace-kit",
+  "version": "0.1.0",
+  "private": false,
+  "description": "An opinionated PM/SA workspace kit: traceability, ADRs, Strangler Fig migration, and AI-friendly documentation templates — with scripts and a docs site.",
+  "license": "MIT",
+  "scripts": {
+    "docusaurus": "docusaurus",
+    "start": "docusaurus start",
+    "build": "docusaurus build",
+    "serve": "docusaurus serve",
+    "deploy": "docusaurus deploy",
+    "write-translations": "docusaurus write-translations",
+    "write-heading-ids": "docusaurus write-heading-ids",
+    "typecheck": "tsc",
+    "clear": "docusaurus clear",
+    "traceability:matrix": "node scripts/traceability.js matrix",
+    "traceability:check": "node scripts/traceability.js check",
+    "confluence:sync": "node scripts/confluence-sync.js sync",
+    "confluence:sync:dry": "node scripts/confluence-sync.js sync --dry-run",
+    "confluence:list": "node scripts/confluence-sync.js list"
+  },
+  "dependencies": {
+    "@docusaurus/core": "3.6.3",
+    "@docusaurus/preset-classic": "3.6.3",
+    "@mdx-js/react": "^3.0.0",
+    "clsx": "^2.0.0",
+    "prism-react-renderer": "^2.3.0",
+    "react": "^18.0.0",
+    "react-dom": "^18.0.0"
+  },
+  "devDependencies": {
+    "@docusaurus/module-type-aliases": "3.6.3",
+    "@docusaurus/tsconfig": "3.6.3",
+    "@docusaurus/types": "3.6.3",
+    "gray-matter": "^4.0.3",
+    "typescript": "~5.6.2"
+  },
+  "browserslist": {
+    "production": [">0.5%", "not dead", "not op_mini all"],
+    "development": [
+      "last 3 chrome version",
+      "last 3 firefox version",
+      "last 5 safari version"
+    ]
+  },
+  "engines": {
+    "node": ">=18.0"
+  },
+  "keywords": [
+    "product-management",
+    "systems-analysis",
+    "traceability",
+    "adr",
+    "strangler-fig",
+    "documentation",
+    "ai-native",
+    "pm-workflow",
+    "template"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/YOUR-ORG/pm-workspace-kit"
+  }
+}

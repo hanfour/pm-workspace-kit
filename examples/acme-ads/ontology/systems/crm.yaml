@@ -1,0 +1,112 @@
+# AcmeAds CRM ontology — fictional example
+# Demonstrates the kit's YAML schema shape without real business data.
+
+version: "1.0"
+last_updated: "2026-04-24"
+source: fictional-example
+
+system:
+  id: crm
+  name: Customer Relationship Management
+  repo: crm-service
+  tech_stack: [Go, PostgreSQL, gRPC]
+  description: |
+    AcmeAds CRM holds advertiser customer master data, contracts, and contacts.
+    Read by billing (for invoice routing), campaigns (for attribution), and
+    reporting. Write entry points: self-service signup, sales-assisted onboarding,
+    CSV import for bulk migration.
+
+  modules:
+
+    - id: crm.customer
+      name: Customer master
+      description: Advertiser master record; one per billing account
+      pages:
+        - { path: /customers, name: Customer list }
+        - { path: /customers/:id, name: Customer detail }
+
+      entities:
+        - id: crm.customer.customer
+          name: Customer
+          description: Advertiser account root
+          source_file: internal/customer/model.go
+          pii_tier: confidential
+          fields:
+            - { name: id, type: uuid, primary: true }
+            - { name: company_name, type: string, required: true, pii_tier: confidential }
+            - { name: tax_id, type: string, description: National tax number, pii_tier: confidential }
+            - { name: tier, type: enum, values: [self_serve, standard, enterprise] }
+            - { name: status, type: enum, values: [active, suspended, churned] }
+            - { name: created_at, type: timestamp }
+            - { name: onboarded_at, type: timestamp, nullable: true }
+          associations:
+            - { type: has_many, target: crm.customer.contact }
+            - { type: has_many, target: crm.customer.contract }
+          business_rules:
+            - id: tax_id_unique
+              description: tax_id must be unique within a country
+            - id: tier_requires_contract
+              description: tier=enterprise requires at least one active contract
+          state_machine:
+            field: status
+            transitions:
+              - { from: active, to: suspended }
+              - { from: suspended, to: active }
+              - { from: active, to: churned }
+              - { from: suspended, to: churned }
+
+        - id: crm.customer.contact
+          name: Contact
+          description: Individual person associated with a customer
+          source_file: internal/customer/contact.go
+          pii_tier: restricted
+          fields:
+            - { name: id, type: uuid, primary: true }
+            - { name: customer_id, type: uuid, required: true }
+            - { name: name, type: string, pii_tier: restricted }
+            - { name: email, type: string, pii_tier: restricted }
+            - { name: role, type: enum, values: [billing, technical, executive] }
+            - { name: is_primary, type: boolean, default: false }
+          associations:
+            - { type: belongs_to, target: crm.customer.customer }
+
+        - id: crm.customer.contract
+          name: Contract
+          description: Commercial agreement; drives billing terms
+          source_file: internal/customer/contract.go
+          pii_tier: confidential
+          fields:
+            - { name: id, type: uuid, primary: true }
+            - { name: customer_id, type: uuid, required: true }
+            - { name: start_date, type: date }
+            - { name: end_date, type: date }
+            - { name: monthly_minimum_usd, type: decimal(18,2) }
+            - { name: pdf_url, type: string, pii_tier: restricted }
+            - { name: signed, type: boolean, default: false }
+          associations:
+            - { type: belongs_to, target: crm.customer.customer }
+          business_rules:
+            - id: dates_in_order
+              description: end_date >= start_date
+            - id: signed_required_for_active
+              description: contract with signed=false cannot have start_date in past
+
+      apis:
+        - { method: GET, path: /api/v1/customers, description: List customers }
+        - { method: POST, path: /api/v1/customers, description: Create customer }
+        - { method: GET, path: /api/v1/customers/:id, description: Fetch customer }
+        - { method: PATCH, path: /api/v1/customers/:id/status, description: Update status }
+
+      events:
+        - name: customer.created
+          description: Emitted when a new Customer row is inserted
+        - name: customer.suspended
+          description: Emitted when status transitions to suspended
+        - name: customer.churned
+          description: Emitted when status transitions to churned
+
+  services:
+    customer_onboarding:
+      description: Orchestrates signup → verification → contract → activation
+    billing_routing:
+      description: Routes invoices based on customer tier and contract terms

@@ -1,0 +1,32 @@
+---
+sidebar_position: 1
+---
+
+# ADR Index
+
+The kit ships three pre-written **methodology** ADRs you can adopt as-is or adapt. These are decisions about _how you work_, not which tech stack you pick.
+
+| # | Title | Status | Date |
+|---|---|---|---|
+| [ADR-0001](./0001-strangler-fig-protocol.md) | Strangler Fig migration protocol | Accepted | 2026-04-24 |
+| [ADR-0002](./0002-dev-harness.md) | Dev harness conventions | Accepted | 2026-04-24 |
+| [ADR-0003](./0003-product-decision-log.md) | Product decision log as a first-class ADR class | Accepted | 2026-04-24 |
+
+## How to use
+
+1. Adopt as your repo's starting ADR-0001/0002/0003, or renumber to fit your sequence.
+2. Write your own technical ADRs (monorepo choice, backend framework, ORM, etc.) starting at 0004+.
+3. Use [`docs/templates/adr-template.md`](../templates/adr-template.md) for new ADRs.
+
+## How to add an ADR
+
+1. Copy `docs/templates/adr-template.md` to `docs/adr/NNNN-<slug>.md` (next sequential number)
+2. Fill in: Status (Proposed initially), Date, Deciders, Tags, Context, Decision, Consequences, Alternatives Considered, References
+3. Add a row to this index
+4. PR → Architect + senior eng review → merge; change Status to Accepted
+
+## Status lifecycle
+
+`Proposed` → `Accepted` → (`Deprecated` | `Superseded by ADR-XXXX`)
+
+Never delete a deprecated ADR. Keep the trail.

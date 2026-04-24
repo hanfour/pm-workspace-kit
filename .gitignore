@@ -1,0 +1,33 @@
+# Dependencies
+node_modules/
+.pnp/
+.pnp.js
+
+# Build output
+build/
+.docusaurus/
+.cache-loader/
+
+# Env
+.env
+.env.local
+.env.*.local
+
+# Editor
+.DS_Store
+*.swp
+*.swo
+.vscode/
+.idea/
+
+# Log
+*.log
+npm-debug.log*
+
+# Sync state (per-machine, not to commit)
+.confluence-sync-state.json
+
+# Office temp locks
+~$*.pptx
+~$*.docx
+~$*.xlsx
