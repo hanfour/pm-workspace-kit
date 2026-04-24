@@ -12,7 +12,7 @@ sidebar_position: 14
 
 ## Skill body（英文，複製到 `.claude/skills/`）
 
-完整 skill body 保留英文 — Claude Code 讀英文 prompt 更穩定。見 [英文版](https://hanfourhuang.github.io/pm-workspace-kit/docs/skills/bug-report) 取用本體、複製到你專案的 `.claude/skills/bug-report.md`。
+完整 skill body 保留英文 — Claude Code 讀英文 prompt 更穩定。見 [英文版](https://hanfour.github.io/pm-workspace-kit/docs/skills/bug-report) 取用本體、複製到你專案的 `.claude/skills/bug-report.md`。
 
 ## 相關
 

@@ -15,7 +15,7 @@ sidebar_position: 2
 ## 1. Clone 並安裝
 
 ```bash
-git clone https://github.com/hanfourhuang/pm-workspace-kit.git my-workspace
+git clone https://github.com/hanfour/pm-workspace-kit.git my-workspace
 cd my-workspace
 npm install
 ```

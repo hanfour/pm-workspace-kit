@@ -9,10 +9,10 @@ const config: Config = {
   favicon: "img/favicon.svg",
 
   // Replace with your GitHub Pages URL once the repo is public.
-  url: "https://hanfourhuang.github.io",
+  url: "https://hanfour.github.io",
   baseUrl: "/pm-workspace-kit/",
 
-  organizationName: "hanfourhuang",
+  organizationName: "hanfour",
   projectName: "pm-workspace-kit",
 
   onBrokenLinks: "warn",
@@ -34,7 +34,7 @@ const config: Config = {
         docs: {
           sidebarPath: "./sidebars.ts",
           editUrl:
-            "https://github.com/hanfourhuang/pm-workspace-kit/tree/main/",
+            "https://github.com/hanfour/pm-workspace-kit/tree/main/",
           showLastUpdateTime: true,
           showLastUpdateAuthor: true,
         },
@@ -64,7 +64,7 @@ const config: Config = {
           position: "right",
         },
         {
-          href: "https://github.com/hanfourhuang/pm-workspace-kit",
+          href: "https://github.com/hanfour/pm-workspace-kit",
           label: "GitHub",
           position: "right",
         },
@@ -95,7 +95,7 @@ const config: Config = {
           items: [
             {
               label: "GitHub",
-              href: "https://github.com/hanfourhuang/pm-workspace-kit",
+              href: "https://github.com/hanfour/pm-workspace-kit",
             },
             { label: "License (MIT)", href: "/LICENSE.txt" },
           ],

@@ -27,4 +27,4 @@ PRD 的上游。需求卡（REQ-YYYY-NNNN）會成為後續 PRD 的 `related.req
 
 ## Skill body（英文，複製到 `.claude/skills/`）
 
-參見 [英文版](https://hanfourhuang.github.io/pm-workspace-kit/docs/skills/requirement-intake) 完整 skill body。Claude Code 讀英文 prompt 更穩定，故 skill 內文保留英文；本頁翻譯的是使用情境說明。
+參見 [英文版](https://hanfour.github.io/pm-workspace-kit/docs/skills/requirement-intake) 完整 skill body。Claude Code 讀英文 prompt 更穩定，故 skill 內文保留英文；本頁翻譯的是使用情境說明。

@@ -12,7 +12,7 @@ sidebar_position: 1
 
 ## 範例內容
 
-在 repo [`examples/acme-ads/`](https://github.com/hanfourhuang/pm-workspace-kit/tree/main/examples/acme-ads) 下：
+在 repo [`examples/acme-ads/`](https://github.com/hanfour/pm-workspace-kit/tree/main/examples/acme-ads) 下：
 
 ```
 examples/acme-ads/
@@ -34,7 +34,7 @@ examples/acme-ads/
 
 ### 1. 有真 front-matter 的 PRD
 
-[`docs/prds/2026-Q2-customer-onboarding-prd.md`](https://github.com/hanfourhuang/pm-workspace-kit/tree/main/examples/acme-ads/docs/prds/2026-Q2-customer-onboarding-prd.md) 顯示：
+[`docs/prds/2026-Q2-customer-onboarding-prd.md`](https://github.com/hanfour/pm-workspace-kit/tree/main/examples/acme-ads/docs/prds/2026-Q2-customer-onboarding-prd.md) 顯示：
 - 用了必填 `doc_id`、`related.requirement`、`related.module` 欄位
 - 引用 ADR（`ADR-0004`）驅動技術方向
 - 回連到有自己 playbook 的特定模組（`crm.customer`）
@@ -43,7 +43,7 @@ examples/acme-ads/
 
 ### 2. 情境內的模組 playbook
 
-[`docs/architecture/modules/crm-customer-migration.md`](https://github.com/hanfourhuang/pm-workspace-kit/tree/main/examples/acme-ads/docs/architecture/modules/crm-customer-migration.md) 填了 `crm.customer` 的 12 節模板。注意：
+[`docs/architecture/modules/crm-customer-migration.md`](https://github.com/hanfour/pm-workspace-kit/tree/main/examples/acme-ads/docs/architecture/modules/crm-customer-migration.md) 填了 `crm.customer` 的 12 節模板。注意：
 - 依賴圖連到相鄰模組（`billing`、`campaigns`）
 - Stage 0 checklist 項目具體（ontology 缺口、遷移 script、feature flag）
 - 風險標 likelihood × impact、不是空話
@@ -51,11 +51,11 @@ examples/acme-ads/
 
 ### 3. 技術 ADR
 
-[`docs/adr/0004-go-monolith.md`](https://github.com/hanfourhuang/pm-workspace-kit/tree/main/examples/acme-ads/docs/adr/0004-go-monolith.md) 是**技術** ADR 範例（接在 0001–0003 方法論之後）。展示 Deciders、Alternatives、Consequences 完整填寫的形狀。
+[`docs/adr/0004-go-monolith.md`](https://github.com/hanfour/pm-workspace-kit/tree/main/examples/acme-ads/docs/adr/0004-go-monolith.md) 是**技術** ADR 範例（接在 0001–0003 方法論之後）。展示 Deciders、Alternatives、Consequences 完整填寫的形狀。
 
 ### 4. Ontology
 
-[`ontology/systems/crm.yaml`](https://github.com/hanfourhuang/pm-workspace-kit/tree/main/examples/acme-ads/ontology/systems/crm.yaml) — 三個 entity 含欄位、associations、PII tier、business rule。一次看完、但足以展示形狀。
+[`ontology/systems/crm.yaml`](https://github.com/hanfour/pm-workspace-kit/tree/main/examples/acme-ads/ontology/systems/crm.yaml) — 三個 entity 含欄位、associations、PII tier、business rule。一次看完、但足以展示形狀。
 
 ## 跑範例
 

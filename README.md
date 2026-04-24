@@ -2,7 +2,7 @@
 
 > An opinionated PM / SA workspace kit: traceability front-matter, ADRs, Strangler Fig migration, AI-friendly documentation templates — with working scripts and a multilingual docs site.
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE) [![Docs](https://img.shields.io/badge/docs-live-blue)](https://hanfourhuang.github.io/pm-workspace-kit/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE) [![Docs](https://img.shields.io/badge/docs-live-blue)](https://hanfour.github.io/pm-workspace-kit/)
 
 ## Why this exists
 
@@ -26,7 +26,7 @@ This kit is what we used to plan a monolith → TypeScript migration of an 11-mo
 ## Quick start
 
 ```bash
-git clone https://github.com/hanfourhuang/pm-workspace-kit.git my-workspace
+git clone https://github.com/hanfour/pm-workspace-kit.git my-workspace
 cd my-workspace
 npm install
 
