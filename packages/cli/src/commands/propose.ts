@@ -1,7 +1,7 @@
 import * as path from "node:path";
 import chalk from "chalk";
-import { loadConfig, requireApiKey } from "../config";
-import { LlmClient } from "../llm";
+import { loadConfig } from "../config";
+import { resolveProviderOrExit } from "../llm";
 import { Session } from "../session";
 import { PROMPT_PROPOSE } from "../prompts";
 import { repl, println, writeToken } from "../io";
@@ -16,13 +16,15 @@ import { extractPrdBody, writePrd, nextPrdId } from "../frontmatter";
  */
 export async function proposeCommand(topic?: string): Promise<void> {
   const config = loadConfig();
-  requireApiKey(config);
-
-  const client = new LlmClient(config);
+  const client = resolveProviderOrExit(config);
   const session = new Session();
   const docsDir = path.resolve(process.cwd(), config.docsRoot, "prds");
 
-  println(chalk.bold(`\npmk propose — model=${config.model}`));
+  println(
+    chalk.bold(
+      `\npmk propose — model=${config.model} · provider=${client.displayName}`,
+    ),
+  );
   if (topic) println(chalk.dim(`Seed topic: ${topic}\n`));
 
   // Seed the conversation.
@@ -50,7 +52,9 @@ export async function proposeCommand(topic?: string): Promise<void> {
       const titleMatch = stamped.match(/^title:\s*(.*)$/m);
       const title = titleMatch ? titleMatch[1].trim() : id;
       const saved = writePrd(stamped, title, docsDir);
-      println(chalk.green(`\nPRD saved → ${path.relative(process.cwd(), saved)}`));
+      println(
+        chalk.green(`\nPRD saved → ${path.relative(process.cwd(), saved)}`),
+      );
       println(chalk.dim(`  doc_id: ${id}`));
       done = true;
       break;

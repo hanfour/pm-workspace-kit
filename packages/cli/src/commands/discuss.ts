@@ -1,6 +1,6 @@
 import chalk from "chalk";
-import { loadConfig, requireApiKey } from "../config";
-import { LlmClient } from "../llm";
+import { loadConfig } from "../config";
+import { resolveProviderOrExit } from "../llm";
 import { Session } from "../session";
 import { PROMPT_DISCUSS } from "../prompts";
 import { repl, println, writeToken } from "../io";
@@ -11,11 +11,14 @@ import { repl, println, writeToken } from "../io";
  */
 export async function discussCommand(topic?: string): Promise<void> {
   const config = loadConfig();
-  requireApiKey(config);
-  const client = new LlmClient(config);
+  const client = resolveProviderOrExit(config);
   const session = new Session();
 
-  println(chalk.bold(`\npmk discuss — model=${config.model}`));
+  println(
+    chalk.bold(
+      `\npmk discuss — model=${config.model} · provider=${client.displayName}`,
+    ),
+  );
   if (topic) {
     println(chalk.dim(`Topic: ${topic}\n`));
     session.addUser(`Let's discuss: ${topic}`);

@@ -1,6 +1,6 @@
 import chalk from "chalk";
-import { loadConfig, requireApiKey } from "../config";
-import { LlmClient } from "../llm";
+import { loadConfig } from "../config";
+import { resolveProviderOrExit } from "../llm";
 import { Session } from "../session";
 import { PROMPT_DEBUG } from "../prompts";
 import { repl, println, writeToken } from "../io";
@@ -12,11 +12,14 @@ import { repl, println, writeToken } from "../io";
  */
 export async function debugCommand(symptom?: string): Promise<void> {
   const config = loadConfig();
-  requireApiKey(config);
-  const client = new LlmClient(config);
+  const client = resolveProviderOrExit(config);
   const session = new Session();
 
-  println(chalk.bold(`\npmk debug — model=${config.model}`));
+  println(
+    chalk.bold(
+      `\npmk debug — model=${config.model} · provider=${client.displayName}`,
+    ),
+  );
 
   const opener = symptom
     ? `I'm seeing this issue: ${symptom}. Help me debug systematically.`
@@ -24,7 +27,9 @@ export async function debugCommand(symptom?: string): Promise<void> {
   session.addUser(opener);
 
   process.stdout.write(chalk.gray("assistant> "));
-  const first = await client.chat(PROMPT_DEBUG, session.history(), { onToken: writeToken });
+  const first = await client.chat(PROMPT_DEBUG, session.history(), {
+    onToken: writeToken,
+  });
   println("");
   session.addAssistant(first);
 

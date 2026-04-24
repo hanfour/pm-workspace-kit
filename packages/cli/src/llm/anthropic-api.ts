@@ -1,16 +1,17 @@
 import Anthropic from "@anthropic-ai/sdk";
 import type { ChatMessage, PmkConfig } from "@pmk/shared";
+import type { ChatOptions, LlmProvider } from "./provider";
 
 /**
- * Thin wrapper around the Anthropic SDK. Streams tokens to stdout
- * and returns the full assistant response.
+ * Uses a raw Anthropic API key. Requires ANTHROPIC_API_KEY (or config.apiKey).
  */
-export class LlmClient {
-  private client: Anthropic;
-  private config: PmkConfig;
+export class AnthropicApiKeyProvider implements LlmProvider {
+  readonly name = "anthropic-api" as const;
+  readonly displayName = "Anthropic API (api key)";
+  private readonly client: Anthropic;
+  private readonly config: PmkConfig;
 
-  constructor(config: PmkConfig) {
-    if (!config.apiKey) throw new Error("apiKey is required");
+  constructor(config: PmkConfig & { apiKey: string }) {
     this.client = new Anthropic({ apiKey: config.apiKey });
     this.config = config;
   }
@@ -18,7 +19,7 @@ export class LlmClient {
   async chat(
     systemPrompt: string,
     messages: ChatMessage[],
-    opts: { onToken?: (chunk: string) => void } = {},
+    opts: ChatOptions = {},
   ): Promise<string> {
     const stream = await this.client.messages.stream({
       model: this.config.model,
