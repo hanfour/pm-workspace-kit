@@ -48,7 +48,8 @@ export async function resumeCommand(name?: string): Promise<void> {
   session.load(parked.messages);
 
   const systemPrompt =
-    (parked.systemPromptKey && PROMPTS[parked.systemPromptKey]) ??
+    (parked.systemPromptKey &&
+      PROMPTS[parked.systemPromptKey as keyof typeof PROMPTS]) ??
     PROMPTS.discuss;
 
   println(
