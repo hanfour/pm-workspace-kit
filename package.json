@@ -25,7 +25,9 @@
   "overrides": {
     "serialize-javascript": "^7.0.5",
     "uuid": "^14.0.0",
-    "webpack": "~5.105.0"
+    "webpack": "~5.105.0",
+    "esbuild": "^0.25.0",
+    "vite": "^6.3.5"
   },
   "engines": {
     "node": ">=20.0"

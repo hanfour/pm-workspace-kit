@@ -36,6 +36,9 @@ apps/docs/.docusaurus/
 packages/*/dist/
 apps/*/dist/
 
+# electron-vite output
+apps/*/out/
+
 # Office temp locks
 ~$*.pptx
 ~$*.docx
