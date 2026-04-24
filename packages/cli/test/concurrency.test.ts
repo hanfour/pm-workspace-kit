@@ -28,6 +28,17 @@ describe("pLimit", () => {
     assert.deepEqual(out, []);
   });
 
+  it("clamps NaN / Infinity / negative limit to 1 (no silent skip)", async () => {
+    for (const bad of [NaN, Infinity, -Infinity, -5, parseInt("abc", 10)]) {
+      const out = await pLimit([1, 2, 3], bad, async (n) => n * 2);
+      assert.deepEqual(
+        out,
+        [2, 4, 6],
+        `expected all tasks to run for limit=${bad}`,
+      );
+    }
+  });
+
   it("clamps limit < 1 to 1", async () => {
     let running = 0;
     let peak = 0;
