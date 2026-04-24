@@ -4,6 +4,7 @@ import { resolveProviderOrExit } from "../llm";
 import { Session } from "../session";
 import { PROMPT_DISCUSS } from "../prompts";
 import { repl, println, writeToken } from "../io";
+import { handleParkCommand } from "./_park-hook";
 
 /**
  * `pmk discuss [topic]` — open-ended brainstorm / Q&A.
@@ -32,6 +33,7 @@ export async function discussCommand(topic?: string): Promise<void> {
 
   await repl(
     async (line) => {
+      if (handleParkCommand(line, session, "discuss", "discuss")) return;
       session.addUser(line);
       process.stdout.write(chalk.gray("\nassistant> "));
       const response = await client.chat(PROMPT_DISCUSS, session.history(), {

@@ -39,6 +39,12 @@ apps/*/dist/
 # electron-vite output
 apps/*/out/
 
+# electron-builder output
+apps/*/release/
+
+# pmk local state (RAG index, parks)
+.pmk/
+
 # Office temp locks
 ~$*.pptx
 ~$*.docx

@@ -9,7 +9,10 @@
     "dev": "electron-vite dev",
     "build": "electron-vite build",
     "typecheck": "tsc -p tsconfig.node.json --noEmit && tsc -p tsconfig.web.json --noEmit",
-    "start": "electron-vite preview"
+    "start": "electron-vite preview",
+    "package:mac": "npm run build && electron-builder --mac --publish never",
+    "package:win": "npm run build && electron-builder --win --publish never",
+    "package:linux": "npm run build && electron-builder --linux --publish never"
   },
   "dependencies": {
     "@electron-toolkit/preload": "^3.0.1",
@@ -20,15 +23,22 @@
     "@pmk/rag": "*",
     "@pmk/shared": "*",
     "gray-matter": "^4.0.3",
+    "highlight.js": "^11.11.1",
+    "mermaid": "^11.14.0",
     "monaco-editor": "^0.55.1",
+    "react-markdown": "^10.1.0",
+    "rehype-highlight": "^7.0.2",
+    "remark-gfm": "^4.0.1",
     "simple-git": "^3.36.0"
   },
   "devDependencies": {
+    "@tailwindcss/typography": "^0.5.19",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
     "@vitejs/plugin-react": "^4.3.4",
     "autoprefixer": "^10.4.20",
     "electron": "^41.0.0",
+    "electron-builder": "^26.8.1",
     "electron-vite": "^3.1.0",
     "postcss": "^8.4.49",
     "react": "^19.0.0",

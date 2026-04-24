@@ -4,6 +4,7 @@ import { resolveProviderOrExit } from "../llm";
 import { Session } from "../session";
 import { PROMPT_DEBUG } from "../prompts";
 import { repl, println, writeToken } from "../io";
+import { handleParkCommand } from "./_park-hook";
 
 /**
  * `pmk debug [symptom]` — systematic debugging flow.
@@ -35,6 +36,7 @@ export async function debugCommand(symptom?: string): Promise<void> {
 
   await repl(
     async (line) => {
+      if (handleParkCommand(line, session, "debug", "debug")) return;
       session.addUser(line);
       process.stdout.write(chalk.gray("\nassistant> "));
       const response = await client.chat(PROMPT_DEBUG, session.history(), {
