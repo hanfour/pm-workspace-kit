@@ -1,6 +1,8 @@
 appId: dev.pmk.desktop
 productName: pmk
 copyright: MIT — pm-workspace-kit contributors
+electronVersion: 41.3.0
+nodeGypRebuild: false
 
 directories:
   output: release
@@ -19,9 +21,12 @@ extraMetadata:
 
 mac:
   category: public.app-category.developer-tools
+  # Default to arm64 only — pmk devs are on Apple Silicon and shipping
+  # both adds ~400 MB to the release dir. For universal binaries swap
+  # `arch: [arm64, x64]` or run `--universal` on CI.
   target:
     - target: dmg
-      arch: [arm64, x64]
+      arch: [arm64]
   hardenedRuntime: true
   gatekeeperAssess: false
   # Code signing is deferred — uncomment after you add an Apple Developer cert.
