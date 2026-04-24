@@ -7,7 +7,14 @@ export default defineConfig({
     plugins: [externalizeDepsPlugin()],
   },
   preload: {
-    plugins: [externalizeDepsPlugin()],
+    // Sandboxed preloads cannot `require()` at runtime, so we must bundle
+    // everything into preload/index.js. Only `electron` itself stays
+    // external (Electron provides it at runtime).
+    build: {
+      rollupOptions: {
+        external: ["electron"],
+      },
+    },
   },
   renderer: {
     root: resolve(__dirname, "src/renderer"),
