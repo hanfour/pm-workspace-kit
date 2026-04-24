@@ -23,7 +23,13 @@ const IGNORED = new Set([
   ".docusaurus",
 ]);
 
-function ensureInside(root: string, target: string): string {
+/**
+ * Resolve `target` as absolute and confirm it sits under `root`. Throws
+ * if the resolved path escapes the workspace (via `..`, absolute paths,
+ * symlink-like tricks). Exported so tests can exercise the defence
+ * without standing up an Electron process.
+ */
+export function ensureInside(root: string, target: string): string {
   const abs = resolve(target);
   const rel = relative(root, abs);
   if (rel.startsWith("..") || resolve(root, rel) !== abs) {
@@ -46,7 +52,8 @@ async function buildTree(
     const abs = join(dir, e.name);
     const rel = relative(root, abs);
     if (e.isDirectory()) {
-      const children = depth < 6 ? await buildTree(root, abs, tracked, depth + 1) : [];
+      const children =
+        depth < 6 ? await buildTree(root, abs, tracked, depth + 1) : [];
       if (children.length === 0 && depth > 0) {
         // collapse empty dirs one level down to keep the tree tidy
       }
