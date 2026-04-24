@@ -1,0 +1,43 @@
+import chalk from "chalk";
+import { loadConfig, requireApiKey } from "../config";
+import { LlmClient } from "../llm";
+import { Session } from "../session";
+import { PROMPT_DEBUG } from "../prompts";
+import { repl, println, writeToken } from "../io";
+
+/**
+ * `pmk debug [symptom]` — systematic debugging flow.
+ * Full implementation; uses the debug system prompt to enforce the
+ * "symptom → repro → hypotheses → test one → iterate" framework.
+ */
+export async function debugCommand(symptom?: string): Promise<void> {
+  const config = loadConfig();
+  requireApiKey(config);
+  const client = new LlmClient(config);
+  const session = new Session();
+
+  println(chalk.bold(`\npmk debug — model=${config.model}`));
+
+  const opener = symptom
+    ? `I'm seeing this issue: ${symptom}. Help me debug systematically.`
+    : "I'm debugging something but I'm not sure where to start. Please guide me.";
+  session.addUser(opener);
+
+  process.stdout.write(chalk.gray("assistant> "));
+  const first = await client.chat(PROMPT_DEBUG, session.history(), { onToken: writeToken });
+  println("");
+  session.addAssistant(first);
+
+  await repl(
+    async (line) => {
+      session.addUser(line);
+      process.stdout.write(chalk.gray("\nassistant> "));
+      const response = await client.chat(PROMPT_DEBUG, session.history(), {
+        onToken: writeToken,
+      });
+      println("");
+      session.addAssistant(response);
+    },
+    { prompt: "you>" },
+  );
+}
