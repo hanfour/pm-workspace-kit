@@ -4,7 +4,7 @@ import { resolveProviderOrExit } from "../llm";
 import { Session } from "../session";
 import { PROMPT_DISCUSS } from "../prompts";
 import { repl, println, writeToken } from "../io";
-import { handleParkCommand } from "./_park-hook";
+import { handleParkCommand } from "./park-hook";
 
 /**
  * `pmk discuss [topic]` — open-ended brainstorm / Q&A.

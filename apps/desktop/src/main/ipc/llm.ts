@@ -78,6 +78,11 @@ export function registerLlmHandlers(): void {
     saveApiKey(key.trim());
   });
 
+  // One chat-in-flight per webContents sender. The renderer UI
+  // already disables Send while busy, but guard the IPC layer too so
+  // a misbehaving or compromised renderer can't spam the provider.
+  const inFlight = new Set<number>();
+
   ipcMain.handle(
     "pmk:llm:chat",
     async (
@@ -88,20 +93,26 @@ export function registerLlmHandlers(): void {
         channel: string;
       },
     ) => {
+      const senderId = event.sender.id;
+      if (inFlight.has(senderId)) {
+        throw new Error(
+          "another chat is still in flight — wait for the current response to finish",
+        );
+      }
       const provider = tryResolve();
       if (!provider) {
         throw new Error("no LLM provider available");
       }
-      const response = await provider.chat(
-        payload.systemPrompt,
-        payload.messages,
-        {
+      inFlight.add(senderId);
+      try {
+        return await provider.chat(payload.systemPrompt, payload.messages, {
           onToken: (chunk) => {
             event.sender.send(payload.channel, chunk);
           },
-        },
-      );
-      return response;
+        });
+      } finally {
+        inFlight.delete(senderId);
+      }
     },
   );
 }

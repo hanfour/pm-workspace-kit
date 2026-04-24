@@ -4,7 +4,7 @@ import { resolveProviderOrExit } from "../llm";
 import { Session } from "../session";
 import { PROMPT_TDD } from "../prompts";
 import { println, repl, writeToken } from "../io";
-import { handleParkCommand } from "./_park-hook";
+import { handleParkCommand } from "./park-hook";
 
 /**
  * `pmk tdd [feature]` — guided Red → Green → Refactor loop.
