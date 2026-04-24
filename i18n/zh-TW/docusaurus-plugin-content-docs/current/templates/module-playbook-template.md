@@ -10,7 +10,7 @@ sidebar_position: 2
 
 ---
 
-```markdown
+````markdown
 # <模組名> — Migration Playbook
 
 - **Module ID:** <domain.module_id>
@@ -136,4 +136,4 @@ sequenceDiagram
 ## 12. 相關 ADR
 - ADR-NNNN: <此設計理由>
 - 跨模組：<相關模組、契約>
-```
+````

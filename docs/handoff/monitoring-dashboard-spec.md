@@ -10,8 +10,8 @@ Every migrating module gets a dashboard with the same six blocks. Implementation
 
 - **Module**: `<domain.module_id>`
 - **Current migration stage**: read from feature flag
-- **Owner + on-call**: <link>
-- **Last incident**: <date + severity>
+- **Owner + on-call**: `<link>`
+- **Last incident**: `<date + severity>`
 
 ## Block A — Health (RED)
 
@@ -59,7 +59,7 @@ Each KPI panel in Block B should have a counterpart in the module playbook — n
 
 | Name | Trigger | Severity | Notify |
 |---|---|---|---|
-| `<module>.error_rate_high` | > 0.5% for 5m | P2 | Slack #<module>-alerts |
+| `<module>.error_rate_high` | > 0.5% for 5m | P2 | Slack `#<module>-alerts` |
 | `<module>.latency_p95_high` | > SLO × 1.5 for 10m | P2 | Slack |
 | `<module>.recon_diff_high` | > SLO for 30m | **P1** | PagerDuty |
 | `<module>.dual_write_lag` | > 5m | P2 | Slack |

@@ -51,9 +51,9 @@ const sidebars: SidebarsConfig = {
       label: "Methodology ADRs",
       items: [
         "adr/README",
-        "adr/0001-strangler-fig-protocol",
-        "adr/0002-dev-harness",
-        "adr/0003-product-decision-log",
+        "adr/strangler-fig-protocol",
+        "adr/dev-harness",
+        "adr/product-decision-log",
       ],
     },
     {

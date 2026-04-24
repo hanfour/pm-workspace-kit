@@ -8,7 +8,7 @@ sidebar_position: 2
 
 ---
 
-```markdown
+````markdown
 ## Summary
 
 <!-- 1-3 句：what + why。避免只寫 what。 -->
@@ -77,7 +77,7 @@ sidebar_position: 2
 
 **PR title 慣例**: `<type>(<scope>): <祈使句摘要>`
 範例：`feat(billing.invoice): add partial-payment handling`
-```
+````
 
 ## 用法
 

@@ -32,7 +32,7 @@ npm start
 
 建立 `docs/prds/2026-Q3-example.md`：
 
-```markdown
+````markdown
 ---
 doc_id: PRD-2026-0001
 title: 範例功能
@@ -80,7 +80,7 @@ npm run traceability:matrix
 
 ```bash
 cp docs/templates/adr-template.md docs/adr/0001-your-decision.md
-```
+````
 
 編輯 Context、Decision、Consequences、Alternatives Considered。在 PRD 的 `related.adr: [ADR-0001]` 反向連過來。
 

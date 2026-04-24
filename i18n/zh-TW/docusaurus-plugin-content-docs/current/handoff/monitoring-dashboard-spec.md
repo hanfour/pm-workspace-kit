@@ -10,8 +10,8 @@ sidebar_position: 5
 
 - **Module**: `<domain.module_id>`
 - **現階段**：從 feature flag 讀
-- **Owner + on-call**：<連結>
-- **最近事故**：<日期 + severity>
+- **Owner + on-call**：`<連結>`
+- **最近事故**：`<日期 + severity>`
 
 ## Block A — Health（RED）
 

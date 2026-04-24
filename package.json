@@ -21,8 +21,8 @@
     "confluence:list": "node scripts/confluence-sync.js list"
   },
   "dependencies": {
-    "@docusaurus/core": "3.6.3",
-    "@docusaurus/preset-classic": "3.6.3",
+    "@docusaurus/core": "3.10.0",
+    "@docusaurus/preset-classic": "3.10.0",
     "@mdx-js/react": "^3.0.0",
     "clsx": "^2.0.0",
     "prism-react-renderer": "^2.3.0",
@@ -30,11 +30,16 @@
     "react-dom": "^18.0.0"
   },
   "devDependencies": {
-    "@docusaurus/module-type-aliases": "3.6.3",
-    "@docusaurus/tsconfig": "3.6.3",
-    "@docusaurus/types": "3.6.3",
+    "@docusaurus/module-type-aliases": "3.10.0",
+    "@docusaurus/tsconfig": "3.10.0",
+    "@docusaurus/types": "3.10.0",
     "gray-matter": "^4.0.3",
     "typescript": "~5.6.2"
+  },
+  "overrides": {
+    "serialize-javascript": "^7.0.5",
+    "uuid": "^14.0.0",
+    "webpack": "~5.105.0"
   },
   "browserslist": {
     "production": [">0.5%", "not dead", "not op_mini all"],
@@ -45,7 +50,7 @@
     ]
   },
   "engines": {
-    "node": ">=18.0"
+    "node": ">=20.0"
   },
   "keywords": [
     "product-management",

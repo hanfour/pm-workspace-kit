@@ -8,7 +8,7 @@ Copy this file, rename to `docs/adr/NNNN-your-decision.md`, fill in each section
 
 ---
 
-```markdown
+````markdown
 # ADR-NNNN: <Decision title>
 
 - **Status:** Proposed <!-- Proposed | Accepted | Deprecated | Superseded by ADR-XXXX -->
@@ -49,4 +49,4 @@ Copy this file, rename to `docs/adr/NNNN-your-decision.md`, fill in each section
 
 - <Links to prior ADRs, external docs, benchmarks, RFCs>
 - <Relevant sections of the north-star doc>
-```
+````

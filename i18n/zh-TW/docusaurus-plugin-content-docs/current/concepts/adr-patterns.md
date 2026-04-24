@@ -10,7 +10,7 @@ Architecture Decision Records（ADR）記錄**為什麼**做這個選擇。程�
 
 ## 格式（MADR-lite）
 
-```markdown
+````markdown
 # ADR-NNNN: <決策標題>
 
 - **Status:** Proposed | Accepted | Deprecated | Superseded by ADR-XXXX
@@ -44,7 +44,7 @@ Architecture Decision Records（ADR）記錄**為什麼**做這個選擇。程�
 
 ## References
 - 連結、先前 ADR、外部文件。
-```
+````
 
 模板在 [`docs/templates/adr-template.md`](../templates/adr-template.md)。
 

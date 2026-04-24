@@ -8,7 +8,7 @@ sidebar_position: 1
 
 ---
 
-```markdown
+````markdown
 # ADR-NNNN: <決策標題>
 
 - **Status:** Proposed <!-- Proposed | Accepted | Deprecated | Superseded by ADR-XXXX -->
@@ -49,4 +49,4 @@ sidebar_position: 1
 
 - <先前 ADR、外部文件、benchmark、RFC>
 - <北極星文件相關段落>
-```
+````

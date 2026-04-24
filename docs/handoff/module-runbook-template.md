@@ -8,7 +8,7 @@ On-call playbook skeleton. Copy to `apps/<service>/<module>/RUNBOOK.md` and fill
 
 ---
 
-```markdown
+````markdown
 # <Module Name> — Runbook
 
 - **Module ID:** <domain.module_id>
@@ -145,4 +145,4 @@ Action items:
   - [ ] add runbook entry
   - [ ] add alert
 ```
-```
+````

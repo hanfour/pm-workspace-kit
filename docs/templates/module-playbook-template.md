@@ -10,7 +10,7 @@ Twelve sections. Sections 1–3 are essential in Stage 0 prep. Sections 4–8 fi
 
 ---
 
-```markdown
+````markdown
 # <Module Name> — Migration Playbook
 
 - **Module ID:** <domain.module_id>
@@ -137,4 +137,4 @@ sequenceDiagram
 ## 12. Related ADRs
 - ADR-NNNN: <why this design>
 - Cross-module: <related modules, contracts>
-```
+````

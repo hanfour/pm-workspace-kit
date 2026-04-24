@@ -8,7 +8,7 @@ On-call playbook 骨架。複製到 `apps/<service>/<module>/RUNBOOK.md` 並填�
 
 ---
 
-```markdown
+````markdown
 # <模組名> — Runbook
 
 - **Module ID:** <domain.module_id>
@@ -135,4 +135,4 @@ Action items:
   - [ ] Runbook 條目
   - [ ] Alert
 ```
-```
+````

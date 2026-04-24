@@ -8,7 +8,7 @@ Copy the block below into `.github/pull_request_template.md` in the implementati
 
 ---
 
-```markdown
+````markdown
 ## Summary
 
 <!-- 1-3 sentences: what + why. Avoid describing only what. -->
@@ -77,7 +77,7 @@ Copy the block below into `.github/pull_request_template.md` in the implementati
 
 **PR title convention**: `<type>(<scope>): <imperative summary>`  
 Example: `feat(billing.invoice): add partial-payment handling`
-```
+````
 
 ## Usage
 
