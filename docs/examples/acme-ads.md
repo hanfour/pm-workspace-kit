@@ -12,7 +12,7 @@ A fictional ad-tech company using the kit end-to-end. Shows what a real workspac
 
 ## What's in the example
 
-Under [`examples/acme-ads/`](https://github.com/YOUR-ORG/pm-workspace-kit/tree/main/examples/acme-ads) in the repo:
+Under [`examples/acme-ads/`](https://github.com/hanfourhuang/pm-workspace-kit/tree/main/examples/acme-ads) in the repo:
 
 ```
 examples/acme-ads/
@@ -34,7 +34,7 @@ examples/acme-ads/
 
 ### 1. The PRD with real front-matter
 
-[`docs/prds/2026-Q2-customer-onboarding-prd.md`](https://github.com/YOUR-ORG/pm-workspace-kit/tree/main/examples/acme-ads/docs/prds/2026-Q2-customer-onboarding-prd.md) shows a PRD that:
+[`docs/prds/2026-Q2-customer-onboarding-prd.md`](https://github.com/hanfourhuang/pm-workspace-kit/tree/main/examples/acme-ads/docs/prds/2026-Q2-customer-onboarding-prd.md) shows a PRD that:
 
 - Uses the required `doc_id`, `related.requirement`, `related.module` fields
 - Cites an ADR (`ADR-0004`) that drives the technical direction
@@ -44,7 +44,7 @@ Run `npm run traceability:matrix` against the example directory to see the graph
 
 ### 2. The module playbook in context
 
-[`docs/architecture/modules/crm-customer-migration.md`](https://github.com/YOUR-ORG/pm-workspace-kit/tree/main/examples/acme-ads/docs/architecture/modules/crm-customer-migration.md) fills in the 12-section template for the `crm.customer` module. Note:
+[`docs/architecture/modules/crm-customer-migration.md`](https://github.com/hanfourhuang/pm-workspace-kit/tree/main/examples/acme-ads/docs/architecture/modules/crm-customer-migration.md) fills in the 12-section template for the `crm.customer` module. Note:
 
 - The dependency diagram links to the neighboring modules (`billing`, `campaigns`)
 - Stage 0 checklist items are concrete (ontology gap, migration script, feature flag)
@@ -53,11 +53,11 @@ Run `npm run traceability:matrix` against the example directory to see the graph
 
 ### 3. The tech ADR
 
-[`docs/adr/0004-go-monolith.md`](https://github.com/YOUR-ORG/pm-workspace-kit/tree/main/examples/acme-ads/docs/adr/0004-go-monolith.md) is a sample **technical** ADR (following the 0001–0003 methodology ones). Shows the shape of an ADR where the Deciders, Alternatives, and Consequences are fully spelled out.
+[`docs/adr/0004-go-monolith.md`](https://github.com/hanfourhuang/pm-workspace-kit/tree/main/examples/acme-ads/docs/adr/0004-go-monolith.md) is a sample **technical** ADR (following the 0001–0003 methodology ones). Shows the shape of an ADR where the Deciders, Alternatives, and Consequences are fully spelled out.
 
 ### 4. The ontology
 
-[`ontology/systems/crm.yaml`](https://github.com/YOUR-ORG/pm-workspace-kit/tree/main/examples/acme-ads/ontology/systems/crm.yaml) — three entities with fields, associations, PII tiers, and business rules. Small enough to read in one sitting; large enough to show the shape.
+[`ontology/systems/crm.yaml`](https://github.com/hanfourhuang/pm-workspace-kit/tree/main/examples/acme-ads/ontology/systems/crm.yaml) — three entities with fields, associations, PII tiers, and business rules. Small enough to read in one sitting; large enough to show the shape.
 
 ## Running the example
 

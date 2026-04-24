@@ -15,7 +15,7 @@ A 10-minute walkthrough: clone, install, write your first traceable PRD, watch t
 ## 1. Clone and install
 
 ```bash
-git clone https://github.com/YOUR-ORG/pm-workspace-kit.git my-workspace
+git clone https://github.com/hanfourhuang/pm-workspace-kit.git my-workspace
 cd my-workspace
 npm install
 ```
@@ -95,7 +95,7 @@ Opens (or creates) `docs/traceability-matrix.md`:
 - **Section 4**: reverse lookup — who references this ADR / module / architecture chapter
 - **Section 5**: orphans — docs that cite nothing, docs no-one cites
 
-Check this file into Git. The [traceability-check workflow](https://github.com/YOUR-ORG/pm-workspace-kit/blob/main/.github/workflows/traceability-check.yml) regenerates it on every PR and fails if the committed version is stale.
+Check this file into Git. The [traceability-check workflow](https://github.com/hanfourhuang/pm-workspace-kit/blob/main/.github/workflows/traceability-check.yml) regenerates it on every PR and fails if the committed version is stale.
 
 ## 6. Write your first ADR
 

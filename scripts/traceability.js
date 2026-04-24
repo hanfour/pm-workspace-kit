@@ -34,7 +34,19 @@ const fs = require("fs");
 const path = require("path");
 const matter = require("gray-matter");
 
-const ROOT = path.resolve(__dirname, "..");
+// ROOT defaults to the repo containing this script. Override with
+// --cwd=<path> on the command line, useful for running the kit's
+// scripts against a sub-repo like examples/acme-ads.
+function resolveRoot(argv) {
+  const flag = argv.find((a) => a.startsWith("--cwd="));
+  if (flag) {
+    const custom = flag.slice("--cwd=".length);
+    return path.resolve(process.cwd(), custom);
+  }
+  return path.resolve(__dirname, "..");
+}
+
+const ROOT = resolveRoot(process.argv.slice(2));
 const SCAN_DIRS = [
   "docs/prds",
   "docs/specs",
@@ -126,9 +138,10 @@ function validateDoc(doc) {
 }
 
 function cmdCheck(argv) {
+  const fileArgs = argv.filter((a) => !a.startsWith("--"));
   const targets =
-    argv.length > 0
-      ? argv.map((f) => path.resolve(ROOT, f))
+    fileArgs.length > 0
+      ? fileArgs.map((f) => path.resolve(ROOT, f))
       : SCAN_DIRS.flatMap((d) => walk(path.join(ROOT, d)));
 
   let failed = 0;
@@ -442,12 +455,22 @@ function cmdMatrix() {
 }
 
 function main() {
-  const [cmd, ...rest] = process.argv.slice(2);
+  const args = process.argv.slice(2).filter((a) => !a.startsWith("--cwd="));
+  const [cmd, ...rest] = args;
   if (cmd === "check") return cmdCheck(rest);
   if (cmd === "matrix") return cmdMatrix();
   console.error("Usage:");
-  console.error("  node scripts/traceability.js matrix");
-  console.error("  node scripts/traceability.js check [file...]");
+  console.error("  node scripts/traceability.js matrix [--cwd=<path>]");
+  console.error(
+    "  node scripts/traceability.js check [--cwd=<path>] [file...]",
+  );
+  console.error("");
+  console.error(
+    "  --cwd=<path>  Override the repo root. Defaults to the script's parent.",
+  );
+  console.error(
+    "                Example: --cwd=examples/acme-ads to validate the bundled example.",
+  );
   process.exit(2);
 }
 
