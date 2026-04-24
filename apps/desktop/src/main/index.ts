@@ -1,6 +1,8 @@
 import { join } from "node:path";
 import { BrowserWindow, app, shell } from "electron";
 import { electronApp, is, optimizer } from "@electron-toolkit/utils";
+import { registerIpcHandlers } from "./ipc";
+import { findRepoRoot } from "./workspace";
 
 function createMainWindow(): BrowserWindow {
   const win = new BrowserWindow({
@@ -46,6 +48,8 @@ app.whenReady().then(() => {
   app.on("browser-window-created", (_event, window) => {
     optimizer.watchWindowShortcuts(window);
   });
+
+  registerIpcHandlers(findRepoRoot());
 
   createMainWindow();
 

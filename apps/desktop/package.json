@@ -14,10 +14,14 @@
   "dependencies": {
     "@electron-toolkit/preload": "^3.0.1",
     "@electron-toolkit/utils": "^4.0.0",
+    "@monaco-editor/react": "^4.7.0",
     "@pmk/cli": "*",
     "@pmk/core": "*",
     "@pmk/rag": "*",
-    "@pmk/shared": "*"
+    "@pmk/shared": "*",
+    "gray-matter": "^4.0.3",
+    "monaco-editor": "^0.55.1",
+    "simple-git": "^3.36.0"
   },
   "devDependencies": {
     "@types/react": "^19.0.0",
