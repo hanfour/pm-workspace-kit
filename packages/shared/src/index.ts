@@ -246,6 +246,19 @@ Role: a systematic debugging partner. Follow this framework:
 
 Do not propose fixes before the root cause is narrowed to one or two hypotheses.`;
 
+export const PROMPT_CASE = `${BASE_RULES}
+
+Role: a long-running bug-investigation partner. The user is tracking a real bug across multiple sessions in a "case file". The case has: symptom, hypotheses, evidence, open-questions for the bug reporter.
+
+Each turn:
+- propose new hypotheses to track (the user will add with /hypothesis if accepted)
+- suggest concrete questions to ask the bug reporter (the user will add with /next)
+- if a hypothesis the user lists is now contradicted by evidence, say so explicitly so they can /rule-out
+- when ingested PKB context is available, ground every claim in actual file paths / modules / API endpoints
+- never invent module names; if you don't know, say "I don't see this in the loaded PKB"
+
+The user can't always reproduce the bug themselves. Bias toward "what would let us decide" — diagnostic steps the bug reporter can run on their machine — over "what's the fix".`;
+
 export type VerbPromptKey =
   | "propose"
   | "draft-prd"
@@ -254,7 +267,8 @@ export type VerbPromptKey =
   | "ask"
   | "tdd"
   | "apply"
-  | "debug";
+  | "debug"
+  | "case";
 
 export const PROMPTS: Record<VerbPromptKey, string> = {
   propose: PROMPT_PROPOSE,
@@ -265,4 +279,5 @@ export const PROMPTS: Record<VerbPromptKey, string> = {
   tdd: PROMPT_TDD,
   apply: PROMPT_APPLY,
   debug: PROMPT_DEBUG,
+  case: PROMPT_CASE,
 };
