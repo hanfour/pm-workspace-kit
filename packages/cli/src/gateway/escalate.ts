@@ -24,6 +24,16 @@ export interface EscalateRequest {
 
 const FENCE_RE = /```escalate\n([\s\S]*?)```/;
 
+/**
+ * Restrict the LLM-supplied repo hint to a safe subset of characters.
+ * Mirrors `safeScope` so traversal sequences like "../../etc" can't
+ * survive even one parsing layer.
+ */
+function safeRepoHint(s: string): string | undefined {
+  const cleaned = s.replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 64);
+  return cleaned || undefined;
+}
+
 export function parseEscalate(response: string): EscalateRequest | undefined {
   const fence = FENCE_RE.exec(response);
   if (!fence) return undefined;
@@ -37,13 +47,13 @@ export function parseEscalate(response: string): EscalateRequest | undefined {
     const m = /^([a-z-]+)\s*:\s*(.+)$/.exec(line);
     if (!m) continue;
     const [, key, value] = m;
-    if (key === "repo" && repo === undefined) repo = value.trim();
+    if (key === "repo" && repo === undefined) repo = safeRepoHint(value.trim());
     else if (key === "question" && question === undefined) {
       question = value.trim();
     } else if (key === "reason" && reason === undefined) reason = value.trim();
   }
   if (!question) return undefined;
-  return { repo: repo || undefined, question, reason };
+  return { repo, question, reason };
 }
 
 export function stripEscalateBlock(response: string): string {

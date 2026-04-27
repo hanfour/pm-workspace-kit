@@ -241,7 +241,7 @@ reason: <one-line: why neither PKB nor mra-ask suffices>
 
 Rules for the escalate block:
 - Use only when neither PKB nor mra-ask can answer. Don't escalate questions that are answerable from code — try mra-ask first.
-- Don't emit both \`mra-ask\` AND \`escalate\` in the same response. Pick one.
+- Within a single response: pick \`mra-ask\` OR \`escalate\`, not both. (After an mra-ask round comes back, if the mra answer is still insufficient, you may emit \`escalate\` in the next-round synthesis.)
 - The prose above the block should briefly say "I'm asking <X> for help" and what you've already ruled out — not a fabricated answer.`;
 
 /**

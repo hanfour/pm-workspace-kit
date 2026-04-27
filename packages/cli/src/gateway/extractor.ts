@@ -7,7 +7,7 @@
  */
 
 import type { LlmProvider } from "../llm";
-import { generateAtomId, type KnowledgeAtom } from "./knowledge";
+import { generateAtomId, safeScope, type KnowledgeAtom } from "./knowledge";
 
 const EXTRACTOR_PROMPT = `You are a knowledge-base curator. You receive a Slack thread snippet:
 - The original question someone asked pmk
@@ -29,6 +29,11 @@ Rules:
 - No invented detail. If something is uncertain in the answer, don't claim certainty in the summary.
 - Output is parsed by JSON.parse; nothing outside the braces.`;
 
+/** How long the extractor LLM call has before we give up. Matches the
+ * mra-ask cap so a stuck provider can't hold the channel inFlight
+ * lock indefinitely. */
+const EXTRACT_TIMEOUT_MS = 120_000;
+
 export interface ExtractInput {
   question: string;
   reason?: string;
@@ -40,8 +45,9 @@ export interface ExtractInput {
 
 /**
  * Run the extractor LLM call and assemble a KnowledgeAtom. Returns
- * undefined if the LLM output can't be parsed (callers should log and
- * skip — better to drop one atom than to corrupt the store).
+ * undefined if the LLM output can't be parsed or the call times out
+ * (callers should log and skip — better to drop one atom than to
+ * corrupt the store or block forever).
  */
 export async function extractKnowledgeAtom(
   llm: LlmProvider,
@@ -56,11 +62,22 @@ export async function extractKnowledgeAtom(
   ]
     .filter(Boolean)
     .join("\n");
-  const out = await llm.chat(
-    EXTRACTOR_PROMPT,
-    [{ role: "user", content: userMessage }],
-    { onToken: () => {} },
-  );
+
+  let out: string;
+  try {
+    out = await withTimeout(
+      llm.chat(
+        EXTRACTOR_PROMPT,
+        [{ role: "user", content: userMessage }],
+        { onToken: () => {} },
+      ),
+      EXTRACT_TIMEOUT_MS,
+    );
+  } catch {
+    // Timeout or provider error — caller logs and moves on.
+    return undefined;
+  }
+
   const json = extractJsonBlob(out);
   if (!json) return undefined;
   let parsed: { question?: unknown; summary?: unknown; tags?: unknown };
@@ -85,7 +102,7 @@ export async function extractKnowledgeAtom(
   return {
     id: generateAtomId(parsed.question),
     createdAt: Date.now(),
-    scope: input.scope || "general",
+    scope: safeScope(input.scope),
     question: parsed.question.trim(),
     answer: input.expertAnswer.trim(),
     summary: parsed.summary.trim(),
@@ -95,6 +112,25 @@ export async function extractKnowledgeAtom(
       contributorUserId: input.contributorUserId,
     },
   };
+}
+
+function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(
+      () => reject(new Error(`extractor timed out after ${ms}ms`)),
+      ms,
+    );
+    p.then(
+      (v) => {
+        clearTimeout(timer);
+        resolve(v);
+      },
+      (err) => {
+        clearTimeout(timer);
+        reject(err);
+      },
+    );
+  });
 }
 
 /**

@@ -12,6 +12,8 @@ import {
 import {
   channelCasesDir,
   clearThreadEscalation,
+  listRecentChannels,
+  listRecentUsers,
   loadChannelChatSession,
   loadChannelMeta,
   loadThreadEscalation,
@@ -46,7 +48,14 @@ import {
 } from "../../adapters/mra";
 import { parseMraAsk, stripMraAskBlock } from "../mra-ask";
 import { parseEscalate, stripEscalateBlock } from "../escalate";
-import { formatAtomsForInjection, saveAtom, searchAtoms } from "../knowledge";
+import {
+  formatAtomsForInjection,
+  saveAtom,
+  searchAtoms,
+  type KnowledgeAtom,
+} from "../knowledge";
+
+type KnowledgeAtomLike = Pick<KnowledgeAtom, "question" | "answer" | "summary">;
 import { extractKnowledgeAtom } from "../extractor";
 import * as path from "node:path";
 import * as fs from "node:fs";
@@ -59,6 +68,21 @@ interface FreeChatSession {
   messages: ChatMessage[];
   turns: number;
   approxTokens: number;
+}
+
+/**
+ * Cap for `seenEnvelopes`. Slack retries any un-acked event up to 3
+ * times within ~30s; 2 000 entries gives a generous window even on
+ * noisy workspaces while keeping memory bounded for long-running hosts.
+ */
+const SEEN_ENVELOPES_MAX = 2000;
+
+/** Approximate token cost from a list of messages. ~3.5 chars/token,
+ * matching the existing per-turn heuristic. */
+function approxTokensFor(messages: ChatMessage[]): number {
+  let total = 0;
+  for (const m of messages) total += m.content.length;
+  return Math.ceil(total / 3.5);
 }
 
 export interface SlackBotInfo {
@@ -85,8 +109,10 @@ export class SlackAdapter {
   private lastSeenAt?: number;
   private llm: LlmProvider;
   private inFlight = new Set<string>();
-  /** Envelope IDs we've already accepted; protects against Slack retries. */
-  private seenEnvelopes = new Set<string>();
+  /** Envelope IDs we've already accepted; protects against Slack retries.
+   * Bounded LRU — see {@link SEEN_ENVELOPES_MAX}. */
+  private seenEnvelopes: string[] = [];
+  private seenEnvelopeSet = new Set<string>();
 
   constructor(opts: SlackAdapterOptions) {
     if (!opts.config.slack.appToken || !opts.config.slack.botToken) {
@@ -172,12 +198,12 @@ export class SlackAdapter {
     // Slack retry of an event we already accepted? Drop silently —
     // we've either replied or are still processing the original.
     if (
-      this.seenEnvelopes.has(payload.envelope_id) ||
+      this.seenEnvelopeSet.has(payload.envelope_id) ||
       (payload.retry_num ?? 0) > 0
     ) {
       return;
     }
-    this.seenEnvelopes.add(payload.envelope_id);
+    this.rememberEnvelope(payload.envelope_id);
 
     if (this.inFlight.has(userId)) {
       await this.web.chat.postMessage({
@@ -239,12 +265,12 @@ export class SlackAdapter {
     const event = payload?.event;
     if (!event || !this.botInfo) return;
     if (
-      this.seenEnvelopes.has(payload.envelope_id) ||
+      this.seenEnvelopeSet.has(payload.envelope_id) ||
       (payload.retry_num ?? 0) > 0
     ) {
       return;
     }
-    this.seenEnvelopes.add(payload.envelope_id);
+    this.rememberEnvelope(payload.envelope_id);
     const channelId = event.channel;
     const userId = event.user;
     // replyThreadTs anchors the bot's response. sessionThreadTs (raw
@@ -382,18 +408,20 @@ export class SlackAdapter {
     // (not persisted to session.messages, so old retrieved answers
     // don't keep stacking up turn after turn).
     const retrieved = searchAtoms(text, { limit: 3 });
-    const retrievalContext = formatAtomsForInjection(retrieved);
-    const llmMessages: ChatMessage[] = retrievalContext
+    const retrievalPrefix: ChatMessage[] = retrieved.length
       ? [
-          { role: "user", content: retrievalContext },
+          { role: "user", content: formatAtomsForInjection(retrieved) },
           {
             role: "assistant",
             content: "收到，這些補充當作 ground truth。",
           },
-          ...session.messages,
-          { role: "user", content: text },
         ]
-      : [...session.messages, { role: "user", content: text }];
+      : [];
+    const llmMessages: ChatMessage[] = [
+      ...retrievalPrefix,
+      ...session.messages,
+      { role: "user", content: text },
+    ];
 
     session.messages.push({ role: "user", content: text });
     session.turns += 1;
@@ -429,6 +457,7 @@ export class SlackAdapter {
         channelId,
         placeholderTs: String(placeholder.ts),
         session,
+        retrievalPrefix,
         firstResponse: full,
         request: askReq,
         systemPrompt,
@@ -437,12 +466,15 @@ export class SlackAdapter {
 
     // If the model asked to escalate to a human IT/domain expert, fan
     // out the @-mention before showing the placeholder reply, and
-    // remember the thread so the next IT reply gets absorbed.
+    // remember the thread so the next IT reply gets absorbed. The
+    // asker is recorded so the post-absorb synthesis can reply to
+    // them once IT answers.
     const escReq = parseEscalate(full);
     if (escReq) {
       await this.handleEscalation({
         channelId,
         threadTs,
+        askerUserId: userId,
         request: escReq,
       });
     }
@@ -451,7 +483,7 @@ export class SlackAdapter {
       stripMraAskBlock(stripCaseUpdateBlock(full)),
     );
     session.messages.push({ role: "assistant", content: visible });
-    session.approxTokens += Math.ceil((text.length + visible.length) / 3.5);
+    session.approxTokens = approxTokensFor(session.messages);
     saveSession(session);
 
     await this.web.chat.update({
@@ -472,9 +504,10 @@ export class SlackAdapter {
   private async handleEscalation(args: {
     channelId: string;
     threadTs: string;
+    askerUserId: string;
     request: { repo?: string; question: string; reason?: string };
   }): Promise<void> {
-    const { channelId, threadTs, request } = args;
+    const { channelId, threadTs, askerUserId, request } = args;
     const pool = pickEscalationPool(this.config, request.repo);
     if (pool.length === 0) {
       this.onLog(
@@ -503,6 +536,7 @@ export class SlackAdapter {
       reason: request.reason,
       pendingSince: Date.now(),
       mentionedUserIds: pool,
+      askerUserId,
     });
   }
 
@@ -527,6 +561,9 @@ export class SlackAdapter {
       // people pmk explicitly tagged.
       return false;
     }
+    // Claim the marker EAGERLY. Without this, two fast IT replies
+    // could both pass the gate and trigger duplicate extraction.
+    clearThreadEscalation(channelId, threadTs);
     this.onLog(
       `escalation reply received from ${contributorUserId} in ${channelId}/${threadTs}; extracting`,
     );
@@ -560,9 +597,68 @@ export class SlackAdapter {
         .catch(() => {});
     } catch (err) {
       this.onLog(`failed to save atom: ${(err as Error).message}`);
+      return true;
     }
-    clearThreadEscalation(channelId, threadTs);
+    // Synthesised follow-up: tag the original asker with the answer
+    // so they don't have to re-ask. Best-effort — failures here are
+    // logged but don't fail the absorb.
+    await this.postSynthesisedAnswerForAsker({
+      channelId,
+      threadTs,
+      askerUserId: esc.askerUserId,
+      atom,
+    }).catch((err) =>
+      this.onLog(`post-absorb synthesis failed: ${(err as Error).message}`),
+    );
     return true;
+  }
+
+  /**
+   * After a fresh atom lands, ping the original asker (if known) with
+   * a one-shot synthesised answer in audience-appropriate tone, so
+   * they don't need to ask the same question a second time.
+   */
+  private async postSynthesisedAnswerForAsker(args: {
+    channelId: string;
+    threadTs: string;
+    askerUserId?: string;
+    atom: KnowledgeAtomLike;
+  }): Promise<void> {
+    const { channelId, threadTs, askerUserId, atom } = args;
+    if (!askerUserId) return;
+    const audience = pickAudience(this.config, askerUserId);
+    const systemPrompt = pickGatewayPrompt(audience);
+    const synthMessage =
+      `IT 同事剛在這條 thread 補上了答案，請依以下事實 synthesise 一段回覆給原本提問的同事 <@${askerUserId}>。語氣依你的 audience prompt。\n\n` +
+      `原始問題：${atom.question}\n\n` +
+      `IT 答案（verbatim）：\n${atom.answer}\n\n` +
+      `Summary：${atom.summary ?? "(none)"}\n\n` +
+      `不要再 emit 任何 mra-ask 或 escalate block；這只是把答案傳給原問者。`;
+    let reply: string;
+    try {
+      reply = await this.llm.chat(
+        systemPrompt,
+        [{ role: "user", content: synthMessage }],
+        { onToken: () => {} },
+      );
+    } catch (err) {
+      this.onLog(`synth llm call failed: ${(err as Error).message}`);
+      return;
+    }
+    const visible = stripEscalateBlock(
+      stripMraAskBlock(stripCaseUpdateBlock(reply)),
+    );
+    await this.web.chat
+      .postMessage({
+        channel: channelId,
+        thread_ts: threadTs,
+        text: `<@${askerUserId}> ${truncateForSlack(markdownToMrkdwn(visible))}`,
+      })
+      .catch((err) =>
+        this.onLog(
+          `failed to post synthesised follow-up: ${(err as Error).message}`,
+        ),
+      );
   }
 
   /**
@@ -579,6 +675,9 @@ export class SlackAdapter {
     channelId: string;
     placeholderTs: string;
     session: FreeChatSession;
+    /** Retrieval atoms injected into the first LLM call; passed
+     * through so the synthesis round still sees them. */
+    retrievalPrefix: ChatMessage[];
     firstResponse: string;
     request: { repo: string; question: string };
     systemPrompt: string;
@@ -587,6 +686,7 @@ export class SlackAdapter {
       channelId,
       placeholderTs,
       session,
+      retrievalPrefix,
       firstResponse,
       request,
       systemPrompt,
@@ -596,6 +696,7 @@ export class SlackAdapter {
       // Surface as a synthetic mra failure so the model can degrade gracefully.
       return await this.synthesiseAfterMra({
         session,
+        retrievalPrefix,
         firstResponse,
         request,
         systemPrompt,
@@ -631,6 +732,7 @@ export class SlackAdapter {
 
     return await this.synthesiseAfterMra({
       session,
+      retrievalPrefix,
       firstResponse,
       request,
       result,
@@ -646,12 +748,20 @@ export class SlackAdapter {
    */
   private async synthesiseAfterMra(args: {
     session: FreeChatSession;
+    retrievalPrefix: ChatMessage[];
     firstResponse: string;
     request: { repo: string; question: string };
     result: { ok: boolean; stdout: string; stderr: string; reason?: string };
     systemPrompt: string;
   }): Promise<string> {
-    const { session, firstResponse, request, result, systemPrompt } = args;
+    const {
+      session,
+      retrievalPrefix,
+      firstResponse,
+      request,
+      result,
+      systemPrompt,
+    } = args;
     session.messages.push({ role: "assistant", content: firstResponse });
     const mraMessage = result.ok
       ? [
@@ -667,9 +777,13 @@ export class SlackAdapter {
         ].join("\n");
     session.messages.push({ role: "user", content: mraMessage });
 
-    return await this.llm.chat(systemPrompt, session.messages, {
-      onToken: () => {},
-    });
+    // Retrieval atoms come back here too — synthesis benefits from
+    // both the retrieved knowledge AND the fresh mra-result.
+    return await this.llm.chat(
+      systemPrompt,
+      [...retrievalPrefix, ...session.messages],
+      { onToken: () => {} },
+    );
   }
 
   // ────────────────────────── channel logic ──────────────────────────
@@ -864,6 +978,16 @@ export class SlackAdapter {
     }
   }
 
+  /** Bounded-LRU insert into the envelope dedup cache. */
+  private rememberEnvelope(envelopeId: string): void {
+    this.seenEnvelopeSet.add(envelopeId);
+    this.seenEnvelopes.push(envelopeId);
+    if (this.seenEnvelopes.length > SEEN_ENVELOPES_MAX) {
+      const evict = this.seenEnvelopes.shift();
+      if (evict !== undefined) this.seenEnvelopeSet.delete(evict);
+    }
+  }
+
   // ─────────────────────────── broadcasts ───────────────────────────
 
   private async broadcastOffline(): Promise<void> {
@@ -880,8 +1004,6 @@ export class SlackAdapter {
 
   private async broadcast(text: string): Promise<void> {
     // Recently-active DMs
-    const { listRecentUsers, listRecentChannels } =
-      await import("../session-store");
     const userIds = listRecentUsers(24);
     for (const uid of userIds) {
       try {

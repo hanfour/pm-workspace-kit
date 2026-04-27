@@ -48,11 +48,15 @@ import {
 import {
   formatAtomsForInjection,
   generateAtomId,
+  knowledgeRoot,
   loadAtoms,
+  safeScope,
   saveAtom,
   searchAtoms,
   slugifyQuestion,
 } from "../src/gateway/knowledge";
+import { extractKnowledgeAtom } from "../src/gateway/extractor";
+import type { LlmProvider } from "../src/llm";
 
 const ORIG_HOME = process.env.HOME;
 const ORIG_APP_TOKEN = process.env.PMK_SLACK_APP_TOKEN;
@@ -648,6 +652,161 @@ describe("knowledge store", () => {
 
   it("formatAtomsForInjection returns empty string when no atoms", () => {
     assert.equal(formatAtomsForInjection([]), "");
+  });
+
+  it("safeScope rejects path traversal", () => {
+    assert.equal(safeScope("../../etc/passwd"), "etc-passwd");
+    assert.equal(safeScope("../foo"), "foo");
+    assert.equal(safeScope("./.."), "general");
+    assert.equal(safeScope(""), "general");
+    assert.equal(safeScope(undefined), "general");
+    assert.equal(safeScope("erp"), "erp");
+    assert.equal(safeScope("repo-with-dash"), "repo-with-dash");
+  });
+
+  it("saveAtom sanitises a malicious scope so files stay under knowledge root", () => {
+    saveAtom({
+      id: generateAtomId("evil"),
+      createdAt: 1700000000000,
+      scope: "../../tmp/oops",
+      question: "evil?",
+      answer: "should never escape sandbox",
+      summary: "x",
+      tags: [],
+      source: { threadKey: "T1", contributorUserId: "U1" },
+    });
+    // The escaped target should not exist…
+    assert.equal(fs.existsSync(path.join(tmpHome, "tmp", "oops")), false);
+    // …and the atom should land under the sanitised scope name.
+    const sanitisedDir = path.join(knowledgeRoot(), "tmp-oops");
+    assert.equal(fs.existsSync(sanitisedDir), true);
+    const atoms = loadAtoms({ scope: "tmp-oops" });
+    assert.equal(atoms.length, 1);
+    assert.equal(atoms[0].scope, "tmp-oops");
+  });
+
+  it("parseEscalate strips path-traversal characters from repo", () => {
+    const r = parseEscalate("```escalate\nrepo: ../../etc\nquestion: q\n```");
+    assert.ok(r);
+    // path separators stripped, leaving safe ASCII
+    assert.equal(r?.repo, "etc");
+  });
+
+  it("atom round-trips with newlines and quotes in fields", () => {
+    saveAtom({
+      id: generateAtomId("multiline"),
+      createdAt: 1700000000000,
+      scope: "general",
+      question: 'Question with "quotes" and a colon: like this',
+      answer: 'Line one.\nLine two with "quotes".\nLine three: with a colon.',
+      summary: 'Summary with "quotes"\nand a newline.',
+      tags: ["multiline", "quotes"],
+      source: { threadKey: "T1", contributorUserId: "U1" },
+    });
+    const atoms = loadAtoms({ scope: "general" });
+    assert.equal(atoms.length, 1);
+    assert.match(atoms[0].question, /quotes/);
+    assert.match(atoms[0].answer, /Line one/);
+    assert.match(atoms[0].answer, /Line three/);
+  });
+});
+
+describe("extractKnowledgeAtom", () => {
+  let tmpHome: string;
+  beforeEach(() => {
+    tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), "pmk-extract-"));
+    process.env.HOME = tmpHome;
+  });
+  afterEach(() => {
+    fs.rmSync(tmpHome, { recursive: true, force: true });
+    if (ORIG_HOME !== undefined) process.env.HOME = ORIG_HOME;
+  });
+
+  function stubLlm(reply: string): LlmProvider {
+    return {
+      name: "anthropic-api",
+      displayName: "stub",
+      async chat() {
+        return reply;
+      },
+    };
+  }
+
+  it("parses a clean JSON reply into an atom", async () => {
+    const llm = stubLlm(
+      JSON.stringify({
+        question: "What is X?",
+        summary: "X is a thing.",
+        tags: ["tag1", "tag2"],
+      }),
+    );
+    const atom = await extractKnowledgeAtom(llm, {
+      question: "what is X",
+      expertAnswer: "X is a thing in our system.",
+      scope: "erp",
+      threadKey: "C1:t1",
+      contributorUserId: "U_IT1",
+    });
+    assert.ok(atom);
+    assert.equal(atom?.question, "What is X?");
+    assert.equal(atom?.summary, "X is a thing.");
+    assert.deepEqual(atom?.tags, ["tag1", "tag2"]);
+    assert.equal(atom?.scope, "erp");
+    assert.equal(atom?.source.contributorUserId, "U_IT1");
+  });
+
+  it("salvages JSON wrapped in a fenced code block", async () => {
+    const llm = stubLlm(
+      'Sure, here:\n```json\n{ "question": "Q?", "summary": "S.", "tags": ["t"] }\n```',
+    );
+    const atom = await extractKnowledgeAtom(llm, {
+      question: "q",
+      expertAnswer: "a",
+      scope: "general",
+      threadKey: "C:t",
+      contributorUserId: "U",
+    });
+    assert.ok(atom);
+    assert.equal(atom?.summary, "S.");
+  });
+
+  it("returns undefined on malformed JSON", async () => {
+    const llm = stubLlm("not json at all");
+    const atom = await extractKnowledgeAtom(llm, {
+      question: "q",
+      expertAnswer: "a",
+      scope: "general",
+      threadKey: "C:t",
+      contributorUserId: "U",
+    });
+    assert.equal(atom, undefined);
+  });
+
+  it("returns undefined on missing required field", async () => {
+    const llm = stubLlm(JSON.stringify({ question: "Q?" }));
+    const atom = await extractKnowledgeAtom(llm, {
+      question: "q",
+      expertAnswer: "a",
+      scope: "general",
+      threadKey: "C:t",
+      contributorUserId: "U",
+    });
+    assert.equal(atom, undefined);
+  });
+
+  it("sanitises malicious scope on output", async () => {
+    const llm = stubLlm(
+      JSON.stringify({ question: "Q?", summary: "S.", tags: [] }),
+    );
+    const atom = await extractKnowledgeAtom(llm, {
+      question: "q",
+      expertAnswer: "a",
+      scope: "../../tmp/evil",
+      threadKey: "C:t",
+      contributorUserId: "U",
+    });
+    assert.ok(atom);
+    assert.equal(atom?.scope, "tmp-evil");
   });
 });
 

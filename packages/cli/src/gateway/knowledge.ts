@@ -13,6 +13,7 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import matter from "gray-matter";
 
 export interface KnowledgeAtom {
   id: string;
@@ -39,8 +40,29 @@ export function knowledgeRoot(): string {
   return path.join(os.homedir(), ".pmk", "knowledge");
 }
 
+/**
+ * Sanitise an LLM-supplied scope name down to a single safe path
+ * segment. The model emits `repo: <X>` in escalate blocks; without
+ * this guard a prompt-injected `repo: ../../tmp/foo` would let the
+ * atom file land outside the knowledge root.
+ *
+ * Allowed characters: ASCII letters, digits, dash, underscore.
+ * Dots stripped entirely (closes both `.` / `..` traversal and
+ * dotted-segment confusion). Capped at 64 chars. Falls back to
+ * "general" when nothing valid survives.
+ */
+export function safeScope(scope: string | undefined): string {
+  if (!scope) return "general";
+  const cleaned = scope
+    .replace(/[^a-zA-Z0-9_-]/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 64);
+  return cleaned || "general";
+}
+
 function scopeDir(scope: string): string {
-  return path.join(knowledgeRoot(), scope || "general");
+  return path.join(knowledgeRoot(), safeScope(scope));
 }
 
 function atomFile(atom: Pick<KnowledgeAtom, "id" | "scope">): string {
@@ -71,29 +93,31 @@ export function generateAtomId(question: string): string {
   return `${stamp}-${suffix}-${slugifyQuestion(question, 30)}`;
 }
 
-function escapeYaml(s: string): string {
-  return s.replace(/"/g, '\\"');
+interface AtomFrontMatter {
+  id: string;
+  createdAt: number;
+  scope: string;
+  question: string;
+  summary?: string;
+  tags: string[];
+  source: { threadKey: string; contributorUserId: string };
 }
 
 function renderAtomMarkdown(atom: KnowledgeAtom): string {
-  const fm = [
-    "---",
-    `id: ${atom.id}`,
-    `createdAt: ${atom.createdAt}`,
-    `scope: ${atom.scope}`,
-    `question: "${escapeYaml(atom.question)}"`,
-    `tags: [${atom.tags.map((t) => JSON.stringify(t)).join(", ")}]`,
-    `source:`,
-    `  threadKey: "${escapeYaml(atom.source.threadKey)}"`,
-    `  contributorUserId: ${atom.source.contributorUserId}`,
-    atom.summary ? `summary: "${escapeYaml(atom.summary)}"` : undefined,
-    "---",
-  ]
-    .filter(Boolean)
-    .join("\n");
-  return [
-    fm,
-    "",
+  // gray-matter handles all the YAML escaping (newlines, quotes,
+  // backslashes) — much safer than the hand-rolled emitter that came
+  // before. Body holds the full answer; front-matter holds the
+  // structured fields used by retrieval.
+  const data: AtomFrontMatter = {
+    id: atom.id,
+    createdAt: atom.createdAt,
+    scope: atom.scope,
+    question: atom.question,
+    tags: atom.tags,
+    source: atom.source,
+  };
+  if (atom.summary) data.summary = atom.summary;
+  const body = [
     `# ${atom.question}`,
     "",
     "## Answer",
@@ -102,55 +126,57 @@ function renderAtomMarkdown(atom: KnowledgeAtom): string {
     atom.summary ? "\n## Summary\n\n" + atom.summary.trim() : "",
     "",
   ].join("\n");
+  return matter.stringify(body, data as unknown as Record<string, unknown>);
 }
 
-/**
- * Tolerant front-matter parser — atoms are LLM-generated so we
- * accept minor format drift. Returns undefined on hard failures.
- */
 function parseAtomMarkdown(raw: string): KnowledgeAtom | undefined {
-  const m = /^---\n([\s\S]*?)\n---\n([\s\S]*)$/.exec(raw);
-  if (!m) return undefined;
-  const [, frontMatter, body] = m;
-  const get = (key: string): string | undefined => {
-    const re = new RegExp(`^${key}:\\s*(.+)$`, "m");
-    const found = re.exec(frontMatter);
-    return found ? found[1].trim().replace(/^"|"$/g, "") : undefined;
+  let parsed: ReturnType<typeof matter>;
+  try {
+    parsed = matter(raw);
+  } catch {
+    return undefined;
+  }
+  const data = parsed.data as Partial<AtomFrontMatter> & {
+    source?: { threadKey?: string; contributorUserId?: string };
   };
-  const id = get("id");
-  const createdAtStr = get("createdAt");
-  const scope = get("scope") ?? "general";
-  const question = get("question") ?? "";
-  const summary = get("summary");
-  const contributorUserId =
-    /contributorUserId:\s*(.+)/.exec(frontMatter)?.[1].trim() ?? "";
-  const threadKey =
-    /threadKey:\s*"?([^"\n]+?)"?\s*$/m.exec(frontMatter)?.[1] ?? "";
-  const tagsRaw = /tags:\s*\[([^\]]*)\]/.exec(frontMatter)?.[1] ?? "";
-  const tags = tagsRaw
-    .split(",")
-    .map((t) => t.trim().replace(/^"|"$/g, ""))
-    .filter(Boolean);
-  const answerMatch = /## Answer\n+([\s\S]*?)(?:\n## |\n*$)/.exec(body);
-  const answer = answerMatch ? answerMatch[1].trim() : body.trim();
-  if (!id || !createdAtStr) return undefined;
+  if (
+    typeof data.id !== "string" ||
+    typeof data.createdAt !== "number" ||
+    typeof data.question !== "string"
+  ) {
+    return undefined;
+  }
+  // Body holds "## Answer\n\n<answer>\n[## Summary...]"; we recover
+  // the answer from the first H2 (or fall back to the whole body
+  // when the structure drifted).
+  const answerMatch = /## Answer\n+([\s\S]*?)(?:\n## |\n*$)/.exec(
+    parsed.content,
+  );
+  const answer = answerMatch ? answerMatch[1].trim() : parsed.content.trim();
   return {
-    id,
-    createdAt: Number.parseInt(createdAtStr, 10),
-    scope,
-    question,
+    id: data.id,
+    createdAt: data.createdAt,
+    scope: safeScope(data.scope),
+    question: data.question,
     answer,
-    summary: summary || undefined,
-    tags,
-    source: { threadKey, contributorUserId },
+    summary: data.summary,
+    tags: Array.isArray(data.tags)
+      ? data.tags.filter((t): t is string => typeof t === "string")
+      : [],
+    source: {
+      threadKey: data.source?.threadKey ?? "",
+      contributorUserId: data.source?.contributorUserId ?? "",
+    },
   };
 }
 
 export function saveAtom(atom: KnowledgeAtom): string {
-  const dir = scopeDir(atom.scope);
+  // Sanitise on the way in — caller may pass an LLM-influenced scope.
+  const safe: KnowledgeAtom = { ...atom, scope: safeScope(atom.scope) };
+  const dir = scopeDir(safe.scope);
   fs.mkdirSync(dir, { recursive: true });
-  const file = atomFile(atom);
-  fs.writeFileSync(file, renderAtomMarkdown(atom), "utf8");
+  const file = atomFile(safe);
+  fs.writeFileSync(file, renderAtomMarkdown(safe), "utf8");
   return file;
 }
 
@@ -163,7 +189,7 @@ export function loadAtoms(opts: { scope?: string } = {}): KnowledgeAtom[] {
   if (!fs.existsSync(root)) return [];
   const atoms: KnowledgeAtom[] = [];
   const scopes = opts.scope
-    ? [opts.scope]
+    ? [safeScope(opts.scope)]
     : fs.readdirSync(root).filter((d) => {
         try {
           return fs.statSync(path.join(root, d)).isDirectory();
@@ -197,7 +223,8 @@ export function loadAtoms(opts: { scope?: string } = {}): KnowledgeAtom[] {
  * Scoring (per atom):
  *   - 3 points per query token that appears in question
  *   - 2 points per query token matching a tag
- *   - 1 point per query token in summary (or answer if no summary)
+ *   - 1 point per query token in summary
+ *   - 1 point per query token in answer
  */
 export function searchAtoms(
   query: string,
@@ -227,21 +254,28 @@ export function searchAtoms(
   return scored.slice(0, limit).map((x) => x.atom);
 }
 
+/**
+ * Tokenise for keyword search. Covers:
+ *   - ASCII alphanumeric (split on whitespace + ASCII punctuation)
+ *   - CJK Unified Ideographs incl. Extension A (㐀-鿿) and
+ *     Extension B SMP (\u{20000}-\u{2A6DF}) via bigram slicing
+ *   - Hiragana / Katakana (぀-ヿ) — Japanese terms in domain
+ */
 function tokenize(s: string): string[] {
-  // CJK + alphanumeric: split on whitespace + ASCII punctuation; for
-  // CJK we also slice into bigrams since users won't space-separate
-  // 廣告 / 版型. Cheap, good-enough for keyword retrieval.
   const lower = s.toLowerCase();
   const ascii = lower
     .split(/[\s,.!?;:()\[\]{}<>"'`/\\|=+\-*&^%$#@~]+/u)
     .filter((t) => /[a-z0-9]/.test(t) && t.length >= 2);
   const cjk: string[] = [];
-  const cjkRe = /[一-鿿]+/g;
+  const cjkRe = /[぀-ヿ㐀-鿿\u{20000}-\u{2A6DF}]+/gu;
   let m: RegExpExecArray | null;
   while ((m = cjkRe.exec(lower)) !== null) {
     const run = m[0];
+    if (run.length === 1) {
+      cjk.push(run);
+      continue;
+    }
     for (let i = 0; i < run.length - 1; i++) cjk.push(run.slice(i, i + 2));
-    if (run.length === 1) cjk.push(run);
   }
   return [...new Set([...ascii, ...cjk])];
 }

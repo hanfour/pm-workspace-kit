@@ -267,6 +267,10 @@ export interface ThreadEscalation {
   pendingSince: number;
   /** Slack user IDs that pmk @-mentioned. */
   mentionedUserIds: string[];
+  /** The user who triggered the escalation (will get the synthesised
+   * follow-up answer once IT replies). Optional for back-compat with
+   * markers written by older builds. */
+  askerUserId?: string;
 }
 
 function escalationsDir(): string {

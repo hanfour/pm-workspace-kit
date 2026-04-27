@@ -192,6 +192,23 @@ function isAudienceKey(s: string): s is AudienceKey {
   return (AUDIENCE_KEYS as readonly string[]).includes(s);
 }
 
+/**
+ * Slack workspace user IDs are `U` (regular) or `W` (enterprise grid)
+ * followed by uppercase alphanum. We reject anything else with a hint
+ * so hosts catch typos like `@hanfour` early.
+ */
+const SLACK_USER_ID_RE = /^[UW][A-Z0-9]{2,}$/;
+
+function ensureValidSlackUserId(userId: string): boolean {
+  if (SLACK_USER_ID_RE.test(userId)) return true;
+  println(
+    chalk.red(
+      `invalid Slack user ID '${userId}'. Expected format e.g. U0B05XYZ — open Slack profile → 'Copy member ID'.`,
+    ),
+  );
+  return false;
+}
+
 function audienceUsage(): void {
   println(
     chalk.yellow(
@@ -225,7 +242,11 @@ function audienceCmd(rest: string[]): void {
     }
     case "set": {
       const [userId, audience] = args;
-      if (!userId || !audience) return audienceUsage();
+      if (!userId || !audience) {
+        audienceUsage();
+        process.exit(1);
+      }
+      if (!ensureValidSlackUserId(userId)) process.exit(1);
       if (!isAudienceKey(audience)) {
         println(
           chalk.red(
@@ -241,7 +262,11 @@ function audienceCmd(rest: string[]): void {
     }
     case "unset": {
       const [userId] = args;
-      if (!userId) return audienceUsage();
+      if (!userId) {
+        audienceUsage();
+        process.exit(1);
+      }
+      if (!ensureValidSlackUserId(userId)) process.exit(1);
       if (!(userId in cfg.audience.users)) {
         println(chalk.dim(`(${userId} had no override; nothing to do)`));
         return;
@@ -253,7 +278,10 @@ function audienceCmd(rest: string[]): void {
     }
     case "default": {
       const [audience] = args;
-      if (!audience || !isAudienceKey(audience)) return audienceUsage();
+      if (!audience || !isAudienceKey(audience)) {
+        audienceUsage();
+        process.exit(1);
+      }
       cfg.audience.default = audience;
       saveGatewayConfig(cfg);
       println(chalk.green(`default audience set to ${audience}`));
@@ -303,7 +331,11 @@ function escalationCmd(rest: string[]): void {
       return;
     }
     case "add": {
-      if (!scope || !userId) return escalationUsage();
+      if (!scope || !userId) {
+        escalationUsage();
+        process.exit(1);
+      }
+      if (!ensureValidSlackUserId(userId)) process.exit(1);
       const pool =
         scope === "--default"
           ? cfg.escalation.default
@@ -318,7 +350,11 @@ function escalationCmd(rest: string[]): void {
       return;
     }
     case "remove": {
-      if (!scope || !userId) return escalationUsage();
+      if (!scope || !userId) {
+        escalationUsage();
+        process.exit(1);
+      }
+      if (!ensureValidSlackUserId(userId)) process.exit(1);
       const pool =
         scope === "--default"
           ? cfg.escalation.default
