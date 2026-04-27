@@ -2,11 +2,7 @@ import { spawn } from "node:child_process";
 import * as path from "node:path";
 import chalk from "chalk";
 import { Session } from "../session";
-import {
-  buildExploreArgv,
-  mraDoctor,
-  resolveMraRepo,
-} from "../adapters/mra";
+import { buildExploreArgv, mraDoctor, resolveMraRepo } from "../adapters/mra";
 import { println } from "../io";
 
 /**
@@ -45,7 +41,7 @@ export async function exploreCommand(repo: string): Promise<void> {
 
   println(
     chalk.bold(
-      `\npmk explore — delegating to mra ${doctor.version} · workspace=${path.basename(doctor.workspace!)}`,
+      `\npmk explore — delegating to mra · workspace=${path.basename(doctor.workspace!)}`,
     ),
   );
   println(chalk.dim(`  binary: ${doctor.binaryPath}`));
@@ -64,8 +60,7 @@ export async function exploreCommand(repo: string): Promise<void> {
   const session = new Session();
   session.addUser(`pmk explore ${repo}`);
   session.addAssistant(
-    `Delegated to mra ${doctor.version} on ${repoPath}. ` +
-      `Full transcript in mra's session log.`,
+    `Delegated to mra on ${repoPath}. Full transcript in mra's session log.`,
   );
 
   await new Promise<void>((resolve, reject) => {
@@ -76,9 +71,7 @@ export async function exploreCommand(repo: string): Promise<void> {
         println(chalk.green(`\nparked → ${file}`));
         println(chalk.dim(`  resume with: pmk resume ${parkName}`));
       } catch (err) {
-        println(
-          chalk.yellow(`(could not park: ${(err as Error).message})`),
-        );
+        println(chalk.yellow(`(could not park: ${(err as Error).message})`));
       }
       if (code !== 0) {
         process.exit(code ?? 1);

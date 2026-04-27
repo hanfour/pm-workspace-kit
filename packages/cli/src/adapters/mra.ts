@@ -4,6 +4,15 @@
  * the CLI stays unaware of mra's CLI surface.
  *
  * Decision: ADR-0005 — pmk delegates code intelligence to mra.
+ *
+ * Layout (verified against mra v2.2.0+, lib/init.sh + lib/pkb.sh):
+ *   - workspace marker: `<workspace>/.collab/repos.json`
+ *   - per-repo PKB:     `<workspace>/<repo>/.mra/pkb/`
+ *   - PKB doc set:      sitemap.md, architecture.md, conventions.md,
+ *                       api-surface.md (no identity.md — earlier brief
+ *                       was wrong)
+ *   - mra has no `--version` flag; existence + workspace marker is
+ *     the proxy for "install looks healthy".
  */
 
 import { execFileSync } from "node:child_process";
@@ -11,21 +20,29 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
-/** Minimum mra version this adapter is known to work against. */
-export const MIN_MRA_VERSION = "2.2.0";
-
-/** PKB documents that ingest mra:<repo> always loads (Layer 0 + 1 + 2). */
+/**
+ * Documents pmk pulls when ingesting `mra:<repo>`. Aligned to mra's
+ * actual PKB layout (see lib/pkb.sh::PKB_DIR_NAME=".mra/pkb").
+ */
 export const PKB_BASE_DOCS = [
-  "identity.md",
   "sitemap.md",
   "architecture.md",
+  "conventions.md",
   "api-surface.md",
 ] as const;
+
+/** Subpath inside each repo where PKB summaries live. */
+export const PKB_DIR_RELATIVE = path.join(".mra", "pkb");
+
+/** File mra creates at `mra init`; presence = workspace root. */
+const WORKSPACE_MARKER_PRIMARY = path.join(".collab", "repos.json");
+
+/** Older / alternate markers we still detect for forward-compat. */
+const WORKSPACE_MARKER_FALLBACKS = [".collab", ".mra-config", "mra-workspace.json"];
 
 export interface MraDoctorReport {
   ok: boolean;
   binaryPath?: string;
-  version?: string;
   workspace?: string;
   reason?: string;
 }
@@ -43,6 +60,11 @@ const FALLBACK_BIN_PATHS: string[] =
 /**
  * Locate the `mra` executable. PATH first, then known install
  * locations. Returns undefined when mra is not installed.
+ *
+ * Note: many users alias `mra` as a shell function pointing at
+ * `~/multi-repo-agent/bin/mra.sh`. `which mra` won't see shell
+ * functions from non-interactive shells, so the fs fallback list
+ * includes that canonical path.
  */
 export function findMraBinary(): string | undefined {
   if (process.env.PMK_SKIP_MRA_PROBE === "1") return undefined;
@@ -70,15 +92,20 @@ export function findMraBinary(): string | undefined {
 }
 
 /**
- * Walk up from `start` looking for a directory that contains a
- * `.mra-config` file (or an `mra-workspace.json` — both are valid in
- * mra's own conventions). Returns the workspace root or undefined.
+ * Walk up from `start` looking for a directory that holds an mra
+ * workspace. Primary signal is `.collab/repos.json` (what `mra init`
+ * creates); fallbacks accept just the `.collab` dir or older marker
+ * files for forward-compat.
  */
-export function findMraWorkspace(start: string = process.cwd()): string | undefined {
+export function findMraWorkspace(
+  start: string = process.cwd(),
+): string | undefined {
   let cur = path.resolve(start);
   while (true) {
-    if (existsSync(path.join(cur, ".mra-config"))) return cur;
-    if (existsSync(path.join(cur, "mra-workspace.json"))) return cur;
+    if (existsSync(path.join(cur, WORKSPACE_MARKER_PRIMARY))) return cur;
+    for (const m of WORKSPACE_MARKER_FALLBACKS) {
+      if (existsSync(path.join(cur, m))) return cur;
+    }
     const parent = path.dirname(cur);
     if (parent === cur) return undefined;
     cur = parent;
@@ -88,6 +115,9 @@ export function findMraWorkspace(start: string = process.cwd()): string | undefi
 /**
  * Pre-flight check used by both explore and ingest mra:. Returns a
  * structured report so callers can format error UX consistently.
+ *
+ * mra has no `--version` flag, so we don't claim a version. A future
+ * mra release may add one — adapter will pick it up then.
  */
 export function mraDoctor(opts: { cwd?: string } = {}): MraDoctorReport {
   const binaryPath = findMraBinary();
@@ -98,33 +128,16 @@ export function mraDoctor(opts: { cwd?: string } = {}): MraDoctorReport {
         "`mra` not found on PATH. Install: https://github.com/hanfour/multi-repo-agent#quick-start",
     };
   }
-  let version: string | undefined;
-  try {
-    version = execFileSync(binaryPath, ["--version"], {
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "ignore"],
-    })
-      .toString()
-      .trim();
-  } catch {
-    return {
-      ok: false,
-      binaryPath,
-      reason: `\`${binaryPath} --version\` failed — install may be broken.`,
-    };
-  }
-
   const workspace = findMraWorkspace(opts.cwd);
   if (!workspace) {
     return {
       ok: false,
       binaryPath,
-      version,
       reason:
         "no mra workspace detected here. Run `mra init <dir>` then come back.",
     };
   }
-  return { ok: true, binaryPath, version, workspace };
+  return { ok: true, binaryPath, workspace };
 }
 
 /**
@@ -151,12 +164,12 @@ export interface PkbDoc {
 }
 
 /**
- * Load the four base PKB summaries from a repo. Missing files are
+ * Load the base PKB summaries from a repo. Missing files are
  * skipped (caller decides whether that's an error). Each entry
  * carries mtime so callers can warn about staleness.
  */
 export function loadPkbBase(repoPath: string): PkbDoc[] {
-  const pkbDir = path.join(repoPath, ".collab", "pkb");
+  const pkbDir = path.join(repoPath, PKB_DIR_RELATIVE);
   if (!existsSync(pkbDir)) return [];
   const out: PkbDoc[] = [];
   for (const name of PKB_BASE_DOCS) {
@@ -180,6 +193,10 @@ export function loadPkbBase(repoPath: string): PkbDoc[] {
 /**
  * Build the argv for `mra <repo> --with-deps`. Centralised so the
  * explore command doesn't hard-code the flag.
+ *
+ * Per `mra --help`, "mra <command|project...>" makes a bare project
+ * name a valid invocation that triggers `launch_claude` with the
+ * project context. `--with-deps` extends to upstream/downstream repos.
  */
 export function buildExploreArgv(repo: string): string[] {
   return [repo, "--with-deps"];
