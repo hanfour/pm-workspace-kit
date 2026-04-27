@@ -48,7 +48,7 @@ program
 program
   .command("ingest <target>")
   .description(
-    "Load context into conversation: a file path, OR `mra:<repo>` to pull PKB Layer 0+1+2 from a multi-repo-agent workspace.",
+    "Load context: a file path, OR `mra:<repo>` / `mra:repo1,repo2` / `mra:--all` to pull PKB from a multi-repo-agent workspace.",
   )
   .action(async (target: string) => {
     await ingestCommand(target);

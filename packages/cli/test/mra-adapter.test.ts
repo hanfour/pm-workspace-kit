@@ -6,6 +6,7 @@ import * as path from "node:path";
 import {
   buildExploreArgv,
   findMraWorkspace,
+  listMraWorkspaceReposWithPkb,
   loadPkbBase,
   mraDoctor,
   PKB_BASE_DOCS,
@@ -119,10 +120,7 @@ describe("loadPkbBase", () => {
     }
     const docs = loadPkbBase(repo);
     assert.equal(docs.length, 4);
-    assert.deepEqual(
-      docs.map((d) => d.name).sort(),
-      [...PKB_BASE_DOCS].sort(),
-    );
+    assert.deepEqual(docs.map((d) => d.name).sort(), [...PKB_BASE_DOCS].sort());
     for (const d of docs) {
       assert.ok(d.content.startsWith("# "));
       assert.ok(d.mtime > 0);
@@ -168,6 +166,67 @@ describe("loadPkbBase", () => {
   it("returns empty when .mra/pkb does not exist", () => {
     fs.rmSync(path.join(repo, ".mra"), { recursive: true });
     assert.deepEqual(loadPkbBase(repo), []);
+  });
+});
+
+describe("listMraWorkspaceReposWithPkb", () => {
+  let ws: string;
+
+  beforeEach(() => {
+    ws = fs.mkdtempSync(path.join(os.tmpdir(), "pmk-mra-list-"));
+    fs.mkdirSync(path.join(ws, ".collab"));
+  });
+
+  afterEach(() => fs.rmSync(ws, { recursive: true, force: true }));
+
+  it("returns repos that exist on disk and have PKB", () => {
+    fs.writeFileSync(
+      path.join(ws, ".collab", "repos.json"),
+      JSON.stringify({
+        repos: [
+          { name: "with-pkb" },
+          { name: "no-pkb" },
+          { name: "missing-dir" },
+        ],
+      }),
+    );
+    fs.mkdirSync(path.join(ws, "with-pkb", PKB_DIR_RELATIVE), {
+      recursive: true,
+    });
+    fs.writeFileSync(
+      path.join(ws, "with-pkb", PKB_DIR_RELATIVE, "sitemap.md"),
+      "# m",
+    );
+    fs.mkdirSync(path.join(ws, "no-pkb"));
+    // missing-dir: not on disk
+
+    assert.deepEqual(listMraWorkspaceReposWithPkb(ws), ["with-pkb"]);
+  });
+
+  it("skips archived entries", () => {
+    fs.writeFileSync(
+      path.join(ws, ".collab", "repos.json"),
+      JSON.stringify({
+        repos: [{ name: "active" }, { name: "old", archived: true }],
+      }),
+    );
+    for (const name of ["active", "old"]) {
+      fs.mkdirSync(path.join(ws, name, PKB_DIR_RELATIVE), { recursive: true });
+      fs.writeFileSync(
+        path.join(ws, name, PKB_DIR_RELATIVE, "sitemap.md"),
+        "# m",
+      );
+    }
+    assert.deepEqual(listMraWorkspaceReposWithPkb(ws), ["active"]);
+  });
+
+  it("returns empty when repos.json is missing", () => {
+    assert.deepEqual(listMraWorkspaceReposWithPkb(ws), []);
+  });
+
+  it("returns empty when repos.json is malformed", () => {
+    fs.writeFileSync(path.join(ws, ".collab", "repos.json"), "{not json");
+    assert.deepEqual(listMraWorkspaceReposWithPkb(ws), []);
   });
 });
 

@@ -38,7 +38,11 @@ export const PKB_DIR_RELATIVE = path.join(".mra", "pkb");
 const WORKSPACE_MARKER_PRIMARY = path.join(".collab", "repos.json");
 
 /** Older / alternate markers we still detect for forward-compat. */
-const WORKSPACE_MARKER_FALLBACKS = [".collab", ".mra-config", "mra-workspace.json"];
+const WORKSPACE_MARKER_FALLBACKS = [
+  ".collab",
+  ".mra-config",
+  "mra-workspace.json",
+];
 
 export interface MraDoctorReport {
   ok: boolean;
@@ -200,4 +204,36 @@ export function loadPkbBase(repoPath: string): PkbDoc[] {
  */
 export function buildExploreArgv(repo: string): string[] {
   return [repo, "--with-deps"];
+}
+
+interface ReposJson {
+  repos: Array<{ name: string; archived?: boolean; clone?: boolean }>;
+}
+
+/**
+ * Read `<workspace>/.collab/repos.json` and return the names of every
+ * repo that (a) is not archived and (b) has a `.mra/pkb/` directory
+ * with at least one base doc. Returns empty if the file or workspace
+ * is missing.
+ *
+ * Used by `pmk ingest mra:--all` to pick the load set without forcing
+ * the user to enumerate 27 repo names.
+ */
+export function listMraWorkspaceReposWithPkb(workspace: string): string[] {
+  const reposJson = path.join(workspace, ".collab", "repos.json");
+  if (!existsSync(reposJson)) return [];
+  let manifest: ReposJson;
+  try {
+    manifest = JSON.parse(readFileSync(reposJson, "utf8")) as ReposJson;
+  } catch {
+    return [];
+  }
+  const out: string[] = [];
+  for (const r of manifest.repos ?? []) {
+    if (r.archived) continue;
+    const repoPath = path.join(workspace, r.name);
+    if (!existsSync(repoPath)) continue;
+    if (loadPkbBase(repoPath).length > 0) out.push(r.name);
+  }
+  return out;
 }
