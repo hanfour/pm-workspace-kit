@@ -76,7 +76,7 @@ related:
   - `pmk explore <repo>` spawns `mra <repo> --with-deps` as a subprocess; conversation streamed through pmk's REPL infrastructure; auto-parks to `~/.pmk/parks/explore-<repo>.json` on exit. <!-- TODO(owner): decide pass-through vs interception — see §10 Q1 -->
   - `pmk ingest mra:<repo>` reads `~/<workspace>/<repo>/.collab/pkb/{identity,sitemap,architecture,api-surface}.md` and seeds the conversation context. Falls through to existing `pmk ingest <path>` for plain files.
   - New `packages/cli/src/adapters/mra.ts` encapsulates: locating `mra` binary, locating workspace root, building subprocess command, parsing common output. Single point of change if mra renames a flag.
-  - When `mra` is not on PATH, `pmk explore` and `pmk ingest mra:` print an actionable message ("install mra at <link>") and exit non-zero — they do not silently fall back.
+  - When `mra` is not on PATH, `pmk explore` and `pmk ingest mra:` print an actionable message ("install mra at `<link>`") and exit non-zero — they do not silently fall back.
   - When `mra` is found but the requested workspace / repo doesn't exist, error is specific ("repo `erp/order` not found in workspace `~/onead`").
 
 - **Should have**

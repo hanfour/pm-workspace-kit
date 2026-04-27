@@ -13,6 +13,7 @@ import { worktreeCommand } from "./commands/worktree";
 import { tddCommand } from "./commands/tdd";
 import { exploreCommand } from "./commands/explore";
 import { caseCommand } from "./commands/case";
+import { gatewayCommand } from "./commands/gateway";
 
 dotenv.config({ quiet: true });
 
@@ -22,9 +23,9 @@ program
   .name("pmk")
   .description(
     "pmk — pm-workspace-kit command-line interface.\n" +
-      "Verbs: propose / ingest / apply / discuss / ask / debug / index / resume / worktree / tdd / explore / case.",
+      "Verbs: propose / ingest / apply / discuss / ask / debug / index / resume / worktree / tdd / explore / case / gateway.",
   )
-  .version("0.6.0-dev");
+  .version("0.7.0-dev");
 
 program
   .command("propose [topic]")
@@ -62,6 +63,15 @@ program
   )
   .action(async (repo: string) => {
     await exploreCommand(repo);
+  });
+
+program
+  .command("gateway <action> [args...]")
+  .description(
+    "Run a Slack/LINE bridge so other PMs and stakeholders can chat with pmk via the messengers they already use. Actions: init / start / status / stats.",
+  )
+  .action(async (action: string, rest: string[]) => {
+    await gatewayCommand(action, rest);
   });
 
 program

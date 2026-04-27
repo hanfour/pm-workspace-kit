@@ -32,6 +32,8 @@
     "@pmk/core": "*",
     "@pmk/rag": "*",
     "@pmk/shared": "*",
+    "@slack/socket-mode": "^2.0.6",
+    "@slack/web-api": "^7.15.1",
     "chalk": "^5.3.0",
     "commander": "^12.1.0",
     "dotenv": "^16.4.5",

@@ -5,10 +5,12 @@ import type * as Preset from "@docusaurus/preset-classic";
 const config: Config = {
   title: "PM Workspace Kit",
   tagline:
-    "Opinionated PM / SA templates, scripts, and playbooks for AI-era product teams",
+    "Opinionated PM / SA templates, a CLI (pmk), and a Slack gateway for AI-era product teams",
   favicon: "img/favicon.svg",
 
-  // Replace with your GitHub Pages URL once the repo is public.
+  // Deployed at https://hanfour.github.io/pm-workspace-kit/ via
+  // .github/workflows/deploy.yml on every push to main that touches
+  // apps/docs/**.
   url: "https://hanfour.github.io",
   baseUrl: "/pm-workspace-kit/",
 
@@ -33,8 +35,7 @@ const config: Config = {
       {
         docs: {
           sidebarPath: "./sidebars.ts",
-          editUrl:
-            "https://github.com/hanfour/pm-workspace-kit/tree/main/",
+          editUrl: "https://github.com/hanfour/pm-workspace-kit/tree/main/",
           showLastUpdateTime: true,
           showLastUpdateAuthor: true,
         },

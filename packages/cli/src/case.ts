@@ -64,18 +64,23 @@ export interface CaseFile {
   timeline: TimelineEntry[];
 }
 
-export function casesDir(): string {
-  return path.join(os.homedir(), ".pmk", "cases");
+/**
+ * Default case directory: `~/.pmk/cases/`. The gateway uses different
+ * roots (per-Slack-user, per-channel) so every accessor takes an
+ * optional `baseDir` to override.
+ */
+export function casesDir(baseDir?: string): string {
+  return baseDir ?? path.join(os.homedir(), ".pmk", "cases");
 }
 
-export function casePath(name: string): string {
-  return path.join(casesDir(), `${name}.json`);
+export function casePath(name: string, baseDir?: string): string {
+  return path.join(casesDir(baseDir), `${name}.json`);
 }
 
-export function listCases(): Array<
-  Pick<CaseFile, "name" | "title" | "status" | "updatedAt">
-> {
-  const dir = casesDir();
+export function listCases(
+  baseDir?: string,
+): Array<Pick<CaseFile, "name" | "title" | "status" | "updatedAt">> {
+  const dir = casesDir(baseDir);
   if (!fs.existsSync(dir)) return [];
   const out: Array<Pick<CaseFile, "name" | "title" | "status" | "updatedAt">> =
     [];
@@ -99,12 +104,12 @@ export function listCases(): Array<
   return out;
 }
 
-export function caseExists(name: string): boolean {
-  return fs.existsSync(casePath(name));
+export function caseExists(name: string, baseDir?: string): boolean {
+  return fs.existsSync(casePath(name, baseDir));
 }
 
-export function loadCase(name: string): CaseFile {
-  const file = casePath(name);
+export function loadCase(name: string, baseDir?: string): CaseFile {
+  const file = casePath(name, baseDir);
   if (!fs.existsSync(file)) {
     throw new Error(`case not found: ${name}`);
   }
@@ -117,8 +122,8 @@ export function loadCase(name: string): CaseFile {
   return raw;
 }
 
-export function saveCase(c: CaseFile): string {
-  const file = casePath(c.name);
+export function saveCase(c: CaseFile, baseDir?: string): string {
+  const file = casePath(c.name, baseDir);
   fs.mkdirSync(path.dirname(file), { recursive: true });
   c.updatedAt = new Date().toISOString();
   fs.writeFileSync(file, JSON.stringify(c, null, 2), "utf8");
