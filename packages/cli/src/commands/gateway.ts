@@ -1,5 +1,6 @@
 import * as readline from "node:readline/promises";
 import chalk from "chalk";
+import { AUDIENCE_KEYS, type AudienceKey } from "@pmk/shared";
 import { println } from "../io";
 import {
   gatewayConfigPath,
@@ -23,8 +24,16 @@ export async function gatewayCommand(
       return statusCmd();
     case "stats":
       return statsCmd(rest);
+    case "audience":
+      return audienceCmd(rest);
+    case "escalation":
+      return escalationCmd(rest);
     default:
-      println(chalk.yellow("usage: pmk gateway <init|start|status|stats>"));
+      println(
+        chalk.yellow(
+          "usage: pmk gateway <init|start|status|stats|audience|escalation>",
+        ),
+      );
       process.exit(1);
   }
 }
@@ -107,6 +116,8 @@ async function initCmd(): Promise<void> {
       version: 1 as const,
       blocklist: existing.blocklist,
       defaultIngest: defaultIngest || undefined,
+      audience: existing.audience,
+      escalation: existing.escalation,
       slack: { appToken, botToken },
     };
     if (!hasValidSlackTokens(cfg)) {
@@ -174,5 +185,160 @@ function statsCmd(rest: string[]): void {
     const turns = String(s.turns).padStart(5);
     const tokens = s.approxTokens.toLocaleString().padStart(8);
     println(`  ${id}  ${turns}   ${tokens}   ${last}`);
+  }
+}
+
+function isAudienceKey(s: string): s is AudienceKey {
+  return (AUDIENCE_KEYS as readonly string[]).includes(s);
+}
+
+function audienceUsage(): void {
+  println(
+    chalk.yellow(
+      "usage:\n" +
+        "  pmk gateway audience list\n" +
+        "  pmk gateway audience set <userId> <tech|biz|exec>\n" +
+        "  pmk gateway audience unset <userId>\n" +
+        "  pmk gateway audience default <tech|biz|exec>",
+    ),
+  );
+}
+
+function audienceCmd(rest: string[]): void {
+  const [action, ...args] = rest;
+  const cfg = loadGatewayConfig();
+  switch (action) {
+    case undefined:
+    case "list": {
+      println(chalk.bold("\npmk gateway audience"));
+      println(`  default: ${chalk.cyan(cfg.audience.default)}`);
+      const entries = Object.entries(cfg.audience.users);
+      if (entries.length === 0) {
+        println(chalk.dim("  (no per-user overrides)"));
+      } else {
+        println(chalk.dim("  per-user overrides:"));
+        for (const [uid, aud] of entries) {
+          println(`    ${uid.padEnd(14)} → ${aud}`);
+        }
+      }
+      return;
+    }
+    case "set": {
+      const [userId, audience] = args;
+      if (!userId || !audience) return audienceUsage();
+      if (!isAudienceKey(audience)) {
+        println(
+          chalk.red(
+            `invalid audience '${audience}'. Allowed: tech / biz / exec.`,
+          ),
+        );
+        process.exit(1);
+      }
+      cfg.audience.users[userId] = audience;
+      saveGatewayConfig(cfg);
+      println(chalk.green(`set ${userId} → ${audience}`));
+      return;
+    }
+    case "unset": {
+      const [userId] = args;
+      if (!userId) return audienceUsage();
+      if (!(userId in cfg.audience.users)) {
+        println(chalk.dim(`(${userId} had no override; nothing to do)`));
+        return;
+      }
+      delete cfg.audience.users[userId];
+      saveGatewayConfig(cfg);
+      println(chalk.green(`removed override for ${userId}`));
+      return;
+    }
+    case "default": {
+      const [audience] = args;
+      if (!audience || !isAudienceKey(audience)) return audienceUsage();
+      cfg.audience.default = audience;
+      saveGatewayConfig(cfg);
+      println(chalk.green(`default audience set to ${audience}`));
+      return;
+    }
+    default:
+      audienceUsage();
+      process.exit(1);
+  }
+}
+
+function escalationUsage(): void {
+  println(
+    chalk.yellow(
+      "usage:\n" +
+        "  pmk gateway escalation list\n" +
+        "  pmk gateway escalation add <repo|--default> <userId>\n" +
+        "  pmk gateway escalation remove <repo|--default> <userId>",
+    ),
+  );
+}
+
+function escalationCmd(rest: string[]): void {
+  const [action, scope, userId] = rest;
+  const cfg = loadGatewayConfig();
+  switch (action) {
+    case undefined:
+    case "list": {
+      println(chalk.bold("\npmk gateway escalation"));
+      println(
+        `  default pool: ${
+          cfg.escalation.default.length
+            ? cfg.escalation.default.join(", ")
+            : chalk.dim("(empty)")
+        }`,
+      );
+      const repoEntries = Object.entries(cfg.escalation.repos);
+      if (repoEntries.length === 0) {
+        println(chalk.dim("  no repo-specific pools"));
+      } else {
+        for (const [repo, ids] of repoEntries) {
+          println(
+            `  ${repo.padEnd(14)} → ${ids.join(", ") || chalk.dim("(empty)")}`,
+          );
+        }
+      }
+      return;
+    }
+    case "add": {
+      if (!scope || !userId) return escalationUsage();
+      const pool =
+        scope === "--default"
+          ? cfg.escalation.default
+          : (cfg.escalation.repos[scope] ??= []);
+      if (!pool.includes(userId)) pool.push(userId);
+      saveGatewayConfig(cfg);
+      println(
+        chalk.green(
+          `added ${userId} to ${scope === "--default" ? "default pool" : `${scope} pool`}`,
+        ),
+      );
+      return;
+    }
+    case "remove": {
+      if (!scope || !userId) return escalationUsage();
+      const pool =
+        scope === "--default"
+          ? cfg.escalation.default
+          : cfg.escalation.repos[scope];
+      if (!pool) {
+        println(chalk.dim(`(${scope} pool empty; nothing to do)`));
+        return;
+      }
+      const idx = pool.indexOf(userId);
+      if (idx >= 0) pool.splice(idx, 1);
+      saveGatewayConfig(cfg);
+      println(
+        chalk.green(
+          `removed ${userId} from ${scope === "--default" ? "default pool" : `${scope} pool`}`,
+        ),
+      );
+      return;
+    }
+    default:
+      escalationUsage();
+      process.exit(1);
   }
 }

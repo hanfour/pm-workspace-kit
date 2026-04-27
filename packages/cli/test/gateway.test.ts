@@ -15,11 +15,16 @@ import {
   startHeartbeat,
 } from "../src/gateway/heartbeat";
 import {
+  clearThreadEscalation,
   listRecentChannels,
   listRecentUsers,
+  loadChannelChatSession,
   loadChannelMeta,
+  loadThreadEscalation,
   loadUserSession,
+  saveChannelChatSession,
   saveChannelMeta,
+  saveThreadEscalation,
   saveUserSession,
   userStats,
 } from "../src/gateway/session-store";
@@ -30,6 +35,24 @@ import {
   markdownToMrkdwn,
   truncateForSlack,
 } from "../src/gateway/formatters";
+import { parseMraAsk, stripMraAskBlock } from "../src/gateway/mra-ask";
+import { parseEscalate, stripEscalateBlock } from "../src/gateway/escalate";
+import { runMraAsk } from "../src/adapters/mra";
+import { pickAudience, pickEscalationPool } from "../src/gateway/config";
+import {
+  pickGatewayPrompt,
+  PROMPT_GATEWAY_DM_BIZ,
+  PROMPT_GATEWAY_DM_EXEC,
+  PROMPT_GATEWAY_DM_TECH,
+} from "@pmk/shared";
+import {
+  formatAtomsForInjection,
+  generateAtomId,
+  loadAtoms,
+  saveAtom,
+  searchAtoms,
+  slugifyQuestion,
+} from "../src/gateway/knowledge";
 
 const ORIG_HOME = process.env.HOME;
 const ORIG_APP_TOKEN = process.env.PMK_SLACK_APP_TOKEN;
@@ -67,6 +90,8 @@ describe("gateway config", () => {
       version: 1 as const,
       blocklist: ["U-bad"],
       defaultIngest: "mra:--all",
+      audience: { default: "tech" as const, users: {} },
+      escalation: { default: [], repos: {} },
       slack: { appToken: "xapp-foo", botToken: "xoxb-bar" },
     };
     saveGatewayConfig(cfg);
@@ -82,6 +107,8 @@ describe("gateway config", () => {
     saveGatewayConfig({
       version: 1,
       blocklist: [],
+      audience: { default: "tech", users: {} },
+      escalation: { default: [], repos: {} },
       slack: { appToken: "xapp-from-file", botToken: "xoxb-from-file" },
     });
     process.env.PMK_SLACK_APP_TOKEN = "xapp-from-env";
@@ -96,6 +123,8 @@ describe("gateway config", () => {
       hasValidSlackTokens({
         version: 1,
         blocklist: [],
+        audience: { default: "tech", users: {} },
+        escalation: { default: [], repos: {} },
         slack: { appToken: "wrong", botToken: "xoxb-x" },
       }),
       false,
@@ -104,10 +133,34 @@ describe("gateway config", () => {
       hasValidSlackTokens({
         version: 1,
         blocklist: [],
+        audience: { default: "tech", users: {} },
+        escalation: { default: [], repos: {} },
         slack: { appToken: "xapp-x", botToken: "wrong" },
       }),
       false,
     );
+  });
+
+  it("legacy config (without audience/escalation) loads with defaults", () => {
+    const file = path.join(tmpHome, ".pmk", "gateway.json");
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(
+      file,
+      JSON.stringify(
+        {
+          version: 1,
+          blocklist: [],
+          slack: { appToken: "xapp-x", botToken: "xoxb-x" },
+        },
+        null,
+        2,
+      ),
+    );
+    const loaded = loadGatewayConfig();
+    assert.equal(loaded.audience.default, "tech");
+    assert.deepEqual(loaded.audience.users, {});
+    assert.deepEqual(loaded.escalation.default, []);
+    assert.deepEqual(loaded.escalation.repos, {});
   });
 });
 
@@ -179,7 +232,14 @@ describe("session-store", () => {
     const old = loadUserSession("U-old");
     saveUserSession(old);
     // Manually backdate the file (bypass saveUserSession which sets lastActiveAt=now).
-    const dir = path.join(tmpHome, ".pmk", "gateway", "slack", "users", "U-old");
+    const dir = path.join(
+      tmpHome,
+      ".pmk",
+      "gateway",
+      "slack",
+      "users",
+      "U-old",
+    );
     const file = path.join(dir, "session.json");
     const data = JSON.parse(fs.readFileSync(file, "utf8"));
     data.lastActiveAt = Date.now() - 48 * 60 * 60 * 1000;
@@ -190,6 +250,22 @@ describe("session-store", () => {
 
     const recent = listRecentUsers(24);
     assert.deepEqual(recent.sort(), ["U-fresh"]);
+  });
+
+  it("channel chat session round-trips and starts empty", () => {
+    const fresh = loadChannelChatSession("C-x");
+    assert.equal(fresh.channelId, "C-x");
+    assert.equal(fresh.messages.length, 0);
+    assert.equal(fresh.turns, 0);
+    fresh.messages.push({ role: "user", content: "hello channel" });
+    fresh.turns = 1;
+    fresh.approxTokens = 7;
+    saveChannelChatSession(fresh);
+    const reload = loadChannelChatSession("C-x");
+    assert.equal(reload.turns, 1);
+    assert.equal(reload.approxTokens, 7);
+    assert.equal(reload.messages[0].content, "hello channel");
+    assert.ok(reload.lastActiveAt > 0);
   });
 
   it("channel meta save → load + listRecentChannels", () => {
@@ -260,5 +336,351 @@ describe("formatters", () => {
 
   it("formatOfflineNotice mentions host offline", () => {
     assert.match(formatOfflineNotice(), /暫離|host/);
+  });
+});
+
+describe("mra-ask directive", () => {
+  it("parseMraAsk extracts repo + question", () => {
+    const r = parseMraAsk(
+      [
+        "I'll look up the campaign types in erp.",
+        "",
+        "```mra-ask",
+        "repo: erp",
+        "question: where is the sales_performances scope and what does it touch?",
+        "```",
+      ].join("\n"),
+    );
+    assert.ok(r);
+    assert.equal(r?.repo, "erp");
+    assert.match(r?.question ?? "", /sales_performances/);
+  });
+
+  it("parseMraAsk returns undefined when block missing", () => {
+    assert.equal(parseMraAsk("nothing here"), undefined);
+  });
+
+  it("parseMraAsk returns undefined when required field missing", () => {
+    const r = parseMraAsk("```mra-ask\nrepo: erp\n```");
+    assert.equal(r, undefined);
+  });
+
+  it("stripMraAskBlock removes trailing fenced block", () => {
+    const out = stripMraAskBlock(
+      "answer here\n\n```mra-ask\nrepo: erp\nquestion: x\n```",
+    );
+    assert.ok(!out.includes("mra-ask"));
+    assert.match(out, /^answer here/);
+  });
+
+  it("stripMraAskBlock removes mid-text fenced block", () => {
+    const out = stripMraAskBlock(
+      "intro\n\n```mra-ask\nrepo: erp\nquestion: x\n```\n\nmore",
+    );
+    assert.ok(!out.includes("mra-ask"));
+    assert.match(out, /more/);
+  });
+});
+
+describe("runMraAsk", () => {
+  const ORIG_PROBE = process.env.PMK_SKIP_MRA_PROBE;
+  afterEach(() => {
+    if (ORIG_PROBE === undefined) delete process.env.PMK_SKIP_MRA_PROBE;
+    else process.env.PMK_SKIP_MRA_PROBE = ORIG_PROBE;
+  });
+
+  it("returns ok=false with reason when mra binary not found", async () => {
+    process.env.PMK_SKIP_MRA_PROBE = "1";
+    const r = await runMraAsk({
+      repo: "erp",
+      question: "anything",
+      cwd: process.cwd(),
+    });
+    assert.equal(r.ok, false);
+    assert.match(r.reason ?? "", /not found/);
+  });
+});
+
+describe("thread-aware sessions", () => {
+  let tmpHome: string;
+  beforeEach(() => {
+    tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), "pmk-gw-thread-"));
+    process.env.HOME = tmpHome;
+  });
+  afterEach(() => {
+    fs.rmSync(tmpHome, { recursive: true, force: true });
+    if (ORIG_HOME !== undefined) process.env.HOME = ORIG_HOME;
+  });
+
+  it("thread A and thread B have isolated histories", () => {
+    const a = loadUserSession("U-x", "1700000000.111111");
+    a.messages.push({ role: "user", content: "thread A msg" });
+    saveUserSession(a, "1700000000.111111");
+
+    const b = loadUserSession("U-x", "1700000099.222222");
+    assert.equal(b.messages.length, 0);
+    b.messages.push({ role: "user", content: "thread B msg" });
+    saveUserSession(b, "1700000099.222222");
+
+    const aReload = loadUserSession("U-x", "1700000000.111111");
+    assert.equal(aReload.messages[0].content, "thread A msg");
+    assert.equal(aReload.messages.length, 1);
+  });
+
+  it("main session is distinct from any thread", () => {
+    const main = loadUserSession("U-y");
+    main.messages.push({ role: "user", content: "main msg" });
+    saveUserSession(main);
+
+    const thread = loadUserSession("U-y", "1700000000.111111");
+    assert.equal(thread.messages.length, 0);
+  });
+
+  it("channel chat thread/main isolation", () => {
+    const main = loadChannelChatSession("C-z");
+    main.messages.push({ role: "user", content: "channel main" });
+    saveChannelChatSession(main);
+
+    const thread = loadChannelChatSession("C-z", "ts-1");
+    assert.equal(thread.messages.length, 0);
+    thread.messages.push({ role: "user", content: "channel thread" });
+    saveChannelChatSession(thread, "ts-1");
+
+    const mainReload = loadChannelChatSession("C-z");
+    assert.equal(mainReload.messages[0].content, "channel main");
+    const threadReload = loadChannelChatSession("C-z", "ts-1");
+    assert.equal(threadReload.messages[0].content, "channel thread");
+  });
+});
+
+describe("audience picker", () => {
+  let tmpHome: string;
+  beforeEach(() => {
+    tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), "pmk-gw-aud-"));
+    process.env.HOME = tmpHome;
+    delete process.env.PMK_SLACK_APP_TOKEN;
+    delete process.env.PMK_SLACK_BOT_TOKEN;
+  });
+  afterEach(() => {
+    fs.rmSync(tmpHome, { recursive: true, force: true });
+    if (ORIG_HOME !== undefined) process.env.HOME = ORIG_HOME;
+  });
+
+  it("falls back to default when no override", () => {
+    const cfg = loadGatewayConfig();
+    cfg.audience.default = "biz";
+    saveGatewayConfig(cfg);
+    const reload = loadGatewayConfig();
+    assert.equal(pickAudience(reload, "U-anyone"), "biz");
+  });
+
+  it("user override beats default", () => {
+    const cfg = loadGatewayConfig();
+    cfg.audience.default = "tech";
+    cfg.audience.users["U-exec1"] = "exec";
+    saveGatewayConfig(cfg);
+    const reload = loadGatewayConfig();
+    assert.equal(pickAudience(reload, "U-exec1"), "exec");
+    assert.equal(pickAudience(reload, "U-other"), "tech");
+  });
+
+  it("pickGatewayPrompt returns the right body per audience", () => {
+    assert.equal(pickGatewayPrompt("tech"), PROMPT_GATEWAY_DM_TECH);
+    assert.equal(pickGatewayPrompt("biz"), PROMPT_GATEWAY_DM_BIZ);
+    assert.equal(pickGatewayPrompt("exec"), PROMPT_GATEWAY_DM_EXEC);
+    // Unknown / undefined falls back to tech.
+    assert.equal(pickGatewayPrompt(undefined), PROMPT_GATEWAY_DM_TECH);
+  });
+
+  it("biz prompt mentions business meaning, exec prompt mentions 結論/影響/建議行動", () => {
+    assert.match(PROMPT_GATEWAY_DM_BIZ, /business|商業|業務|意義/);
+    assert.match(PROMPT_GATEWAY_DM_EXEC, /結論/);
+    assert.match(PROMPT_GATEWAY_DM_EXEC, /影響/);
+    assert.match(PROMPT_GATEWAY_DM_EXEC, /建議行動/);
+  });
+});
+
+describe("escalation pool picker", () => {
+  let tmpHome: string;
+  beforeEach(() => {
+    tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), "pmk-gw-esc-"));
+    process.env.HOME = tmpHome;
+    delete process.env.PMK_SLACK_APP_TOKEN;
+    delete process.env.PMK_SLACK_BOT_TOKEN;
+  });
+  afterEach(() => {
+    fs.rmSync(tmpHome, { recursive: true, force: true });
+    if (ORIG_HOME !== undefined) process.env.HOME = ORIG_HOME;
+  });
+
+  it("repo pool wins over default; default is fallback", () => {
+    const cfg = loadGatewayConfig();
+    cfg.escalation.default = ["U_DEFAULT"];
+    cfg.escalation.repos = { erp: ["U_ERP1", "U_ERP2"] };
+    saveGatewayConfig(cfg);
+    const reload = loadGatewayConfig();
+    assert.deepEqual(pickEscalationPool(reload, "erp"), ["U_ERP1", "U_ERP2"]);
+    assert.deepEqual(pickEscalationPool(reload, "unknown-repo"), ["U_DEFAULT"]);
+    assert.deepEqual(pickEscalationPool(reload, undefined), ["U_DEFAULT"]);
+  });
+});
+
+describe("escalate directive", () => {
+  it("parses repo + question + reason", () => {
+    const r = parseEscalate(
+      [
+        "I'll ask the IT team.",
+        "",
+        "```escalate",
+        "repo: erp",
+        "question: What's the live state of campaign X?",
+        "reason: not in PKB; live ops state.",
+        "```",
+      ].join("\n"),
+    );
+    assert.ok(r);
+    assert.equal(r?.repo, "erp");
+    assert.match(r?.question ?? "", /live state/);
+    assert.match(r?.reason ?? "", /not in PKB/);
+  });
+
+  it("repo is optional", () => {
+    const r = parseEscalate(
+      ["```escalate", "question: who owns billing?", "```"].join("\n"),
+    );
+    assert.ok(r);
+    assert.equal(r?.repo, undefined);
+    assert.match(r?.question ?? "", /billing/);
+  });
+
+  it("returns undefined when block missing or question missing", () => {
+    assert.equal(parseEscalate("nothing"), undefined);
+    assert.equal(parseEscalate("```escalate\nrepo: erp\n```"), undefined);
+  });
+
+  it("stripEscalateBlock removes the block", () => {
+    const out = stripEscalateBlock(
+      "preamble\n\n```escalate\nrepo: erp\nquestion: X\n```",
+    );
+    assert.ok(!out.includes("escalate"));
+    assert.match(out, /^preamble/);
+  });
+});
+
+describe("knowledge store", () => {
+  let tmpHome: string;
+  beforeEach(() => {
+    tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), "pmk-knowledge-"));
+    process.env.HOME = tmpHome;
+  });
+  afterEach(() => {
+    fs.rmSync(tmpHome, { recursive: true, force: true });
+    if (ORIG_HOME !== undefined) process.env.HOME = ORIG_HOME;
+  });
+
+  it("slugifyQuestion produces filesystem-safe slugs (CJK + ASCII)", () => {
+    assert.match(slugifyQuestion("AdFormat 怎麼設定？"), /adformat/);
+    assert.equal(slugifyQuestion("AdFormat 怎麼設定？").includes(" "), false);
+  });
+
+  it("save → load round-trips fields", () => {
+    const id = generateAtomId("AdFormat 怎麼設定");
+    saveAtom({
+      id,
+      createdAt: 1700000000000,
+      scope: "erp",
+      question: "AdFormat 怎麼設定？",
+      answer: "三層結構：AdFormat → AdFormatType → SubAdType。",
+      summary: "AdFormat 是版型大類；AdFormatType 是具體變體。",
+      tags: ["adformat", "版型"],
+      source: { threadKey: "C1:t1", contributorUserId: "U_IT1" },
+    });
+    const atoms = loadAtoms({ scope: "erp" });
+    assert.equal(atoms.length, 1);
+    assert.equal(atoms[0].question, "AdFormat 怎麼設定？");
+    assert.equal(atoms[0].source.contributorUserId, "U_IT1");
+    assert.deepEqual(atoms[0].tags, ["adformat", "版型"]);
+  });
+
+  it("searchAtoms ranks question+tag matches above body-only", () => {
+    saveAtom({
+      id: generateAtomId("widget A"),
+      createdAt: 1700000000000,
+      scope: "erp",
+      question: "How is widget A configured?",
+      answer: "Configured via X.",
+      summary: "Widget A configuration overview.",
+      tags: ["widget"],
+      source: { threadKey: "T1", contributorUserId: "U1" },
+    });
+    saveAtom({
+      id: generateAtomId("Note about widgets in passing"),
+      createdAt: 1700000010000,
+      scope: "erp",
+      question: "Unrelated topic about reports",
+      answer: "But widget appears here too.",
+      summary: "Reports overview.",
+      tags: ["report"],
+      source: { threadKey: "T2", contributorUserId: "U1" },
+    });
+    const hits = searchAtoms("widget configured", { limit: 2 });
+    assert.equal(hits.length, 2);
+    assert.match(hits[0].question, /widget A/);
+  });
+
+  it("formatAtomsForInjection produces a labelled context block", () => {
+    saveAtom({
+      id: generateAtomId("q"),
+      createdAt: 1700000000000,
+      scope: "erp",
+      question: "Q?",
+      answer: "A.",
+      summary: "S.",
+      tags: ["t1"],
+      source: { threadKey: "T1", contributorUserId: "U1" },
+    });
+    const atoms = loadAtoms({ scope: "erp" });
+    const out = formatAtomsForInjection(atoms);
+    assert.match(out, /ground truth/);
+    assert.match(out, /Q\?/);
+    assert.match(out, /A\./);
+  });
+
+  it("formatAtomsForInjection returns empty string when no atoms", () => {
+    assert.equal(formatAtomsForInjection([]), "");
+  });
+});
+
+describe("thread escalation marker", () => {
+  let tmpHome: string;
+  beforeEach(() => {
+    tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), "pmk-gw-pending-"));
+    process.env.HOME = tmpHome;
+  });
+  afterEach(() => {
+    fs.rmSync(tmpHome, { recursive: true, force: true });
+    if (ORIG_HOME !== undefined) process.env.HOME = ORIG_HOME;
+  });
+
+  it("save → load → clear", () => {
+    saveThreadEscalation({
+      channelId: "C1",
+      threadTs: "ts-1",
+      question: "Q?",
+      scope: "erp",
+      pendingSince: Date.now(),
+      mentionedUserIds: ["U_IT1"],
+    });
+    const got = loadThreadEscalation("C1", "ts-1");
+    assert.ok(got);
+    assert.equal(got?.scope, "erp");
+    assert.deepEqual(got?.mentionedUserIds, ["U_IT1"]);
+
+    clearThreadEscalation("C1", "ts-1");
+    assert.equal(loadThreadEscalation("C1", "ts-1"), undefined);
+  });
+
+  it("returns undefined for unknown thread", () => {
+    assert.equal(loadThreadEscalation("C0", "nope"), undefined);
   });
 });

@@ -15,7 +15,7 @@
  *     the proxy for "install looks healthy".
  */
 
-import { execFileSync } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -204,6 +204,83 @@ export function loadPkbBase(repoPath: string): PkbDoc[] {
  */
 export function buildExploreArgv(repo: string): string[] {
   return [repo, "--with-deps"];
+}
+
+export interface MraAskResult {
+  ok: boolean;
+  stdout: string;
+  stderr: string;
+  reason?: string;
+}
+
+/**
+ * Run `mra ask <repo> "<question>"` as a subprocess. Used by the
+ * gateway when the LLM emits an `mra-ask` directive — pmk delegates
+ * the deep code-search round to mra and feeds the answer back into
+ * the next LLM turn.
+ *
+ * The mra binary is resolved via findMraBinary() so users with a
+ * shell-function alias still work (PATH won't see those, but the fs
+ * fallback list does).
+ *
+ * Timeout defaults to 120s — `mra ask` involves an embedded LLM call
+ * over the repo, which routinely takes 30–60s.
+ */
+export async function runMraAsk(args: {
+  repo: string;
+  question: string;
+  cwd: string;
+  timeoutMs?: number;
+}): Promise<MraAskResult> {
+  const binary = findMraBinary();
+  if (!binary) {
+    return {
+      ok: false,
+      stdout: "",
+      stderr: "",
+      reason: "`mra` binary not found on PATH",
+    };
+  }
+  const timeoutMs = args.timeoutMs ?? 120_000;
+  return await new Promise<MraAskResult>((resolve) => {
+    const child = execFile(
+      binary,
+      ["ask", args.repo, args.question],
+      {
+        cwd: args.cwd,
+        timeout: timeoutMs,
+        maxBuffer: 10 * 1024 * 1024, // 10 MiB
+        encoding: "utf8",
+      },
+      (err, stdout, stderr) => {
+        if (err) {
+          const killed = (err as NodeJS.ErrnoException).code === "ETIMEDOUT";
+          resolve({
+            ok: false,
+            stdout: String(stdout ?? ""),
+            stderr: String(stderr ?? ""),
+            reason: killed
+              ? `mra ask timed out after ${timeoutMs}ms`
+              : err.message,
+          });
+          return;
+        }
+        resolve({
+          ok: true,
+          stdout: String(stdout ?? ""),
+          stderr: String(stderr ?? ""),
+        });
+      },
+    );
+    child.on("error", (err) => {
+      resolve({
+        ok: false,
+        stdout: "",
+        stderr: "",
+        reason: err.message,
+      });
+    });
+  });
 }
 
 interface ReposJson {
