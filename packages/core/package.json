@@ -1,0 +1,20 @@
+{
+  "name": "@pmk/core",
+  "version": "0.3.0",
+  "description": "Core scripts — traceability matrix, Confluence sync, shared utilities",
+  "license": "MIT",
+  "main": "src/index.js",
+  "bin": {
+    "pmk-traceability": "src/traceability.js",
+    "pmk-confluence-sync": "src/confluence-sync.js"
+  },
+  "scripts": {
+    "test": "echo 'tests TBD'"
+  },
+  "dependencies": {
+    "gray-matter": "^4.0.3"
+  },
+  "engines": {
+    "node": ">=20.0"
+  }
+}

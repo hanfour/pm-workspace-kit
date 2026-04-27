@@ -1,53 +1,34 @@
 {
   "name": "pm-workspace-kit",
-  "version": "0.1.0",
-  "private": false,
-  "description": "An opinionated PM/SA workspace kit: traceability, ADRs, Strangler Fig migration, and AI-friendly documentation templates — with scripts and a docs site.",
+  "version": "0.3.0",
+  "private": true,
+  "description": "An opinionated PM/SA workspace kit — Docusaurus docs site, traceability scripts, CLI (pmk), and desktop app. Monorepo.",
   "license": "MIT",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
   "scripts": {
-    "docusaurus": "docusaurus",
-    "start": "docusaurus start",
-    "build": "docusaurus build",
-    "serve": "docusaurus serve",
-    "deploy": "docusaurus deploy",
-    "write-translations": "docusaurus write-translations",
-    "write-heading-ids": "docusaurus write-heading-ids",
-    "typecheck": "tsc",
-    "clear": "docusaurus clear",
-    "traceability:matrix": "node scripts/traceability.js matrix",
-    "traceability:check": "node scripts/traceability.js check",
-    "confluence:sync": "node scripts/confluence-sync.js sync",
-    "confluence:sync:dry": "node scripts/confluence-sync.js sync --dry-run",
-    "confluence:list": "node scripts/confluence-sync.js list"
-  },
-  "dependencies": {
-    "@docusaurus/core": "3.10.0",
-    "@docusaurus/preset-classic": "3.10.0",
-    "@mdx-js/react": "^3.0.0",
-    "clsx": "^2.0.0",
-    "prism-react-renderer": "^2.3.0",
-    "react": "^18.0.0",
-    "react-dom": "^18.0.0"
-  },
-  "devDependencies": {
-    "@docusaurus/module-type-aliases": "3.10.0",
-    "@docusaurus/tsconfig": "3.10.0",
-    "@docusaurus/types": "3.10.0",
-    "gray-matter": "^4.0.3",
-    "typescript": "~5.6.2"
+    "start": "npm --workspace apps/docs run start",
+    "build": "npm --workspace apps/docs run build",
+    "serve": "npm --workspace apps/docs run serve",
+    "traceability:matrix": "node packages/core/src/traceability.js matrix --cwd=apps/docs",
+    "traceability:check": "node packages/core/src/traceability.js check --cwd=apps/docs",
+    "confluence:sync": "node packages/core/src/confluence-sync.js sync --cwd=apps/docs",
+    "confluence:sync:dry": "node packages/core/src/confluence-sync.js sync --cwd=apps/docs --dry-run",
+    "confluence:list": "node packages/core/src/confluence-sync.js list --cwd=apps/docs",
+    "desktop:dev": "npm --workspace apps/desktop run dev",
+    "desktop:build": "npm --workspace apps/desktop run build",
+    "cli:build": "npm --workspace packages/cli run build",
+    "pmk": "npm --workspace packages/cli run start --"
   },
   "overrides": {
     "serialize-javascript": "^7.0.5",
     "uuid": "^14.0.0",
-    "webpack": "~5.105.0"
-  },
-  "browserslist": {
-    "production": [">0.5%", "not dead", "not op_mini all"],
-    "development": [
-      "last 3 chrome version",
-      "last 3 firefox version",
-      "last 5 safari version"
-    ]
+    "webpack": "~5.105.0",
+    "esbuild": "^0.25.0",
+    "vite": "^6.3.5",
+    "dompurify": "^3.3.4"
   },
   "engines": {
     "node": ">=20.0"
@@ -61,7 +42,9 @@
     "documentation",
     "ai-native",
     "pm-workflow",
-    "template"
+    "template",
+    "electron",
+    "cli"
   ],
   "repository": {
     "type": "git",

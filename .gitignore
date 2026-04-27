@@ -26,6 +26,24 @@ npm-debug.log*
 
 # Sync state (per-machine, not to commit)
 .confluence-sync-state.json
+apps/docs/.confluence-sync-state.json
+
+# Docusaurus build output in workspace
+apps/docs/build/
+apps/docs/.docusaurus/
+
+# TS build output
+packages/*/dist/
+apps/*/dist/
+
+# electron-vite output
+apps/*/out/
+
+# electron-builder output
+apps/*/release/
+
+# pmk local state (RAG index, parks)
+.pmk/
 
 # Office temp locks
 ~$*.pptx

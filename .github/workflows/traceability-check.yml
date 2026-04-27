@@ -3,11 +3,12 @@ name: Traceability check
 on:
   pull_request:
     paths:
-      - 'docs/prds/**/*.md'
-      - 'docs/specs/**/*.md'
-      - 'docs/plans/**/*.md'
+      - 'apps/docs/docs/prds/**/*.md'
+      - 'apps/docs/docs/specs/**/*.md'
+      - 'apps/docs/docs/plans/**/*.md'
+      - 'apps/docs/docs/requirements/**/*.md'
       - '.claude/plans/**/*.md'
-      - 'scripts/traceability.js'
+      - 'packages/core/src/traceability.js'
       - 'package.json'
       - 'package-lock.json'
 
@@ -27,25 +28,26 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Collect changed markdown files
+      - name: Collect changed markdown files (relative to apps/docs)
         id: files
         run: |
           changed=$(git diff --name-only --diff-filter=AM "origin/${{ github.base_ref }}"...HEAD \
-            -- 'docs/prds/**/*.md' 'docs/specs/**/*.md' 'docs/plans/**/*.md' '.claude/plans/**/*.md' \
+            -- 'apps/docs/docs/prds/**/*.md' 'apps/docs/docs/specs/**/*.md' 'apps/docs/docs/plans/**/*.md' 'apps/docs/docs/requirements/**/*.md' '.claude/plans/**/*.md' \
+            | sed 's|^apps/docs/||g' \
             | tr '\n' ' ')
           echo "files=$changed" >> "$GITHUB_OUTPUT"
-          echo "Changed files: $changed"
+          echo "Changed files (relative to apps/docs): $changed"
 
       - name: Run front-matter check on changed files
         if: steps.files.outputs.files != ''
-        run: node scripts/traceability.js check ${{ steps.files.outputs.files }}
+        run: node packages/core/src/traceability.js check --cwd=apps/docs ${{ steps.files.outputs.files }}
 
       - name: Regenerate traceability matrix and verify committed copy is up to date
         run: |
-          node scripts/traceability.js matrix
-          if [ -f docs/traceability-matrix.md ]; then
-            if ! git diff --exit-code docs/traceability-matrix.md; then
-              echo "::error::docs/traceability-matrix.md is stale. Run 'npm run traceability:matrix' locally and commit the result."
+          node packages/core/src/traceability.js matrix --cwd=apps/docs
+          if [ -f apps/docs/docs/traceability-matrix.md ]; then
+            if ! git diff --exit-code apps/docs/docs/traceability-matrix.md; then
+              echo "::error::apps/docs/docs/traceability-matrix.md is stale. Run 'npm run traceability:matrix' locally and commit the result."
               exit 1
             fi
           fi
