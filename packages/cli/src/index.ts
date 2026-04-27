@@ -11,6 +11,7 @@ import { indexCommand } from "./commands/index-cmd";
 import { resumeCommand } from "./commands/resume";
 import { worktreeCommand } from "./commands/worktree";
 import { tddCommand } from "./commands/tdd";
+import { exploreCommand } from "./commands/explore";
 
 dotenv.config({ quiet: true });
 
@@ -20,9 +21,9 @@ program
   .name("pmk")
   .description(
     "pmk — pm-workspace-kit command-line interface.\n" +
-      "Verbs: propose / ingest / apply / discuss / ask / debug / index / resume / worktree / tdd.",
+      "Verbs: propose / ingest / apply / discuss / ask / debug / index / resume / worktree / tdd / explore.",
   )
-  .version("0.4.0-m7");
+  .version("0.5.0-dev");
 
 program
   .command("propose [topic]")
@@ -45,12 +46,21 @@ program
   );
 
 program
-  .command("ingest <path>")
+  .command("ingest <target>")
   .description(
-    "Load an existing file into conversation context, then continue the chat.",
+    "Load context into conversation: a file path, OR `mra:<repo>` to pull PKB Layer 0+1+2 from a multi-repo-agent workspace.",
   )
-  .action(async (filePath: string) => {
-    await ingestCommand(filePath);
+  .action(async (target: string) => {
+    await ingestCommand(target);
+  });
+
+program
+  .command("explore <repo>")
+  .description(
+    "Delegate deep code exploration to mra (multi-repo-agent). Spawns `mra <repo> --with-deps`; auto-parks on exit.",
+  )
+  .action(async (repo: string) => {
+    await exploreCommand(repo);
   });
 
 program
