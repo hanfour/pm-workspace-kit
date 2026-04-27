@@ -8,8 +8,9 @@ import {
   findMraWorkspace,
   loadPkbBase,
   mraDoctor,
-  resolveMraRepo,
   PKB_BASE_DOCS,
+  PKB_DIR_RELATIVE,
+  resolveMraRepo,
 } from "../src/adapters/mra";
 
 const ORIG = {
@@ -37,14 +38,25 @@ describe("findMraWorkspace", () => {
     fs.rmSync(tmp, { recursive: true, force: true });
   });
 
-  it("returns the dir holding .mra-config", () => {
-    fs.writeFileSync(path.join(tmp, ".mra-config"), "{}");
+  it("returns the dir holding .collab/repos.json (primary marker)", () => {
+    fs.mkdirSync(path.join(tmp, ".collab"));
+    fs.writeFileSync(path.join(tmp, ".collab", "repos.json"), "{}");
     const nested = path.join(tmp, "a", "b");
     fs.mkdirSync(nested, { recursive: true });
     assert.equal(findMraWorkspace(nested), tmp);
   });
 
-  it("returns the dir holding mra-workspace.json (alt convention)", () => {
+  it("falls back to a bare .collab dir (mid-init state)", () => {
+    fs.mkdirSync(path.join(tmp, ".collab"));
+    assert.equal(findMraWorkspace(tmp), tmp);
+  });
+
+  it("falls back to .mra-config (legacy / future-compat marker)", () => {
+    fs.writeFileSync(path.join(tmp, ".mra-config"), "{}");
+    assert.equal(findMraWorkspace(tmp), tmp);
+  });
+
+  it("falls back to mra-workspace.json (alt convention)", () => {
     fs.writeFileSync(path.join(tmp, "mra-workspace.json"), "{}");
     assert.equal(findMraWorkspace(tmp), tmp);
   });
@@ -52,11 +64,9 @@ describe("findMraWorkspace", () => {
   it("returns undefined when no marker is found in any ancestor", () => {
     const start = path.join(tmp, "deep", "nested");
     fs.mkdirSync(start, { recursive: true });
-    // tmp itself has no .mra-config; the system / has no expectation
-    // here, but `/` won't have one either, so result is undefined.
     const result = findMraWorkspace(start);
-    // Either undefined OR an unrelated ancestor on the test machine —
-    // but it must not be `tmp` (we didn't create the marker there).
+    // tmp itself has no marker. Result must not be tmp; may be undefined
+    // or an unrelated ancestor on the test machine.
     assert.notEqual(result, tmp);
   });
 });
@@ -98,14 +108,14 @@ describe("loadPkbBase", () => {
 
   beforeEach(() => {
     repo = fs.mkdtempSync(path.join(os.tmpdir(), "pmk-mra-pkb-"));
-    fs.mkdirSync(path.join(repo, ".collab", "pkb"), { recursive: true });
+    fs.mkdirSync(path.join(repo, PKB_DIR_RELATIVE), { recursive: true });
   });
 
   afterEach(() => fs.rmSync(repo, { recursive: true, force: true }));
 
   it("returns the four base docs when all are present", () => {
     for (const name of PKB_BASE_DOCS) {
-      fs.writeFileSync(path.join(repo, ".collab", "pkb", name), `# ${name}`);
+      fs.writeFileSync(path.join(repo, PKB_DIR_RELATIVE, name), `# ${name}`);
     }
     const docs = loadPkbBase(repo);
     assert.equal(docs.length, 4);
@@ -119,18 +129,44 @@ describe("loadPkbBase", () => {
     }
   });
 
-  it("skips missing docs without throwing", () => {
+  it("loads from .mra/pkb/, not the older .collab/pkb/", () => {
+    // Plant docs at the WRONG path (the v0.5 layout); loader must skip.
+    const wrongDir = path.join(repo, ".collab", "pkb");
+    fs.mkdirSync(wrongDir, { recursive: true });
+    fs.writeFileSync(path.join(wrongDir, "sitemap.md"), "# old");
+    // Plant a doc at the RIGHT path.
     fs.writeFileSync(
-      path.join(repo, ".collab", "pkb", "identity.md"),
-      "# identity",
+      path.join(repo, PKB_DIR_RELATIVE, "sitemap.md"),
+      "# correct",
     );
     const docs = loadPkbBase(repo);
     assert.equal(docs.length, 1);
-    assert.equal(docs[0].name, "identity.md");
+    assert.equal(docs[0].content.trim(), "# correct");
   });
 
-  it("returns empty when .collab/pkb does not exist", () => {
-    fs.rmSync(path.join(repo, ".collab"), { recursive: true });
+  it("skips missing docs without throwing", () => {
+    fs.writeFileSync(
+      path.join(repo, PKB_DIR_RELATIVE, "sitemap.md"),
+      "# sitemap",
+    );
+    const docs = loadPkbBase(repo);
+    assert.equal(docs.length, 1);
+    assert.equal(docs[0].name, "sitemap.md");
+  });
+
+  it("does NOT include identity.md (not produced by current mra)", () => {
+    // Even if a stray identity.md exists, it isn't in PKB_BASE_DOCS so
+    // it should be ignored.
+    fs.writeFileSync(
+      path.join(repo, PKB_DIR_RELATIVE, "identity.md"),
+      "# stray",
+    );
+    const docs = loadPkbBase(repo);
+    assert.equal(docs.length, 0);
+  });
+
+  it("returns empty when .mra/pkb does not exist", () => {
+    fs.rmSync(path.join(repo, ".mra"), { recursive: true });
     assert.deepEqual(loadPkbBase(repo), []);
   });
 });
