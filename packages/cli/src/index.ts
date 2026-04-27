@@ -12,6 +12,7 @@ import { resumeCommand } from "./commands/resume";
 import { worktreeCommand } from "./commands/worktree";
 import { tddCommand } from "./commands/tdd";
 import { exploreCommand } from "./commands/explore";
+import { caseCommand } from "./commands/case";
 
 dotenv.config({ quiet: true });
 
@@ -21,9 +22,9 @@ program
   .name("pmk")
   .description(
     "pmk — pm-workspace-kit command-line interface.\n" +
-      "Verbs: propose / ingest / apply / discuss / ask / debug / index / resume / worktree / tdd / explore.",
+      "Verbs: propose / ingest / apply / discuss / ask / debug / index / resume / worktree / tdd / explore / case.",
   )
-  .version("0.5.0-dev");
+  .version("0.6.0-dev");
 
 program
   .command("propose [topic]")
@@ -62,6 +63,30 @@ program
   .action(async (repo: string) => {
     await exploreCommand(repo);
   });
+
+program
+  .command("case <action> [args...]")
+  .description(
+    "Long-lived bug investigation: open / resume / list / show / close. State persists across sessions.",
+  )
+  .option("--ingest <spec>", "PKB to load (e.g. mra:erp,oss-ui-v2)")
+  .option("--title <text>", "human-readable title (default: name)")
+  .option("--symptom <text>", "initial symptom description")
+  .option("--resolution <text>", "(close) resolution summary")
+  .action(
+    async (
+      action: string,
+      rest: string[],
+      opts: {
+        ingest?: string;
+        title?: string;
+        symptom?: string;
+        resolution?: string;
+      },
+    ) => {
+      await caseCommand(action, rest, opts);
+    },
+  );
 
 program
   .command("apply [plan]")
