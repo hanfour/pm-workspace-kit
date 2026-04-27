@@ -7,6 +7,7 @@ import { Session } from "../session";
 import { PROMPT_INGEST, PROMPT_DISCUSS } from "../prompts";
 import { repl, println, writeToken } from "../io";
 import {
+  listMraWorkspaceReposWithPkb,
   loadPkbBase,
   mraDoctor,
   resolveMraRepo,
@@ -17,12 +18,20 @@ const MRA_PREFIX = "mra:";
 const PKB_STALE_DAYS = 7;
 
 /**
+ * Soft cap on total ingested context size. ~150 KB ≈ 50K tokens; well
+ * within Sonnet's 200K window once you account for system prompt + the
+ * response itself. Above this we warn but proceed.
+ */
+const PKB_TOTAL_CHAR_WARN = 150_000;
+
+/**
  * `pmk ingest <target>` — load context into a conversation, then REPL.
  *
- * Two modes:
- *  - plain path:    `pmk ingest ./spec.md` loads the file
- *  - mra: scheme:   `pmk ingest mra:erp/order` loads PKB Layer 0+1+2
- *                   (identity / sitemap / architecture / api-surface)
+ * Three modes:
+ *   - plain path:           `pmk ingest ./spec.md`
+ *   - single mra repo:      `pmk ingest mra:erp`
+ *   - multi mra repos:      `pmk ingest mra:erp,oss-ui-v2,api-gateway`
+ *   - whole workspace:      `pmk ingest mra:--all` (every repo with PKB)
  */
 export async function ingestCommand(target: string): Promise<void> {
   const { contextBlock, banner } = target.startsWith(MRA_PREFIX)
@@ -62,7 +71,10 @@ export async function ingestCommand(target: string): Promise<void> {
   );
 }
 
-function loadFromFile(filePath: string): { contextBlock: string; banner: string } {
+function loadFromFile(filePath: string): {
+  contextBlock: string;
+  banner: string;
+} {
   const abs = path.resolve(process.cwd(), filePath);
   if (!fs.existsSync(abs)) {
     console.error(chalk.red(`[pmk] file not found: ${filePath}`));
@@ -75,54 +87,128 @@ function loadFromFile(filePath: string): { contextBlock: string; banner: string 
   };
 }
 
-function loadFromMra(repo: string): { contextBlock: string; banner: string } {
-  if (!repo) {
-    println(chalk.red("usage: pmk ingest mra:<repo>"));
+function loadFromMra(spec: string): { contextBlock: string; banner: string } {
+  if (!spec) {
+    println(
+      chalk.red("usage: pmk ingest mra:<repo> | mra:repo1,repo2 | mra:--all"),
+    );
     process.exit(1);
   }
+
   const doctor = mraDoctor();
   if (!doctor.ok) {
     println(chalk.red(`[pmk] ${doctor.reason}`));
     process.exit(1);
   }
-  const repoPath = resolveMraRepo(doctor.workspace!, repo);
-  if (!repoPath) {
+  const workspace = doctor.workspace!;
+
+  const repos = resolveRepoSpec(spec, workspace);
+  if (repos.length === 0) {
     println(
       chalk.red(
-        `[pmk] repo \`${repo}\` not found in workspace ${doctor.workspace}`,
+        `[pmk] no repos with PKB found for spec \`${spec}\` in ${workspace}`,
       ),
     );
     process.exit(1);
   }
-  const docs = loadPkbBase(repoPath);
-  if (docs.length === 0) {
+
+  const blocks: string[] = [];
+  const allDocs: Array<{ repo: string; doc: PkbDoc }> = [];
+  const missing: string[] = [];
+
+  for (const repo of repos) {
+    const repoPath = resolveMraRepo(workspace, repo);
+    if (!repoPath) {
+      missing.push(`${repo} (dir not found)`);
+      continue;
+    }
+    const docs = loadPkbBase(repoPath);
+    if (docs.length === 0) {
+      missing.push(`${repo} (no PKB)`);
+      continue;
+    }
+    for (const d of docs) allDocs.push({ repo, doc: d });
+    blocks.push(formatRepoBlock(repo, docs));
+  }
+
+  if (allDocs.length === 0) {
     println(
       chalk.red(
-        `[pmk] no PKB found at ${repoPath}/.collab/pkb/. Run \`mra analyze ${repo}\` first.`,
+        `[pmk] none of the requested repos have PKB. Run \`mra analyze <repo>\` first.`,
       ),
     );
     process.exit(1);
   }
-  warnIfStale(docs, repo);
-  const totalChars = docs.reduce((s, d) => s + d.content.length, 0);
+
+  if (missing.length) {
+    println(chalk.yellow(`[pmk] skipped: ${missing.join(", ")}`));
+  }
+
+  warnIfStale(allDocs);
+  const totalChars = allDocs.reduce((s, e) => s + e.doc.content.length, 0);
+  if (totalChars > PKB_TOTAL_CHAR_WARN) {
+    println(
+      chalk.yellow(
+        `[pmk] context is ${totalChars.toLocaleString()} chars (~${Math.round(totalChars / 3.5).toLocaleString()} tokens). Above ${PKB_TOTAL_CHAR_WARN.toLocaleString()} the conversation may run tight on long answers.`,
+      ),
+    );
+  }
+
+  const loadedRepos = Array.from(new Set(allDocs.map((e) => e.repo)));
+  const repoSummary =
+    loadedRepos.length === 1
+      ? `mra:${loadedRepos[0]}`
+      : `mra:${loadedRepos.length} repos (${loadedRepos.slice(0, 3).join(", ")}${loadedRepos.length > 3 ? ", …" : ""})`;
   return {
-    contextBlock: docs
-      .map(
-        (d) =>
-          `### ${d.name}\n\n\`\`\`markdown\n${d.content.trim()}\n\`\`\``,
-      )
-      .join("\n\n"),
-    banner: `mra:${repo} · ${docs.length} PKB doc(s), ${totalChars.toLocaleString()} chars`,
+    contextBlock: blocks.join("\n\n---\n\n"),
+    banner: `${repoSummary} · ${allDocs.length} PKB doc(s), ${totalChars.toLocaleString()} chars`,
   };
 }
 
-function warnIfStale(docs: PkbDoc[], repo: string): void {
-  const oldest = Math.min(...docs.map((d) => d.mtime));
-  const ageDays = (Date.now() - oldest) / (1000 * 60 * 60 * 24);
-  if (ageDays > PKB_STALE_DAYS) {
+/**
+ * Resolve a repo spec into the actual list of repos to load.
+ *  - `--all` walks the workspace via repos.json and picks ones with PKB
+ *  - comma-separated list is split and trimmed
+ *  - single name is returned as a one-element list
+ */
+function resolveRepoSpec(spec: string, workspace: string): string[] {
+  if (spec === "--all") {
+    return listMraWorkspaceReposWithPkb(workspace);
+  }
+  return spec
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+function formatRepoBlock(repo: string, docs: PkbDoc[]): string {
+  return [
+    `## repo: ${repo}`,
+    ...docs.map(
+      (d) => `### ${d.name}\n\n\`\`\`markdown\n${d.content.trim()}\n\`\`\``,
+    ),
+  ].join("\n\n");
+}
+
+function warnIfStale(entries: Array<{ repo: string; doc: PkbDoc }>): void {
+  // Group oldest mtime per repo so the warning lists every stale repo,
+  // not just the single oldest doc.
+  const perRepo = new Map<string, number>();
+  for (const { repo, doc } of entries) {
+    const cur = perRepo.get(repo);
+    if (cur === undefined || doc.mtime < cur) perRepo.set(repo, doc.mtime);
+  }
+  const stale: string[] = [];
+  for (const [repo, mtime] of perRepo) {
+    const ageDays = (Date.now() - mtime) / (1000 * 60 * 60 * 24);
+    if (ageDays > PKB_STALE_DAYS) {
+      stale.push(`${repo} (${Math.round(ageDays)}d)`);
+    }
+  }
+  if (stale.length) {
     println(
       chalk.yellow(
-        `[pmk] warning: oldest PKB doc is ${Math.round(ageDays)} days old. Consider \`mra analyze ${repo}\` to refresh.`,
+        `[pmk] warning: PKB stale in ${stale.join(", ")}. Consider \`mra analyze\` on each.`,
       ),
     );
   }
