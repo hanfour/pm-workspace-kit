@@ -30,6 +30,13 @@ import {
   saveCase,
   stripCaseUpdateBlock,
 } from "../../case";
+import {
+  listMraWorkspaceReposWithPkb,
+  loadPkbBase,
+  mraDoctor,
+  resolveMraRepo,
+  type PkbDoc,
+} from "../../adapters/mra";
 import * as path from "node:path";
 import * as fs from "node:fs";
 
@@ -266,6 +273,20 @@ export class SlackAdapter {
     }
 
     const session = loadUserSession(userId);
+    // First turn: seed the conversation with PKB context from
+    // config.defaultIngest (e.g. mra:--all). Without this the model
+    // truthfully says it has no idea about the user's codebase even
+    // though we configured the ingest spec at gateway init.
+    if (session.messages.length === 0 && this.config.defaultIngest) {
+      const seed = buildIngestSeed(this.config.defaultIngest);
+      if (seed) {
+        session.messages.push({ role: "user", content: seed });
+        session.messages.push({
+          role: "assistant",
+          content: "了解，已載入 workspace PKB context。請繼續。",
+        });
+      }
+    }
     session.messages.push({ role: "user", content: text });
     session.turns += 1;
 
@@ -520,6 +541,49 @@ export class SlackAdapter {
       }
     }
   }
+}
+
+/**
+ * Build a one-shot seed message containing PKB content for the
+ * configured ingest spec. Returns undefined when no PKB is found.
+ *
+ * Pattern: same as the case command's buildSeedMessage — we package
+ * the four base docs per repo so the model can ground answers in real
+ * module names / API endpoints.
+ */
+function buildIngestSeed(ingestSpec: string): string | undefined {
+  const doctor = mraDoctor();
+  if (!doctor.ok) return undefined;
+  const tail = ingestSpec.startsWith("mra:") ? ingestSpec.slice(4) : ingestSpec;
+  const repos =
+    tail === "--all"
+      ? listMraWorkspaceReposWithPkb(doctor.workspace!)
+      : tail
+          .split(",")
+          .map((r) => r.trim())
+          .filter(Boolean);
+
+  const blocks: string[] = [];
+  for (const repo of repos) {
+    const repoPath = resolveMraRepo(doctor.workspace!, repo);
+    if (!repoPath) continue;
+    const docs = loadPkbBase(repoPath);
+    if (docs.length === 0) continue;
+    blocks.push(
+      [
+        `## repo: ${repo}`,
+        ...docs.map(
+          (d) => `### ${d.name}\n\n\`\`\`markdown\n${d.content.trim()}\n\`\`\``,
+        ),
+      ].join("\n\n"),
+    );
+  }
+  if (blocks.length === 0) return undefined;
+  return [
+    "我先把 workspace 的 PKB context 給你（後續對話請用這些事實作答；缺的就老實說沒有，不要編造）：",
+    "",
+    blocks.join("\n\n---\n\n"),
+  ].join("\n");
 }
 
 // ─────────────────────────── ambient Slack types ──────────────────────
