@@ -57,6 +57,8 @@ export class SlackAdapter {
   private lastSeenAt?: number;
   private llm: LlmProvider;
   private inFlight = new Set<string>();
+  /** Envelope IDs we've already accepted; protects against Slack retries. */
+  private seenEnvelopes = new Set<string>();
 
   constructor(opts: SlackAdapterOptions) {
     if (!opts.config.slack.appToken || !opts.config.slack.botToken) {
@@ -112,6 +114,11 @@ export class SlackAdapter {
   private async handleMessage(
     payload: Slack.MessageEventPayload,
   ): Promise<void> {
+    // ACK FIRST — Slack retries any event we don't ack within ~3s, and
+    // LLM round-trips routinely take longer. Without an early ack the
+    // user sees the same prompt processed two or three times.
+    await payload.ack?.().catch(() => {});
+
     const event = payload?.event;
     if (!event || event.subtype === "bot_message") return;
     if (event.bot_id) return; // ignore bots, including ourselves
@@ -133,6 +140,16 @@ export class SlackAdapter {
 
     const text = (event.text ?? "").trim();
     if (!text) return;
+
+    // Slack retry of an event we already accepted? Drop silently —
+    // we've either replied or are still processing the original.
+    if (
+      this.seenEnvelopes.has(payload.envelope_id) ||
+      (payload.retry_num ?? 0) > 0
+    ) {
+      return;
+    }
+    this.seenEnvelopes.add(payload.envelope_id);
 
     if (this.inFlight.has(userId)) {
       await this.web.chat.postMessage({
@@ -169,8 +186,17 @@ export class SlackAdapter {
   private async handleAppMention(
     payload: Slack.AppMentionEventPayload,
   ): Promise<void> {
+    await payload.ack?.().catch(() => {});
+
     const event = payload?.event;
     if (!event || !this.botInfo) return;
+    if (
+      this.seenEnvelopes.has(payload.envelope_id) ||
+      (payload.retry_num ?? 0) > 0
+    ) {
+      return;
+    }
+    this.seenEnvelopes.add(payload.envelope_id);
     const channelId = event.channel;
     const userId = event.user;
     const threadTs = event.thread_ts ?? event.ts;
@@ -518,9 +544,17 @@ declare namespace Slack {
     thread_ts?: string;
   }
   interface MessageEventPayload {
+    ack?: (response?: unknown) => Promise<void>;
+    envelope_id: string;
+    retry_num?: number;
+    retry_reason?: string;
     event?: MessageEvent;
   }
   interface AppMentionEventPayload {
+    ack?: (response?: unknown) => Promise<void>;
+    envelope_id: string;
+    retry_num?: number;
+    retry_reason?: string;
     event?: AppMentionEvent;
   }
 }
