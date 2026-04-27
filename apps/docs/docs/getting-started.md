@@ -8,9 +8,11 @@ A 10-minute walkthrough: clone, install, write your first traceable PRD, watch t
 
 ## Prerequisites
 
-- Node.js 18 or newer
+- Node.js 20 or newer
 - Git
 - A markdown editor
+- (Optional) [`mra`](https://github.com/hanfour/multi-repo-agent) — only needed if you want `pmk` to grok a multi-repo codebase
+- (Optional) Anthropic API key or Claude Code login — only needed for the `pmk` LLM verbs
 
 ## 1. Clone and install
 
@@ -108,6 +110,35 @@ Edit the copy: title, Context, Decision, Consequences (positive / negative / neu
 ## 7. Wire Confluence sync (optional)
 
 If your team publishes PRDs to Confluence, see the [Confluence Sync guide](./guides/confluence-sync.md) — reviewer comments and approval-status labels flow back into your markdown automatically every 30 minutes.
+
+## 8. Try the CLI (optional)
+
+Steps 1–7 only use the docs + traceability layer. The kit also ships `pmk`, a CLI that turns each PM verb into a guided LLM session producing a tracked artifact in your repo.
+
+```bash
+npm run cli:build       # builds packages/cli → dist
+npx pmk --help          # see all verbs
+```
+
+Two verbs to start with:
+
+```bash
+# PRD-authoring interview — drops the result into docs/prds/<slug>.md
+npx pmk propose "weekly digest dashboard"
+
+# RAG over your indexed docs (run `pmk index` first)
+npx pmk index
+npx pmk ask "how does our auth flow work?"
+```
+
+If you want stakeholders to drive `pmk` from Slack instead of a terminal:
+
+```bash
+npx pmk gateway init    # one-time: paste Slack app + bot tokens
+npx pmk gateway start   # foreground bridge — leave this running
+```
+
+The gateway is a host-run Slack bridge (Socket Mode), not a SaaS bot — your tokens and your code stay on your machine. See [ADR-0006: pmk gateway](./adr/0006-pmk-gateway-slack.md) for the design rationale.
 
 ## What next
 

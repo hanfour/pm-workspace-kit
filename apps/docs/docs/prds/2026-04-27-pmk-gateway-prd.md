@@ -63,7 +63,7 @@ v0.7.0 ships Slack first (Socket Mode, no public URL needed). LINE follows in v0
 > As a PM, I @-mention the bot in `#oss-debug`: `@pmk-bot open cue-checkbox`. The bot creates a channel-scoped case. Three engineers and the PM all post observations into the thread; the bot tracks hypotheses, evidence, and next-questions automatically. Anyone can `@pmk-bot show` to see current state.
 
 **US-03 — Host shuts laptop, bot goes offline transparently**
-> As the bot host, I close my laptop. Within 30s, my bot's Slack presence shows as away; users who try to DM see "active 3 minutes ago." When I reopen, the bot reconnects, replays queued messages, and replies normally — with a one-line note "I was offline from <X> to <Y>" on the first reply per thread.
+> As the bot host, I close my laptop. Within 30s, my bot's Slack presence shows as away; users who try to DM see "active 3 minutes ago." When I reopen, the bot reconnects, replays queued messages, and replies normally — with a one-line note "I was offline from `<X>` to `<Y>`" on the first reply per thread.
 
 **US-04 — Host sees who's using pmk**
 > As the host, `pmk gateway stats` shows me per-user message count and cumulative token estimate over the last 7 days. I can `/blocklist <userId>` if someone abuses it.
