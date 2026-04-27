@@ -1,7 +1,10 @@
 /**
  * Re-export prompts from the single source of truth in @pmk/shared so
- * the CLI and the desktop app never drift. Customisation still goes
- * through `.claude/skills/<verb>.md` at the workspace root.
+ * the CLI and the desktop app never drift.
+ *
+ * (Per-workspace prompt overrides are not implemented yet — see
+ * https://github.com/hanfour/pm-workspace-kit/issues for the v1.1
+ * tracking issue.)
  */
 
 export {

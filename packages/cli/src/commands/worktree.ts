@@ -27,7 +27,10 @@ export function assertSafeBranch(branch: string): void {
   if (branch.startsWith("-")) {
     throw new Error(`branch name cannot start with '-': ${branch}`);
   }
-  if (branch.includes("..") || /\s|[\x00-\x1f]/.test(branch)) {
+  // Reject all ASCII whitespace + control chars (0x00-0x20, includes
+  // space, tab, LF, NUL, etc). The whitelist below catches non-ASCII
+  // whitespace (  etc.).
+  if (branch.includes("..") || /[\x00-\x20]/.test(branch)) {
     throw new Error(`branch name contains forbidden characters: ${branch}`);
   }
   if (!/^[A-Za-z0-9_./-]+$/.test(branch)) {
@@ -69,9 +72,7 @@ export async function worktreeCommand(
         // Branch may already exist → fall back to no -b.
         try {
           git(["worktree", "add", dir, branch]);
-          println(
-            chalk.green(`worktree attached → ${dir} (branch ${branch})`),
-          );
+          println(chalk.green(`worktree attached → ${dir} (branch ${branch})`));
         } catch {
           println(chalk.red(`failed: ${(err as Error).message}`));
           process.exit(1);
