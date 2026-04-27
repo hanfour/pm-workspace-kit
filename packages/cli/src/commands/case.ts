@@ -9,15 +9,18 @@ import {
   addHypothesis,
   addQuestion,
   appendTimeline,
+  applyCaseUpdate,
   caseExists,
   CASE_VERSION,
   loadCase,
   listCases,
   newCase,
+  parseCaseUpdate,
   renderCaseMarkdown,
   resolveQuestion,
   saveCase,
   setHypothesisStatus,
+  stripCaseUpdateBlock,
   type CaseFile,
 } from "../case";
 import {
@@ -174,14 +177,16 @@ async function openCase(name: string, opts: CaseOpenOptions): Promise<void> {
       onToken: writeToken,
     });
     println("");
-    session.addAssistant(ack);
+    const ackVisible = stripCaseUpdateBlock(ack);
+    session.addAssistant(ackVisible);
     c.messages = session.history();
-    appendTimeline(c, "assistant", truncate(ack, 200));
+    appendTimeline(c, "assistant", truncate(ackVisible, 200));
+    autoApplyCaseUpdate(c, ack);
     saveCase(c);
   } else {
     println(
       chalk.dim(
-        `last update ${c.updatedAt}. Type your next observation, or /show to see case state.`,
+        `last update ${c.updatedAt}. Type naturally — pmk auto-tracks hypotheses, evidence, and next-questions. /help for slash commands.`,
       ),
     );
   }
@@ -206,15 +211,17 @@ async function openCase(name: string, opts: CaseOpenOptions): Promise<void> {
         onToken: writeToken,
       });
       println("");
-      session.addAssistant(response);
+      const visible = stripCaseUpdateBlock(response);
+      session.addAssistant(visible);
       c.messages = session.history();
-      appendTimeline(c, "assistant", truncate(response, 200));
+      appendTimeline(c, "assistant", truncate(visible, 200));
+      autoApplyCaseUpdate(c, response);
       saveCase(c);
     },
     {
       prompt: "you>",
       greeting:
-        "Slash commands: /show /symptom /hypothesis /rule-out /confirm /evidence /next /resolve /done",
+        "Just type. pmk auto-tracks hypotheses / evidence / questions. /help for advanced.",
     },
   );
 
@@ -287,6 +294,49 @@ function formatRepoBlock(repo: string, docs: PkbDoc[]): string {
 
 function truncate(s: string, max: number): string {
   return s.length <= max ? s : s.slice(0, max) + "…";
+}
+
+/**
+ * Parse the assistant's `case-update` fenced block (if any) and apply
+ * each action to the case file. Prints a `✓` line per applied action
+ * so the user sees what was tracked. The user can `/undo` to revert
+ * the last batch if the model misclassified.
+ */
+function autoApplyCaseUpdate(c: CaseFile, fullResponse: string): void {
+  const { actions } = parseCaseUpdate(fullResponse);
+  if (actions.length === 0) return;
+  // Snapshot for /undo: shallow copies of the mutable arrays.
+  lastSnapshot = {
+    name: c.name,
+    symptom: c.symptom,
+    hypotheses: c.hypotheses.map((h) => ({ ...h })),
+    evidence: c.evidence.map((e) => ({ ...e })),
+    openQuestions: c.openQuestions.map((q) => ({ ...q })),
+  };
+  const summaries = applyCaseUpdate(c, actions);
+  for (const s of summaries) {
+    println(chalk.green(`  ✓ ${s}`));
+  }
+}
+
+interface CaseSnapshot {
+  name: string;
+  symptom: string;
+  hypotheses: CaseFile["hypotheses"];
+  evidence: CaseFile["evidence"];
+  openQuestions: CaseFile["openQuestions"];
+}
+
+let lastSnapshot: CaseSnapshot | null = null;
+
+function undoLast(c: CaseFile): boolean {
+  if (!lastSnapshot || lastSnapshot.name !== c.name) return false;
+  c.symptom = lastSnapshot.symptom;
+  c.hypotheses = lastSnapshot.hypotheses;
+  c.evidence = lastSnapshot.evidence;
+  c.openQuestions = lastSnapshot.openQuestions;
+  lastSnapshot = null;
+  return true;
 }
 
 /**
@@ -384,6 +434,34 @@ function handleSlash(c: CaseFile, line: string): "stop" | boolean {
       println(chalk.green(`question resolved (removed from queue).`));
       return true;
     }
+    case "/undo": {
+      if (undoLast(c)) {
+        appendTimeline(c, "slash", "/undo");
+        println(chalk.green("undid last auto-tracked update."));
+      } else {
+        println(chalk.yellow("nothing to undo."));
+      }
+      return true;
+    }
+    case "/help":
+      println(chalk.bold("\nCase REPL slash commands"));
+      println(
+        chalk.dim(
+          "  Most of the time you don't need these — pmk auto-tracks from your conversation.\n" +
+            "  Use these when the model misclassified or you want explicit control.\n",
+        ),
+      );
+      println("  /show              render the case as Markdown");
+      println("  /symptom <text>    set the symptom");
+      println("  /hypothesis <t>    add a hypothesis manually");
+      println("  /rule-out  N [r]   mark hypothesis #N as ruled-out");
+      println("  /confirm   N [r]   mark hypothesis #N as confirmed");
+      println("  /evidence  <text>  add evidence (source: reporter)");
+      println("  /next      <text>  queue a question for the reporter");
+      println("  /resolve   N       remove question #N (answered)");
+      println("  /undo              revert the last auto-tracked update");
+      println("  /done | /quit      save and exit");
+      return true;
     case "/done":
     case "/quit":
       return "stop";

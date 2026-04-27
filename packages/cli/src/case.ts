@@ -72,14 +72,19 @@ export function casePath(name: string): string {
   return path.join(casesDir(), `${name}.json`);
 }
 
-export function listCases(): Array<Pick<CaseFile, "name" | "title" | "status" | "updatedAt">> {
+export function listCases(): Array<
+  Pick<CaseFile, "name" | "title" | "status" | "updatedAt">
+> {
   const dir = casesDir();
   if (!fs.existsSync(dir)) return [];
-  const out: Array<Pick<CaseFile, "name" | "title" | "status" | "updatedAt">> = [];
+  const out: Array<Pick<CaseFile, "name" | "title" | "status" | "updatedAt">> =
+    [];
   for (const f of fs.readdirSync(dir)) {
     if (!f.endsWith(".json")) continue;
     try {
-      const data = JSON.parse(fs.readFileSync(path.join(dir, f), "utf8")) as CaseFile;
+      const data = JSON.parse(
+        fs.readFileSync(path.join(dir, f), "utf8"),
+      ) as CaseFile;
       out.push({
         name: data.name,
         title: data.title,
@@ -224,6 +229,152 @@ export function appendTimeline(
     kind,
     content,
   });
+}
+
+/**
+ * Parsed action from the model's `case-update` fenced block.
+ * One line in the block becomes one CaseUpdate.
+ */
+export type CaseUpdate =
+  | { kind: "symptom"; text: string }
+  | { kind: "hypothesis"; text: string }
+  | { kind: "rule-out"; index: number; note: string }
+  | { kind: "confirm"; index: number; note: string }
+  | { kind: "evidence"; text: string }
+  | { kind: "next-question"; text: string }
+  | { kind: "resolve"; index: number };
+
+/**
+ * Pull the `case-update` fenced block (if any) out of an assistant
+ * response. Returns the parsed actions plus the original block text
+ * (so callers can strip it from the displayed response).
+ */
+export function parseCaseUpdate(response: string): {
+  actions: CaseUpdate[];
+  raw: string;
+} {
+  const fence = /```case-update\n([\s\S]*?)```/.exec(response);
+  if (!fence) return { actions: [], raw: "" };
+  const body = fence[1];
+  const actions: CaseUpdate[] = [];
+  for (const rawLine of body.split("\n")) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith("#")) continue;
+    const m = /^([a-z-]+)(?:\s+(\d+))?\s*:\s*(.+)$/.exec(line);
+    if (!m) {
+      // Allow bare `resolve N` with no value (we treat the index as the only payload).
+      const bareIdx = /^([a-z-]+)\s+(\d+)\s*$/.exec(line);
+      if (bareIdx && bareIdx[1] === "resolve") {
+        actions.push({ kind: "resolve", index: parseInt(bareIdx[2], 10) });
+      }
+      continue;
+    }
+    const [, kind, idxStr, value] = m;
+    switch (kind) {
+      case "symptom":
+        actions.push({ kind: "symptom", text: value });
+        break;
+      case "hypothesis":
+        actions.push({ kind: "hypothesis", text: value });
+        break;
+      case "rule-out":
+      case "confirm":
+        if (idxStr === undefined) break;
+        actions.push({
+          kind,
+          index: parseInt(idxStr, 10),
+          note: value,
+        });
+        break;
+      case "evidence":
+        actions.push({ kind: "evidence", text: value });
+        break;
+      case "next-question":
+        actions.push({ kind: "next-question", text: value });
+        break;
+      case "resolve":
+        if (idxStr !== undefined) {
+          actions.push({ kind: "resolve", index: parseInt(idxStr, 10) });
+        }
+        break;
+    }
+  }
+  return { actions, raw: fence[0] };
+}
+
+/**
+ * Strip a `case-update` fenced block from a response so the
+ * user-facing text doesn't include the machine-readable directive.
+ */
+export function stripCaseUpdateBlock(response: string): string {
+  return response
+    .replace(/\n*```case-update\n[\s\S]*?```\s*$/, "")
+    .replace(/```case-update\n[\s\S]*?```\n*/g, "")
+    .trimEnd();
+}
+
+/**
+ * Apply parsed actions to the case file, in order. Returns short
+ * human-readable summaries of each successful application — caller
+ * prints these as `✓` lines under the assistant turn so the user
+ * sees what was tracked.
+ */
+export function applyCaseUpdate(c: CaseFile, actions: CaseUpdate[]): string[] {
+  const out: string[] = [];
+  for (const a of actions) {
+    switch (a.kind) {
+      case "symptom":
+        c.symptom = a.text;
+        out.push(`symptom set: ${truncateLine(a.text, 80)}`);
+        break;
+      case "hypothesis": {
+        // Skip duplicates (same text, case-insensitive trim).
+        const norm = a.text.trim().toLowerCase();
+        if (c.hypotheses.some((h) => h.text.trim().toLowerCase() === norm)) {
+          break;
+        }
+        addHypothesis(c, a.text);
+        out.push(
+          `hypothesis #${c.hypotheses.length}: ${truncateLine(a.text, 80)}`,
+        );
+        break;
+      }
+      case "rule-out":
+      case "confirm": {
+        const status = a.kind === "rule-out" ? "ruled-out" : "confirmed";
+        const h = setHypothesisStatus(c, a.index, status, a.note);
+        if (h) {
+          out.push(`hypothesis #${a.index} → ${status}`);
+        }
+        break;
+      }
+      case "evidence":
+        addEvidence(c, "system", a.text);
+        out.push(`evidence #${c.evidence.length}: ${truncateLine(a.text, 80)}`);
+        break;
+      case "next-question": {
+        const norm = a.text.trim().toLowerCase();
+        if (c.openQuestions.some((q) => q.text.trim().toLowerCase() === norm)) {
+          break;
+        }
+        addQuestion(c, a.text);
+        out.push(
+          `next-question #${c.openQuestions.length}: ${truncateLine(a.text, 80)}`,
+        );
+        break;
+      }
+      case "resolve": {
+        const q = resolveQuestion(c, a.index);
+        if (q) out.push(`resolved question #${a.index}`);
+        break;
+      }
+    }
+  }
+  return out;
+}
+
+function truncateLine(s: string, max: number): string {
+  return s.length <= max ? s : s.slice(0, max) + "…";
 }
 
 /**

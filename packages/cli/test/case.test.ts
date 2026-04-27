@@ -8,6 +8,7 @@ import {
   addHypothesis,
   addQuestion,
   appendTimeline,
+  applyCaseUpdate,
   caseExists,
   CASE_VERSION,
   casePath,
@@ -15,10 +16,12 @@ import {
   listCases,
   loadCase,
   newCase,
+  parseCaseUpdate,
   renderCaseMarkdown,
   resolveQuestion,
   saveCase,
   setHypothesisStatus,
+  stripCaseUpdateBlock,
 } from "../src/case";
 
 const ORIG_HOME = process.env.HOME;
@@ -37,7 +40,11 @@ describe("case file lifecycle", () => {
   });
 
   it("save → load round-trips and bumps updatedAt", async () => {
-    const c = newCase({ name: "demo", title: "Demo bug", symptom: "x is broken" });
+    const c = newCase({
+      name: "demo",
+      title: "Demo bug",
+      symptom: "x is broken",
+    });
     const file = saveCase(c);
     assert.equal(file, casePath("demo"));
     const loaded = loadCase("demo");
@@ -154,6 +161,107 @@ describe("hypothesis + evidence + question mutators", () => {
     assert.equal(c.timeline.length, 2);
     assert.equal(c.timeline[0].kind, "slash");
     assert.equal(c.timeline[1].content, "is it cached?");
+  });
+});
+
+describe("parseCaseUpdate + applyCaseUpdate", () => {
+  it("parses every action kind from a fenced block", () => {
+    const response = `Some prose answer.
+
+\`\`\`case-update
+symptom: checkbox missing for some users
+hypothesis: browser cache
+hypothesis: feature flag in localStorage
+rule-out 1: still missing in incognito
+confirm 2: cleared by removing localStorage key
+evidence: reporter saw it again after Cmd+Shift+R
+next-question: what role does the user have?
+resolve 3
+\`\`\``;
+
+    const { actions } = parseCaseUpdate(response);
+    assert.equal(actions.length, 8);
+    assert.deepEqual(actions[0], {
+      kind: "symptom",
+      text: "checkbox missing for some users",
+    });
+    assert.deepEqual(actions[1], { kind: "hypothesis", text: "browser cache" });
+    assert.deepEqual(actions[3], {
+      kind: "rule-out",
+      index: 1,
+      note: "still missing in incognito",
+    });
+    assert.deepEqual(actions[4], {
+      kind: "confirm",
+      index: 2,
+      note: "cleared by removing localStorage key",
+    });
+    assert.deepEqual(actions[7], { kind: "resolve", index: 3 });
+  });
+
+  it("returns no actions when the block is absent", () => {
+    const r = parseCaseUpdate("just prose, no fence");
+    assert.deepEqual(r.actions, []);
+    assert.equal(r.raw, "");
+  });
+
+  it("ignores malformed lines and keeps the rest", () => {
+    const response = `\`\`\`case-update
+hypothesis: good one
+this line has no colon
+rule-out: missing index
+hypothesis: another good one
+\`\`\``;
+    const { actions } = parseCaseUpdate(response);
+    assert.equal(actions.length, 2);
+    assert.deepEqual(actions, [
+      { kind: "hypothesis", text: "good one" },
+      { kind: "hypothesis", text: "another good one" },
+    ]);
+  });
+
+  it("stripCaseUpdateBlock removes the fenced block from prose", () => {
+    const response = `Visible prose here.
+
+\`\`\`case-update
+hypothesis: x
+\`\`\``;
+    const stripped = stripCaseUpdateBlock(response);
+    assert.equal(stripped, "Visible prose here.");
+  });
+
+  it("applyCaseUpdate skips duplicate hypotheses (case-insensitive)", () => {
+    const c = newCase({ name: "x" });
+    addHypothesis(c, "Browser Cache");
+    applyCaseUpdate(c, [
+      { kind: "hypothesis", text: "browser cache" }, // dup
+      { kind: "hypothesis", text: "feature flag" },
+    ]);
+    assert.equal(c.hypotheses.length, 2);
+    assert.equal(c.hypotheses[1].text, "feature flag");
+  });
+
+  it("applyCaseUpdate skips duplicate next-questions", () => {
+    const c = newCase({ name: "x" });
+    addQuestion(c, "What role?");
+    applyCaseUpdate(c, [
+      { kind: "next-question", text: "what role?" },
+      { kind: "next-question", text: "What browser?" },
+    ]);
+    assert.equal(c.openQuestions.length, 2);
+  });
+
+  it("applyCaseUpdate returns human-readable summaries", () => {
+    const c = newCase({ name: "x" });
+    const summaries = applyCaseUpdate(c, [
+      { kind: "symptom", text: "ABC" },
+      { kind: "hypothesis", text: "first guess" },
+      { kind: "next-question", text: "ask reporter for HAR" },
+    ]);
+    assert.equal(summaries.length, 3);
+    assert.match(summaries[0], /symptom set/);
+    assert.match(summaries[1], /hypothesis #1/);
+    assert.match(summaries[2], /next-question #1/);
   });
 });
 
