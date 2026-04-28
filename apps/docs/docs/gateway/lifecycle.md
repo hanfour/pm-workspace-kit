@@ -58,6 +58,15 @@ Sessions are persisted on the host machine:
 
 A reply that lives in a Slack thread gets its own session file — context from thread A never bleeds into thread B. Top-level DMs share one "main" session per user (back-compat with v0.7.0 layout).
 
+**Auto-pruning (v0.8.1)**: when a session's `approxTokens` crosses `MAX_SESSION_TOKENS` (default `60_000`, override via `PMK_MAX_SESSION_TOKENS` env), the oldest non-seed turns are dropped before persisting:
+
+- The PKB seed pair (Phase 3) is always preserved
+- The most recent `KEEP_RECENT_TURNS` (default 10) `(user, assistant)` pairs are always preserved
+- Everything in between is replaced by a synthetic `(此處省略 N 輪較舊的對話以節省 context)` marker so the model knows there was earlier history
+- Idempotent — if no new turns push back over cap, subsequent calls are no-ops
+
+The host log line `pruned session: dropped N turn-pair(s); now <tokens> approx tokens` confirms when it fires.
+
 ## 3. PKB seed on first turn
 
 The very first turn of any session, if `cfg.defaultIngest` is set (typically `mra:--all`), the gateway packages the four base PKB docs of every repo with a PKB directory and prepends them as a synthetic `(user → assistant)` turn pair:

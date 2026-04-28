@@ -41,8 +41,12 @@ import { mraDoctor, runMraAsk } from "../src/adapters/mra";
 import {
   buildMraFailureMessage,
   buildMraSuccessMessage,
+  KEEP_RECENT_TURNS,
+  MAX_SESSION_TOKENS,
+  pruneSessionIfNeeded,
   truncate,
 } from "../src/gateway/messaging";
+import type { ChatMessage } from "@pmk/shared";
 import { pickAudience, pickEscalationPool } from "../src/gateway/config";
 import {
   AUDIENCE_KEYS,
@@ -510,6 +514,132 @@ describe("messaging helpers", () => {
       stderr: "rate limited",
     });
     assert.match(m, /引用上面 stderr 提到的具體原因/);
+  });
+});
+
+describe("pruneSessionIfNeeded (#18)", () => {
+  // Helper to build a session with N (user, assistant) pairs after an
+  // optional PKB seed pair. Each message content is sized to push
+  // approxTokens past MAX_SESSION_TOKENS.
+  function makeSession(opts: {
+    pairs: number;
+    contentSize: number;
+    withSeed: boolean;
+  }) {
+    const messages: ChatMessage[] = [];
+    if (opts.withSeed) {
+      messages.push({
+        role: "user",
+        content: `我先把 workspace 的 PKB context 給你（後續對話請用這些事實作答；缺的就老實說沒有，不要編造）：\n${"#".repeat(2_000)}`,
+      });
+      messages.push({
+        role: "assistant",
+        content: "了解，已載入 workspace PKB context。請繼續。",
+      });
+    }
+    for (let i = 0; i < opts.pairs; i++) {
+      messages.push({
+        role: "user",
+        content: `user turn ${i}: ${"x".repeat(opts.contentSize)}`,
+      });
+      messages.push({
+        role: "assistant",
+        content: `assistant turn ${i}: ${"y".repeat(opts.contentSize)}`,
+      });
+    }
+    const totalChars = messages.reduce((n, m) => n + m.content.length, 0);
+    return {
+      messages,
+      approxTokens: Math.ceil(totalChars / 3.5),
+    };
+  }
+
+  it("no-op when under cap", () => {
+    const session = makeSession({ pairs: 3, contentSize: 100, withSeed: true });
+    const before = session.messages.length;
+    const r = pruneSessionIfNeeded(session);
+    assert.equal(r.pruned, false);
+    assert.equal(session.messages.length, before);
+  });
+
+  it("prunes oldest pairs when over cap, preserves PKB seed + last K pairs", () => {
+    // 60 pairs × 4 000 chars each ≈ 137k tokens — well over the 60k cap.
+    const session = makeSession({
+      pairs: 60,
+      contentSize: 4_000,
+      withSeed: true,
+    });
+    assert.ok(
+      session.approxTokens > MAX_SESSION_TOKENS,
+      "fixture should exceed cap",
+    );
+
+    const r = pruneSessionIfNeeded(session);
+    assert.equal(r.pruned, true);
+    assert.ok(r.droppedPairs > 0);
+
+    // PKB seed retained
+    assert.match(
+      session.messages[0].content,
+      /我先把 workspace 的 PKB context/,
+    );
+    assert.equal(session.messages[1].role, "assistant");
+
+    // Marker inserted right after seed
+    assert.match(session.messages[2].content, /^\(此處省略 \d+ 輪/);
+
+    // Last KEEP_RECENT_TURNS pairs retained at the end
+    const tail = session.messages.slice(-KEEP_RECENT_TURNS * 2);
+    assert.equal(tail.length, KEEP_RECENT_TURNS * 2);
+    assert.match(tail[0].content, /^user turn \d+/);
+
+    // Token tally rebuilt
+    assert.equal(r.tokensAfter, session.approxTokens);
+    assert.ok(r.tokensAfter < MAX_SESSION_TOKENS, "post-prune still over cap");
+  });
+
+  it("idempotent on already-pruned session", () => {
+    const session = makeSession({
+      pairs: 60,
+      contentSize: 4_000,
+      withSeed: true,
+    });
+    pruneSessionIfNeeded(session);
+    const lengthAfterFirstPrune = session.messages.length;
+
+    // Run again immediately — should be a no-op.
+    const second = pruneSessionIfNeeded(session);
+    assert.equal(second.pruned, false);
+    assert.equal(session.messages.length, lengthAfterFirstPrune);
+  });
+
+  it("prunes correctly when there is no PKB seed", () => {
+    const session = makeSession({
+      pairs: 60,
+      contentSize: 4_000,
+      withSeed: false,
+    });
+    assert.ok(session.approxTokens > MAX_SESSION_TOKENS);
+
+    const r = pruneSessionIfNeeded(session);
+    assert.equal(r.pruned, true);
+    // First message is now the marker (no seed to preserve)
+    assert.match(session.messages[0].content, /^\(此處省略 \d+ 輪/);
+    // Last KEEP_RECENT_TURNS pairs retained
+    const tail = session.messages.slice(-KEEP_RECENT_TURNS * 2);
+    assert.equal(tail.length, KEEP_RECENT_TURNS * 2);
+  });
+
+  it("no-op when over cap but message count is small (single huge message)", () => {
+    // Edge case: one absurdly long message can put us over cap with
+    // nothing to prune. Should bail rather than mangle the array.
+    const session: { messages: ChatMessage[]; approxTokens: number } = {
+      messages: [{ role: "user", content: "x".repeat(MAX_SESSION_TOKENS * 4) }],
+      approxTokens: MAX_SESSION_TOKENS + 1_000,
+    };
+    const r = pruneSessionIfNeeded(session);
+    assert.equal(r.pruned, false);
+    assert.equal(session.messages.length, 1);
   });
 });
 

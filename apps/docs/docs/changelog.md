@@ -8,6 +8,24 @@ All notable changes to **pm-workspace-kit** are documented here.
 
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Each release also has a longer narrative on [GitHub Releases](https://github.com/hanfour/pm-workspace-kit/releases) with rationale, dogfood notes, and test plans.
 
+## [v0.8.1] — 2026-04-28 — session context-window auto-pruning
+
+[GitHub release](https://github.com/hanfour/pm-workspace-kit/releases/tag/v0.8.1) · closes [#18](https://github.com/hanfour/pm-workspace-kit/issues/18)
+
+### Added
+
+- `pruneSessionIfNeeded(session)` in `gateway/messaging.ts` — when a session crosses `MAX_SESSION_TOKENS` (default `60_000`, override via `PMK_MAX_SESSION_TOKENS` env), drops the oldest non-seed turns. Always preserves the PKB seed pair plus the most recent `KEEP_RECENT_TURNS` (default 10) user/assistant pairs; inserts a synthetic `(此處省略 N 輪較舊的對話以節省 context)` marker so the model knows there was earlier history.
+- Idempotent — re-running on an already-pruned session is a no-op until enough new turns push back over cap.
+- Host log line `pruned session: dropped N turn-pair(s); now <tokens> approx tokens` confirms when it fires.
+
+### Why
+
+Until v0.8.1, `UserSession.messages` accumulated forever. Each gateway-DM turn pushes 2 messages (user + assistant), the mra-ask round adds 2 more, the PKB seed adds 2 on first turn. After ~50 turns in a single thread the session approaches the model's context window — slow LLM round-trips, eventual `context_length_exceeded`, linear token-cost growth. v0.8.1 caps that.
+
+### Tests
+
+151 → 156 (+5: under-cap no-op, over-cap pruning preserves seed + tail, idempotent on already-pruned, no-seed branch, single-huge-message edge case).
+
 ## [v0.8.0] — 2026-04-28 — `pm` audience tier
 
 [GitHub release](https://github.com/hanfour/pm-workspace-kit/releases/tag/v0.8.0) · closes [#27](https://github.com/hanfour/pm-workspace-kit/issues/27)
