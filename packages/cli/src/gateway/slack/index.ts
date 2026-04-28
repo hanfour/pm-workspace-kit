@@ -45,6 +45,7 @@ import {
   buildIngestSeed,
   buildMraFailureMessage,
   buildMraSuccessMessage,
+  pruneSessionIfNeeded,
   truncate,
 } from "../messaging";
 import { parseEscalate, stripEscalateBlock } from "../escalate";
@@ -487,6 +488,17 @@ export class SlackAdapter {
     );
     session.messages.push({ role: "assistant", content: visible });
     session.approxTokens = approxTokensFor(session.messages);
+
+    // v0.8.1: trim long histories before persisting. Idempotent — only
+    // fires when over MAX_SESSION_TOKENS; preserves PKB seed + last
+    // KEEP_RECENT_TURNS pairs; inserts a "(此處省略...)" marker for
+    // the model to see there was earlier history.
+    const pruneReport = pruneSessionIfNeeded(session);
+    if (pruneReport.pruned) {
+      this.onLog(
+        `pruned session: dropped ${pruneReport.droppedPairs} turn-pair(s); now ${pruneReport.tokensAfter} approx tokens`,
+      );
+    }
     saveSession(session);
 
     await this.web.chat.update({

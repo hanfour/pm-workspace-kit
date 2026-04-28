@@ -4,6 +4,7 @@
  * other adapters (LINE etc.) when those land.
  */
 
+import type { ChatMessage } from "@pmk/shared";
 import {
   listMraWorkspaceReposWithPkb,
   loadPkbBase,
@@ -120,4 +121,138 @@ export function buildMraSuccessMessage(repo: string, stdout: string): string {
     truncate(stdout.trim(), 24_000),
     "```",
   ].join("\n");
+}
+
+// ─────────────────── session pruning (v0.8.1, #18) ──────────────────────
+
+/**
+ * Soft cap for `session.approxTokens` before pruning kicks in. Set to
+ * about 70% of a typical 90k-token gateway-DM context budget — leaves
+ * headroom for system prompt + retrieval prefix + the new user turn
+ * and the model's reply.
+ *
+ * Tunable via `PMK_MAX_SESSION_TOKENS` env var so hosts can override
+ * without rebuilding (e.g. drop to 30k for cheaper Haiku-tier models
+ * or push higher for Opus-tier 200k budgets).
+ */
+export const MAX_SESSION_TOKENS = (() => {
+  const raw = process.env.PMK_MAX_SESSION_TOKENS;
+  const parsed = raw ? Number.parseInt(raw, 10) : NaN;
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 60_000;
+})();
+
+/** How many recent (user, assistant) pairs to always keep across a prune. */
+export const KEEP_RECENT_TURNS = 10;
+
+interface SessionLike {
+  messages: ChatMessage[];
+  approxTokens: number;
+}
+
+/**
+ * The PKB seed pair, when present, is always the first two messages
+ * of a session and starts with this exact string (set by
+ * `runFreeChatTurn`). Detecting by content prefix avoids storing a
+ * "this is the seed pair" flag on every session.
+ */
+const PKB_SEED_PREFIX = "我先把 workspace 的 PKB context 給你";
+
+/**
+ * Estimate token count for a message-array using the same ~3.5
+ * chars-per-token heuristic the rest of the gateway uses (matches
+ * `approxTokensFor` in slack/index.ts).
+ */
+function approxTokensFor(messages: ChatMessage[]): number {
+  let total = 0;
+  for (const m of messages) total += m.content.length;
+  return Math.ceil(total / 3.5);
+}
+
+export interface PruneResult {
+  pruned: boolean;
+  /** Number of `(user, assistant)` pairs we dropped. */
+  droppedPairs: number;
+  /** Token tally after pruning (matches `session.approxTokens`). */
+  tokensAfter: number;
+}
+
+/**
+ * If a session is approaching context-window saturation, drop the
+ * oldest non-seed turns to bring it back under cap. Always preserves:
+ *
+ *   1. The PKB seed pair (first two messages, when content matches
+ *      `PKB_SEED_PREFIX`)
+ *   2. The most recent `KEEP_RECENT_TURNS` * 2 messages
+ *
+ * Drops everything in between and inserts a synthetic user marker so
+ * the model knows there was earlier history. Idempotent — running
+ * again on an already-pruned session is a no-op.
+ *
+ * The function MUTATES the passed session and returns a small report
+ * for the caller to log. Caller is responsible for calling
+ * `saveSession()` afterward so the pruned state hits disk.
+ */
+export function pruneSessionIfNeeded(session: SessionLike): PruneResult {
+  if (session.approxTokens <= MAX_SESSION_TOKENS) {
+    return {
+      pruned: false,
+      droppedPairs: 0,
+      tokensAfter: session.approxTokens,
+    };
+  }
+
+  const msgs = session.messages;
+  const hasPkbSeed =
+    msgs.length >= 2 &&
+    msgs[0].role === "user" &&
+    msgs[0].content.startsWith(PKB_SEED_PREFIX) &&
+    msgs[1].role === "assistant";
+
+  // Already-pruned sessions have a marker right after the seed; bail
+  // out to keep this idempotent.
+  const seedEnd = hasPkbSeed ? 2 : 0;
+  if (
+    msgs[seedEnd]?.role === "user" &&
+    msgs[seedEnd]?.content.startsWith("(此處省略") &&
+    msgs.length - seedEnd - 1 <= KEEP_RECENT_TURNS * 2
+  ) {
+    // We've already pruned and not enough new turns have accumulated
+    // to need another pass. Recompute tokens just in case.
+    session.approxTokens = approxTokensFor(msgs);
+    return {
+      pruned: false,
+      droppedPairs: 0,
+      tokensAfter: session.approxTokens,
+    };
+  }
+
+  const keepFromEnd = KEEP_RECENT_TURNS * 2;
+  // Nothing to prune if we're already at/below the keep window after
+  // the seed. (Edge case: a single huge message can put us over cap
+  // without there being anything to drop.)
+  if (msgs.length - seedEnd <= keepFromEnd) {
+    return {
+      pruned: false,
+      droppedPairs: 0,
+      tokensAfter: session.approxTokens,
+    };
+  }
+
+  const seedSlice = hasPkbSeed ? msgs.slice(0, 2) : [];
+  const recent = msgs.slice(-keepFromEnd);
+  const dropped = msgs.length - seedEnd - keepFromEnd;
+  const droppedPairs = Math.floor(dropped / 2);
+
+  const marker: ChatMessage = {
+    role: "user",
+    content: `(此處省略 ${droppedPairs} 輪較舊的對話以節省 context — 完整歷史仍在 host 的 session.json)`,
+  };
+
+  session.messages = [...seedSlice, marker, ...recent];
+  session.approxTokens = approxTokensFor(session.messages);
+  return {
+    pruned: true,
+    droppedPairs,
+    tokensAfter: session.approxTokens,
+  };
 }

@@ -58,6 +58,15 @@ Session 都存在 host 機器上：
 
 開在 Slack thread 裡的回覆有自己的 session 檔案 — thread A 的 context 永遠不會洩漏到 thread B。Top-level DM 共用一個 "main" session（保留 v0.7.0 layout 的相容性）。
 
+**自動修剪（v0.8.1）**：當 session 的 `approxTokens` 超過 `MAX_SESSION_TOKENS`（預設 `60_000`，可用 `PMK_MAX_SESSION_TOKENS` env 覆蓋）時，落地之前會把較舊的 turn 砍掉：
+
+- PKB seed pair（Phase 3）一定保留
+- 最近 `KEEP_RECENT_TURNS`（預設 10）對 `(user, assistant)` 一定保留
+- 中間的全部換成一條 `(此處省略 N 輪較舊的對話以節省 context)` 合成 user 訊息，讓 model 知道之前還有歷史
+- Idempotent — 沒有新訊息再次衝過 cap 的話，下次呼叫是 no-op
+
+Host log 出現 `pruned session: dropped N turn-pair(s); now <tokens> approx tokens` 即代表觸發。
+
 ## 3. 第一輪 PKB seed
 
 任何 session 的第一輪，如果 `cfg.defaultIngest` 有設（通常是 `mra:--all`），gateway 會把每個有 PKB 目錄的 repo 的四份 base 文件打包成一段假的 `(user → assistant)` 對話前綴：
