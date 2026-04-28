@@ -180,13 +180,14 @@ This is the v0.7.4 TTL hybrid. Atoms enter as `status: "pending"` with `expiresA
 - **Invisible to retrieval** (`searchAtoms` filters them out) — Phase 4 above won't find them.
 - **Visible in CLI listings** — `pmk gateway atoms list --pending`.
 
-Three exits:
+Four exits:
 
 | Trigger | Effect |
 |---|---|
 | 24h passes; next `loadAtoms()` call | Auto-promote: rewrite file with `status: approved`, drop `expiresAt`. Idempotent on subsequent loads. |
 | `pmk gateway atoms approve <id-prefix>` | Same as above, but immediately. ID prefix matching: any unique prefix resolves. |
 | `pmk gateway atoms reject <id-prefix>` | Delete the `.md` file. |
+| **(v0.8.5)** ✅ react on the bot's pending notice | Same as `approve` — but in-flow, no terminal needed. Only the original IT contributor (atom.source.contributorUserId) is authorised; other reactors are ignored. ❌ react = same as `reject`. Requires `reactions:read` scope on the Slack app side. |
 
 After promotion, the atom is now retrieval-visible. The next person who asks a similar question gets it prepended in Phase 4 — the loop closes.
 

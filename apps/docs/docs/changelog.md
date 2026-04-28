@@ -8,6 +8,28 @@ All notable changes to **pm-workspace-kit** are documented here.
 
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Each release also has a longer narrative on [GitHub Releases](https://github.com/hanfour/pm-workspace-kit/releases) with rationale, dogfood notes, and test plans.
 
+## [v0.8.5] — 2026-04-28 — Slack reaction-based atom approval
+
+[GitHub release](https://github.com/hanfour/pm-workspace-kit/releases/tag/v0.8.5) · closes [#21](https://github.com/hanfour/pm-workspace-kit/issues/21)
+
+### Added
+
+- **✅ / ❌ reactions on the bot's pending-notice** now approve / reject the atom in-flow:
+  - ✅ (`white_check_mark`, `heavy_check_mark`, `+1`) → `approveAtom`, posts ":books: 已生效..." reply
+  - ❌ (`x`, `-1`) → `rejectAtom` (deletes the file), posts ":wastebasket: 已捨棄..." reply
+- Trust model: only the original IT contributor (`atom.source.contributorUserId`) can react. Other reactors are silently ignored. Random thread participants can't approve atoms.
+- `KnowledgeAtom.approval?: { channelId, messageTs }` captures the bot's confirmation post `ts` so reactions can be mapped back to the originating atom. Atoms saved before v0.8.5 don't have this anchor and can't be reaction-approved (CLI fallback still works).
+- `findAtomByApprovalMessage(channelId, messageTs)` helper for the Slack handler.
+
+### Changed
+
+- `gateway init` walkthrough now lists `reactions:read` scope and `reaction_added` event subscription as v0.8.5+ requirements. Existing v0.7.x apps without these scopes keep working — no events fire, TTL auto-promote remains the safety net.
+- The pending-notice text now invites reaction directly: "直接 ✅ 或 ❌ react 這條訊息可立即 approve / reject".
+
+### Tests
+
+162 → 166 (+4: anchor lookup matches; mismatched channel/ts returns undefined; legacy atoms without anchor return undefined; approval round-trips through save/load).
+
 ## [v0.8.4] — 2026-04-28 — BM25 / TF-IDF retrieval for knowledge atoms
 
 [GitHub release](https://github.com/hanfour/pm-workspace-kit/releases/tag/v0.8.4) · closes [#19](https://github.com/hanfour/pm-workspace-kit/issues/19)

@@ -59,6 +59,17 @@ export interface KnowledgeAtom {
   status?: KnowledgeAtomStatus;
   /** Epoch ms when a pending atom auto-promotes; absent on approved. */
   expiresAt?: number;
+  /**
+   * Slack message anchor for v0.8.5 reaction-based approval (#21).
+   * Captures the ts of the bot's "暫存為 pending..." confirmation post
+   * so reactions on that message can be mapped back to this atom.
+   * Absent on atoms saved before v0.8.5 or written without going
+   * through the Slack absorb path.
+   */
+  approval?: {
+    channelId: string;
+    messageTs: string;
+  };
 }
 
 export function knowledgeRoot(): string {
@@ -128,6 +139,7 @@ interface AtomFrontMatter {
   source: { threadKey: string; contributorUserId: string };
   status?: KnowledgeAtomStatus;
   expiresAt?: number;
+  approval?: { channelId: string; messageTs: string };
 }
 
 function renderAtomMarkdown(atom: KnowledgeAtom): string {
@@ -146,6 +158,7 @@ function renderAtomMarkdown(atom: KnowledgeAtom): string {
   };
   if (atom.summary) data.summary = atom.summary;
   if (atom.expiresAt !== undefined) data.expiresAt = atom.expiresAt;
+  if (atom.approval) data.approval = atom.approval;
   const body = [
     `# ${atom.question}`,
     "",
@@ -202,6 +215,15 @@ function parseAtomMarkdown(raw: string): KnowledgeAtom | undefined {
     },
     status,
     expiresAt: typeof data.expiresAt === "number" ? data.expiresAt : undefined,
+    approval:
+      data.approval &&
+      typeof data.approval.channelId === "string" &&
+      typeof data.approval.messageTs === "string"
+        ? {
+            channelId: data.approval.channelId,
+            messageTs: data.approval.messageTs,
+          }
+        : undefined,
   };
 }
 
@@ -346,6 +368,49 @@ export function findAtomByPrefix(idOrPrefix: string): AtomLocation | undefined {
   }
   if (matches.length !== 1) return undefined;
   return matches[0];
+}
+
+/**
+ * v0.8.5 (#21): find an atom by the Slack message ts of its bot
+ * confirmation post (the ":hourglass_flowing_sand: 暫存為 pending"
+ * message). Used by the reaction-approval handler to map a ✅/❌
+ * reaction back to the originating atom.
+ *
+ * Returns undefined when no atom has that anchor — atoms saved
+ * before v0.8.5 won't have an `approval` field.
+ */
+export function findAtomByApprovalMessage(
+  channelId: string,
+  messageTs: string,
+): AtomLocation | undefined {
+  const root = knowledgeRoot();
+  if (!fs.existsSync(root)) return undefined;
+  for (const scope of fs.readdirSync(root)) {
+    const dir = scopeDir(scope);
+    let stat: fs.Stats;
+    try {
+      stat = fs.statSync(dir);
+    } catch {
+      continue;
+    }
+    if (!stat.isDirectory()) continue;
+    for (const f of fs.readdirSync(dir)) {
+      if (!f.endsWith(".md")) continue;
+      try {
+        const raw = fs.readFileSync(path.join(dir, f), "utf8");
+        const atom = parseAtomMarkdown(raw);
+        if (
+          atom?.approval?.channelId === channelId &&
+          atom.approval.messageTs === messageTs
+        ) {
+          return { atom, file: path.join(dir, f) };
+        }
+      } catch {
+        /* skip */
+      }
+    }
+  }
+  return undefined;
 }
 
 /**

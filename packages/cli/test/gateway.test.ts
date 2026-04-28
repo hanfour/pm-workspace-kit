@@ -62,6 +62,7 @@ import {
 } from "@pmk/shared";
 import {
   approveAtom,
+  findAtomByApprovalMessage,
   formatAtomsForInjection,
   generateAtomId,
   knowledgeRoot,
@@ -1364,6 +1365,97 @@ describe("atom-index BM25 (#19)", () => {
     // Late-added atom is now retrievable.
     assert.ok(hits.length >= 2);
     assert.ok(hits.some((a) => a.question.includes("Late-added")));
+  });
+});
+
+describe("findAtomByApprovalMessage (#21)", () => {
+  let tmpHome: string;
+  beforeEach(() => {
+    tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), "pmk-react-approval-"));
+    process.env.HOME = tmpHome;
+  });
+  afterEach(() => {
+    fs.rmSync(tmpHome, { recursive: true, force: true });
+    if (ORIG_HOME !== undefined) process.env.HOME = ORIG_HOME;
+  });
+
+  it("finds atom by approval anchor (channelId + messageTs)", () => {
+    saveAtom({
+      id: generateAtomId("with anchor"),
+      createdAt: Date.now(),
+      scope: "erp",
+      question: "anchored question?",
+      answer: "anchored answer",
+      summary: "s",
+      tags: ["t"],
+      source: { threadKey: "T1", contributorUserId: "U_IT1" },
+      status: "pending",
+      expiresAt: Date.now() + 60_000,
+      approval: { channelId: "C1", messageTs: "1700000000.123456" },
+    });
+    const found = findAtomByApprovalMessage("C1", "1700000000.123456");
+    assert.ok(found);
+    assert.match(found?.atom.question ?? "", /anchored/);
+  });
+
+  it("returns undefined when no atom matches the anchor", () => {
+    saveAtom({
+      id: generateAtomId("anchor mismatch"),
+      createdAt: Date.now(),
+      scope: "erp",
+      question: "q",
+      answer: "a",
+      summary: "s",
+      tags: ["t"],
+      source: { threadKey: "T1", contributorUserId: "U1" },
+      status: "pending",
+      expiresAt: Date.now() + 60_000,
+      approval: { channelId: "C1", messageTs: "1700000000.111111" },
+    });
+    assert.equal(findAtomByApprovalMessage("C1", "wrong-ts"), undefined);
+    assert.equal(
+      findAtomByApprovalMessage("wrong-channel", "1700000000.111111"),
+      undefined,
+    );
+  });
+
+  it("returns undefined for legacy atoms without approval anchor", () => {
+    // Atom written before v0.8.5 — no `approval` in front-matter.
+    saveAtom({
+      id: generateAtomId("legacy no anchor"),
+      createdAt: Date.now(),
+      scope: "erp",
+      question: "legacy?",
+      answer: "legacy answer",
+      summary: "s",
+      tags: ["t"],
+      source: { threadKey: "T1", contributorUserId: "U1" },
+      status: "approved",
+    });
+    assert.equal(findAtomByApprovalMessage("any-channel", "any-ts"), undefined);
+  });
+
+  it("approval anchor round-trips through save/load", () => {
+    const id = generateAtomId("round trip anchor");
+    saveAtom({
+      id,
+      createdAt: Date.now(),
+      scope: "erp",
+      question: "round trip?",
+      answer: "answer",
+      summary: "s",
+      tags: ["t"],
+      source: { threadKey: "T1", contributorUserId: "U1" },
+      status: "pending",
+      expiresAt: Date.now() + 60_000,
+      approval: { channelId: "C-X", messageTs: "1700000000.999999" },
+    });
+    const atoms = loadAtoms({ scope: "erp" });
+    assert.equal(atoms.length, 1);
+    assert.deepEqual(atoms[0].approval, {
+      channelId: "C-X",
+      messageTs: "1700000000.999999",
+    });
   });
 });
 

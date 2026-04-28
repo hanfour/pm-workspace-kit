@@ -84,13 +84,14 @@ async function initCmd(): Promise<void> {
   );
   println(
     chalk.dim(
-      "    3. Event Subscriptions → Enable; subscribe to:  message.im, app_mention",
+      "    3. Event Subscriptions → Enable; subscribe to:  message.im, app_mention, reaction_added (v0.8.5+)",
     ),
   );
   println(chalk.dim("    4. OAuth & Permissions → Scopes (Bot Token):"));
   println(
     chalk.dim(
-      "         app_mentions:read, chat:write, im:history, im:read, im:write, users:read",
+      "         app_mentions:read, chat:write, im:history, im:read, im:write, users:read,\n" +
+        "         reactions:read (v0.8.5+; enables ✅/❌ atom approval on the bot's pending notice)",
     ),
   );
   println(
