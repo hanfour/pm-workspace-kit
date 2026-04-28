@@ -197,6 +197,16 @@ Phase 9 結束後寄給原提問者的合成回覆**不**經過 approval gate（
 
 `/pmk admin <subcommand>` 讓管理員直接從 Slack 內部跑 gateway-config 變更 — 跟 host CLI 同一組面向，日常運維不需要回終端機。
 
+:::caution 在 Slack 輸入 `/pmk` 時請加一個 leading space
+
+Slack client 會把所有 `/` 開頭的訊息當成 slash-command 攔下，由 Slackbot 提示「/pmk 是無效指令」。pmk 目前沒有把 `/pmk` 註冊成真正的 Slack slash-command — 是在 bot 收到 `message` / `app_mention` 事件後，從訊息文字解析出來的。
+
+繞過方式：在斜線前打一個空格，例如 ` /pmk admin help`。Gateway 端的 `text.trim()` 會把空格透明地拿掉。所有 v0.7+ 指令（`/pmk open`、`/pmk show`、`/pmk close`、`/pmk cases`、`/pmk help`）都一樣。
+
+追蹤在 [#39](https://github.com/hanfour/pm-workspace-kit/issues/39) — v0.9.1 會把 `/pmk` 註冊成真正的 Slack slash-command（Socket Mode `slash_commands` event）。
+
+:::
+
 **Bootstrap 必須走終端機。**第一個 admin 必須在 host 端用 `pmk gateway admin add <userId>` 加進去。沒有「從 Slack 把自己加成 admin」的路徑 — 設計如此，因為 workspace 裡每個人都能跑 slash command。
 
 **只能在 DM 用。**在 channel 跑 `/pmk admin` 會回 `:no_entry_sign:`，什麼也不做。這樣可以把審計相關的 mutation 排除在 channel 的 scroll history 之外，也避免不小心外洩。
