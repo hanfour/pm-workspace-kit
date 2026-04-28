@@ -235,6 +235,33 @@ export interface MraAskResult {
   stdout: string;
   stderr: string;
   reason?: string;
+  /** How many subprocess attempts were made (1 = no retry). */
+  attempts: number;
+}
+
+/**
+ * Heuristic for "this looks transient enough to retry once". Live
+ * dogfood (2026-04-28) saw `mra ask` return `Command failed: <argv>`
+ * with **empty stderr** while a manual retry succeeded — the kind of
+ * non-deterministic flake worth one retry. Excluded:
+ *
+ *   - timeouts (the next try will likely also time out)
+ *   - explicit stderr (mra clearly reported a problem; not transient)
+ *   - binary-not-found (won't suddenly appear)
+ */
+function looksTransient(result: MraAskResult): boolean {
+  if (!result.reason) return false;
+  if (result.reason.includes("not found on PATH")) return false;
+  if (result.reason.includes("timed out")) return false;
+  if (result.stderr.trim().length > 0) return false;
+  return true;
+}
+
+interface RunMraAskOpts {
+  /** Max retries on transient failures (default 1 = at most one extra try). */
+  maxRetries?: number;
+  /** Optional progress callback fired before each retry. */
+  onRetry?: (attempt: number, prevResult: MraAskResult) => void;
 }
 
 /**
@@ -249,13 +276,20 @@ export interface MraAskResult {
  *
  * Timeout defaults to 120s — `mra ask` involves an embedded LLM call
  * over the repo, which routinely takes 30–60s.
+ *
+ * Retries: on a transient-looking failure (see {@link looksTransient}),
+ * this function silently retries once. The returned `attempts` field
+ * lets callers see whether a retry happened.
  */
-export async function runMraAsk(args: {
-  repo: string;
-  question: string;
-  cwd: string;
-  timeoutMs?: number;
-}): Promise<MraAskResult> {
+export async function runMraAsk(
+  args: {
+    repo: string;
+    question: string;
+    cwd: string;
+    timeoutMs?: number;
+  },
+  opts: RunMraAskOpts = {},
+): Promise<MraAskResult> {
   const binary = findMraBinary();
   if (!binary) {
     return {
@@ -263,10 +297,30 @@ export async function runMraAsk(args: {
       stdout: "",
       stderr: "",
       reason: "`mra` binary not found on PATH",
+      attempts: 1,
     };
   }
+  const maxRetries = opts.maxRetries ?? 1;
   const timeoutMs = args.timeoutMs ?? 120_000;
-  return await new Promise<MraAskResult>((resolve) => {
+  let last: MraAskResult | undefined;
+  for (let attempt = 1; attempt <= maxRetries + 1; attempt++) {
+    const result = await runMraAskOnce(binary, args, timeoutMs);
+    if (result.ok || !looksTransient(result) || attempt > maxRetries) {
+      return { ...result, attempts: attempt };
+    }
+    last = result;
+    opts.onRetry?.(attempt, result);
+  }
+  // Unreachable in practice but appeases the type checker.
+  return { ...(last as MraAskResult), attempts: maxRetries + 1 };
+}
+
+function runMraAskOnce(
+  binary: string,
+  args: { repo: string; question: string; cwd: string },
+  timeoutMs: number,
+): Promise<MraAskResult> {
+  return new Promise<MraAskResult>((resolve) => {
     const child = execFile(
       binary,
       ["ask", args.repo, args.question],
@@ -286,6 +340,7 @@ export async function runMraAsk(args: {
             reason: killed
               ? `mra ask timed out after ${timeoutMs}ms`
               : err.message,
+            attempts: 1,
           });
           return;
         }
@@ -293,6 +348,7 @@ export async function runMraAsk(args: {
           ok: true,
           stdout: String(stdout ?? ""),
           stderr: String(stderr ?? ""),
+          attempts: 1,
         });
       },
     );
@@ -302,6 +358,7 @@ export async function runMraAsk(args: {
         stdout: "",
         stderr: "",
         reason: err.message,
+        attempts: 1,
       });
     });
   });
