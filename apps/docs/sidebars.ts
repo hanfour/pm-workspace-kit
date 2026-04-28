@@ -84,6 +84,16 @@ const sidebars: SidebarsConfig = {
     },
     {
       type: "category",
+      label: "Gateway (v0.7)",
+      collapsed: false,
+      items: [
+        "gateway/lifecycle",
+        "adr/pmk-gateway-slack",
+        "prds/2026-04-27-pmk-gateway-prd",
+      ],
+    },
+    {
+      type: "category",
       label: "Project Planning",
       collapsed: true,
       items: [
@@ -92,6 +102,7 @@ const sidebars: SidebarsConfig = {
         "plans/2026-04-24-desktop-app-sprint-plan",
       ],
     },
+    "changelog",
   ],
 };
 
