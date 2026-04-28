@@ -61,15 +61,28 @@ npm start
 npm run cli:build                  # builds packages/cli → dist
 npx pmk --help                     # or: npm run pmk -- --help
 
-# A few of the verbs:
-npx pmk propose "weekly digest"    # PRD-authoring interview → docs/prds/*.md
+# Doc-authoring + investigation verbs
+npx pmk propose "weekly digest"              # PRD interview → docs/prds/*.md
 npx pmk ask "how does our auth flow work?"   # RAG over your indexed docs
 npx pmk case open prod-checkout-503          # long-lived bug investigation file
-npx pmk gateway init                          # Slack bridge: paste tokens once
-npx pmk gateway start                         # run the bridge in the foreground
+
+# Slack gateway (v0.7) — host-run bridge so PMs/stakeholders DM pmk in Slack
+npx pmk gateway init                          # one-time: paste Slack tokens + mra workspace path
+npx pmk gateway start                         # run the bridge (foreground)
+npx pmk gateway status                        # configured? running? mra workspace ok?
+npx pmk gateway audience set <userId> biz     # tech / biz / exec tone per user
+npx pmk gateway escalation add <repo> <userId>  # IT/domain contact pool for `escalate`
+npx pmk gateway atoms list --pending          # absorbed knowledge atoms awaiting promotion
+npx pmk gateway atoms approve <id-prefix>     # promote a pending atom to retrieval-visible
 ```
 
-The CLI delegates code-intelligence work to [**multi-repo-agent (mra)**](https://github.com/hanfour/multi-repo-agent) when present — `pmk ingest mra:--all` loads PKB summaries for every repo in the workspace, and the gateway can auto-trigger `mra ask` when a Slack question requires deep code search. mra is optional; pmk degrades gracefully when it's not installed.
+The CLI delegates code-intelligence work to [**multi-repo-agent (mra)**](https://github.com/hanfour/multi-repo-agent) when present. The gateway specifically uses three integrated mechanisms:
+
+- **PKB seed** — first DM/channel turn loads the `mra:--all` summary set so the model grounds answers in real module names from turn one.
+- **Auto-mra-ask** — when PKB isn't enough, the model emits a fenced `mra-ask` block; pmk runs `mra ask <repo>` and feeds the result back for synthesis.
+- **Escalate → absorb → retrieval** — when neither PKB nor mra-ask suffices, the model emits an `escalate` block; pmk @-mentions a registered IT contact in the thread, absorbs their reply as a `KnowledgeAtom`, and retrieves it (after a 24h pending TTL or explicit `pmk gateway atoms approve`) for future similar questions.
+
+mra is optional; pmk degrades gracefully when it's not installed (mra-ask becomes a no-op, the model falls back to PKB-only).
 
 ### C. Desktop app
 
@@ -88,6 +101,20 @@ You don't have to take the whole monorepo. Pick the layer that matches your need
 
 Read [Getting Started](https://hanfour.github.io/pm-workspace-kit/docs/getting-started) to set up front-matter on your first PRD; the [Confluence sync guide](https://hanfour.github.io/pm-workspace-kit/docs/guides/confluence-sync) covers the Confluence loop.
 
+## Latest release: v0.7.4 (2026-04-28)
+
+The v0.7.x series matured the Slack gateway through real dogfood. Highlights:
+
+| Release | Highlight |
+|---|---|
+| [`v0.7.0`](https://github.com/hanfour/pm-workspace-kit/releases/tag/v0.7.0) | Gateway baseline (Socket Mode, audience prompts, escalate/absorb/retrieval scaffolding) |
+| [`v0.7.1`](https://github.com/hanfour/pm-workspace-kit/releases/tag/v0.7.1) | Prompt override fix — without it, mra-ask / escalate directives silently never fired |
+| [`v0.7.2`](https://github.com/hanfour/pm-workspace-kit/releases/tag/v0.7.2) | Explicit `mraWorkspace` config, mra stderr surfaced, `pmk gateway escalation add default` positional |
+| [`v0.7.3`](https://github.com/hanfour/pm-workspace-kit/releases/tag/v0.7.3) | Startup mra validation, `runMraAsk` retry-once on transient flake, helpers extracted |
+| [`v0.7.4`](https://github.com/hanfour/pm-workspace-kit/releases/tag/v0.7.4) | Atom approval **TTL hybrid** — fresh atoms enter `pending` for 24h, auto-promote, or `pmk gateway atoms approve <id>` early |
+
+The full knowledge loop — *PM asks in Slack → bot tries PKB → escalates to mra-ask → escalates to a human IT contact → absorbs the answer → next person who asks gets the cached answer* — works end-to-end. Tests: 75 → **148** in the v0.7 series.
+
 ## Design principles
 
 1. **Git is the single source of truth.** Everything worth arguing about lives in markdown with front-matter.
@@ -97,6 +124,7 @@ Read [Getting Started](https://hanfour.github.io/pm-workspace-kit/docs/getting-s
 5. **Migration is a protocol, not a heroic effort.** The Strangler Fig template gives you four named stages and quantitative exit criteria.
 6. **Verbs over commands.** `pmk` exposes PM workflows as named verbs (`propose`, `case`, `gateway`); each one is a structured conversation, not a flag soup.
 7. **Code intelligence is delegated.** The CLI doesn't grep; it leans on `mra` for repo-scale code understanding so prompts stay grounded in real module names.
+8. **Knowledge needs a half-life.** Absorbed atoms enter a 24h pending state; the host can approve early or let the timer run. Mistakes get a window to be caught before they propagate via retrieval.
 
 ## GitHub Pages
 

@@ -134,11 +134,33 @@ npx pmk ask "how does our auth flow work?"
 If you want stakeholders to drive `pmk` from Slack instead of a terminal:
 
 ```bash
-npx pmk gateway init    # one-time: paste Slack app + bot tokens
+npx pmk gateway init    # one-time: paste Slack app + bot tokens, set mra workspace path
 npx pmk gateway start   # foreground bridge — leave this running
 ```
 
 The gateway is a host-run Slack bridge (Socket Mode), not a SaaS bot — your tokens and your code stay on your machine. See [ADR-0006: pmk gateway](./adr/0006-pmk-gateway-slack.md) for the design rationale.
+
+### v0.7 gateway features
+
+The v0.7.x series matured the gateway through real Slack dogfood. Key surface beyond `init` / `start` / `status` / `stats`:
+
+```bash
+# Audience switching (tech / biz / exec) — same answers, different tone
+pmk gateway audience set <userId> biz       # this user gets business-meaning-first replies
+pmk gateway audience default tech           # default for everyone else
+
+# Escalation pool — who pmk @-mentions when neither PKB nor mra-ask can answer
+pmk gateway escalation add <repo> <userId>  # repo-specific contact
+pmk gateway escalation add default <userId> # fallback contact
+
+# Knowledge atoms — IT replies absorbed for retrieval after a 24h TTL gate
+pmk gateway atoms list --pending            # awaiting promotion
+pmk gateway atoms show <id-prefix>          # full content
+pmk gateway atoms approve <id-prefix>       # promote early (skip the TTL wait)
+pmk gateway atoms reject <id-prefix>        # delete
+```
+
+The full gateway flow — *PM asks → bot tries PKB → asks mra → escalates to a human → absorbs the answer → retrieves it for next person* — is documented in [PRD-2026-0005](./prds/2026-04-27-pmk-gateway-prd.md) and the v0.7 [release notes](https://github.com/hanfour/pm-workspace-kit/releases).
 
 ## What next
 
