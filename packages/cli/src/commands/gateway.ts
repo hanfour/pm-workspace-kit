@@ -18,7 +18,9 @@ import {
   findAtomByPrefix,
   loadAtoms,
   rejectAtom,
+  searchAtoms,
 } from "../gateway/knowledge";
+import { spawnSync } from "node:child_process";
 
 export async function gatewayCommand(
   action: string,
@@ -462,6 +464,8 @@ function atomsUsage(): void {
       "usage:\n" +
         "  pmk gateway atoms list [--all|--pending|--approved] [--scope <name>]\n" +
         "  pmk gateway atoms show <id-or-prefix>\n" +
+        "  pmk gateway atoms search <query> [--scope <name>] [--limit N]\n" +
+        "  pmk gateway atoms edit <id-or-prefix>\n" +
         "  pmk gateway atoms approve <id-or-prefix>\n" +
         "  pmk gateway atoms reject <id-or-prefix>",
     ),
@@ -559,6 +563,134 @@ function atomsCmd(rest: string[]): void {
       }
       println(chalk.bold("Answer"));
       println(found.atom.answer);
+      return;
+    }
+    case "search": {
+      // pmk gateway atoms search <query> [--scope <name>] [--limit N]
+      // Wraps searchAtoms() so the host can dry-run retrieval ranking
+      // without sending a real Slack message — useful after adding a
+      // new atom to verify "would this be retrieved when someone asks
+      // X?" without DM-ing the bot.
+      const scopeIdx = args.indexOf("--scope");
+      const limitIdx = args.indexOf("--limit");
+      const scope = scopeIdx >= 0 ? args[scopeIdx + 1] : undefined;
+      const limitArg =
+        limitIdx >= 0 ? Number.parseInt(args[limitIdx + 1], 10) : NaN;
+      const limit = Number.isFinite(limitArg) && limitArg > 0 ? limitArg : 5;
+      // Reconstruct the query from positional args (everything not a flag).
+      const queryParts: string[] = [];
+      for (let i = 0; i < args.length; i++) {
+        if (args[i] === "--scope" || args[i] === "--limit") {
+          i++; // skip the value too
+          continue;
+        }
+        queryParts.push(args[i]);
+      }
+      const query = queryParts.join(" ").trim();
+      if (!query) {
+        atomsUsage();
+        process.exit(1);
+      }
+      const hits = searchAtoms(query, { scope, limit });
+      println(
+        chalk.bold(
+          `\nsearch results for ${JSON.stringify(query)}${scope ? ` in scope ${scope}` : ""} (top ${limit})`,
+        ),
+      );
+      if (hits.length === 0) {
+        println(
+          chalk.dim(
+            "  (no approved atoms matched — pending atoms are excluded by design)",
+          ),
+        );
+        return;
+      }
+      println(
+        chalk.dim(
+          "  rank  id-prefix             scope       tags                              question",
+        ),
+      );
+      hits.forEach((atom, i) => {
+        const idShort = atom.id
+          .split("-")
+          .slice(0, 2)
+          .join("-")
+          .padEnd(20)
+          .slice(0, 20);
+        const tags = atom.tags.slice(0, 3).join(", ").padEnd(32).slice(0, 32);
+        const q = atom.question.slice(0, 60);
+        println(
+          `  ${String(i + 1).padStart(4)}  ${idShort}  ${atom.scope.padEnd(10).slice(0, 10)}  ${tags}  ${q}`,
+        );
+      });
+      return;
+    }
+    case "edit": {
+      // pmk gateway atoms edit <id-or-prefix> — open the .md file in
+      // $EDITOR (fallback `vi`), validate post-save, atomic replace.
+      const [idOrPrefix] = args;
+      if (!idOrPrefix) {
+        atomsUsage();
+        process.exit(1);
+      }
+      const found = findAtomByPrefix(idOrPrefix);
+      if (!found) {
+        println(
+          chalk.red(
+            `no unique match for '${idOrPrefix}'. Try a longer prefix.`,
+          ),
+        );
+        process.exit(1);
+      }
+      const editor = process.env.EDITOR || process.env.VISUAL || "vi";
+      // Backup the original so we can restore on failure.
+      const originalContent = fs.readFileSync(found.file, "utf8");
+      const backupPath = `${found.file}.editbak`;
+      fs.writeFileSync(backupPath, originalContent, "utf8");
+
+      println(
+        chalk.dim(
+          `opening ${found.file} in ${editor}\n  (post-save: validate front-matter; required fields must keep id/createdAt/question/source)`,
+        ),
+      );
+      const editResult = spawnSync(editor, [found.file], { stdio: "inherit" });
+      if (editResult.status !== 0) {
+        // User aborted ($EDITOR exited non-zero) — leave file alone.
+        fs.unlinkSync(backupPath);
+        println(chalk.dim("(editor exited non-zero; no changes made)"));
+        return;
+      }
+
+      // Re-parse via findAtomByPrefix to validate the post-edit file.
+      const reparsed = findAtomByPrefix(found.atom.id);
+      if (!reparsed) {
+        // Required fields broken; restore.
+        fs.writeFileSync(found.file, originalContent, "utf8");
+        fs.unlinkSync(backupPath);
+        println(
+          chalk.red(
+            "post-edit validation failed (front-matter unparseable or missing required fields). Restored original.",
+          ),
+        );
+        process.exit(1);
+      }
+      // Tag/contributor changes are fine; identity must hold.
+      if (
+        reparsed.atom.id !== found.atom.id ||
+        reparsed.atom.createdAt !== found.atom.createdAt
+      ) {
+        fs.writeFileSync(found.file, originalContent, "utf8");
+        fs.unlinkSync(backupPath);
+        println(
+          chalk.red(
+            "post-edit validation failed (id or createdAt changed). Restored original.",
+          ),
+        );
+        process.exit(1);
+      }
+
+      fs.unlinkSync(backupPath);
+      println(chalk.green(`edited: ${reparsed.atom.id}`));
       return;
     }
     case "approve": {

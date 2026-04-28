@@ -8,6 +8,24 @@ All notable changes to **pm-workspace-kit** are documented here.
 
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Each release also has a longer narrative on [GitHub Releases](https://github.com/hanfour/pm-workspace-kit/releases) with rationale, dogfood notes, and test plans.
 
+## [v0.8.3] — 2026-04-28 — atoms search + edit CLI + commander option pass-through
+
+[GitHub release](https://github.com/hanfour/pm-workspace-kit/releases/tag/v0.8.3) · closes [#20](https://github.com/hanfour/pm-workspace-kit/issues/20)
+
+### Added
+
+- **`pmk gateway atoms search <query> [--scope <name>] [--limit N]`** — wraps `searchAtoms()` for dry-run retrieval ranking. Useful for sanity-checking after a new atom lands ("would this be retrieved when someone asks X?") without DM-ing the bot. Output: rank | id-prefix | scope | tags | question table.
+- **`pmk gateway atoms edit <id-or-prefix>`** — opens the atom's `.md` in `$EDITOR` (fallback `vi`). Post-save validation: re-parses via `gray-matter`, ensures `id` and `createdAt` are unchanged, restores the pre-edit version on parse failure. Tag/summary/answer changes are unrestricted.
+
+### Fixed
+
+- **Commander option pass-through.** Previously `pmk gateway atoms list --pending`, `--scope`, `--limit` etc. were eaten by Commander as unknown root options before reaching the gateway handler. Workaround was `pmk gateway atoms list -- --pending`. Now `--xxx` flags pass through cleanly via `enablePositionalOptions()` + `passThroughOptions()`.
+  - The deprecated `pmk gateway escalation add --default <userId>` form still works (still emits a deprecation warning).
+
+### Tests
+
+158/158 pass (no new — the underlying `searchAtoms` and `findAtomByPrefix` are tested; CLI integration verified via manual smoke).
+
 ## [v0.8.2] — 2026-04-28 — escalate self-tag detection
 
 [GitHub release](https://github.com/hanfour/pm-workspace-kit/releases/tag/v0.8.2) · closes [#30](https://github.com/hanfour/pm-workspace-kit/issues/30)

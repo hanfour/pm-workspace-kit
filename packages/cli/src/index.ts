@@ -19,6 +19,13 @@ dotenv.config({ quiet: true });
 
 const program = new Command();
 
+// Required for `gateway` subcommand's passThroughOptions — without
+// enablePositionalOptions on the root program, commander throws at
+// init time. This makes commander treat first-positional as the
+// command boundary, so flags after `gateway <action>` go to the
+// subcommand's handler instead of being parsed at root.
+program.enablePositionalOptions();
+
 program
   .name("pmk")
   .description(
@@ -68,8 +75,15 @@ program
 program
   .command("gateway <action> [args...]")
   .description(
-    "Run a Slack/LINE bridge so other PMs and stakeholders can chat with pmk via the messengers they already use. Actions: init / start / status / stats.",
+    "Run a Slack/LINE bridge so other PMs and stakeholders can chat with pmk via the messengers they already use. Actions: init / start / status / stats / audience / escalation / atoms.",
   )
+  // Sub-actions parse their own --flags (--pending, --scope, --limit, etc.).
+  // Without this, commander eats any unknown --xxx option before our handler
+  // sees it, forcing users to type `pmk gateway atoms list -- --pending`.
+  // .allowUnknownOption + .passThroughOptions makes the gateway command
+  // forward all unknown args (flags or positional) verbatim to args[].
+  .allowUnknownOption()
+  .passThroughOptions()
   .action(async (action: string, rest: string[]) => {
     await gatewayCommand(action, rest);
   });
