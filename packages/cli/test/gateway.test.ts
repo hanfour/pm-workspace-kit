@@ -45,9 +45,11 @@ import {
 } from "../src/gateway/messaging";
 import { pickAudience, pickEscalationPool } from "../src/gateway/config";
 import {
+  AUDIENCE_KEYS,
   pickGatewayPrompt,
   PROMPT_GATEWAY_DM_BIZ,
   PROMPT_GATEWAY_DM_EXEC,
+  PROMPT_GATEWAY_DM_PM,
   PROMPT_GATEWAY_DM_TECH,
 } from "@pmk/shared";
 import {
@@ -669,6 +671,7 @@ describe("audience picker", () => {
 
   it("pickGatewayPrompt returns the right body per audience", () => {
     assert.equal(pickGatewayPrompt("tech"), PROMPT_GATEWAY_DM_TECH);
+    assert.equal(pickGatewayPrompt("pm"), PROMPT_GATEWAY_DM_PM);
     assert.equal(pickGatewayPrompt("biz"), PROMPT_GATEWAY_DM_BIZ);
     assert.equal(pickGatewayPrompt("exec"), PROMPT_GATEWAY_DM_EXEC);
     // Unknown / undefined falls back to tech.
@@ -680,6 +683,29 @@ describe("audience picker", () => {
     assert.match(PROMPT_GATEWAY_DM_EXEC, /結論/);
     assert.match(PROMPT_GATEWAY_DM_EXEC, /影響/);
     assert.match(PROMPT_GATEWAY_DM_EXEC, /建議行動/);
+  });
+
+  it("pm prompt has translation cheat-sheet + bans formulas in user-facing questions", () => {
+    // Core role hint
+    assert.match(PROMPT_GATEWAY_DM_PM, /senior PM helping another PM/);
+    // Allows file:line refs (so PM can hand off to engineering)
+    assert.match(PROMPT_GATEWAY_DM_PM, /file paths|model names/);
+    // Forbids formulas / SQL in question-back-to-user form
+    assert.match(PROMPT_GATEWAY_DM_PM, /No formulas|No SQL|No code blocks/);
+    // Has the translation table example showing PM-language phrasing
+    assert.match(PROMPT_GATEWAY_DM_PM, /對廣告主報的成本|網域.*版位/);
+  });
+
+  it("AUDIENCE_KEYS lists all 4 keys including pm", () => {
+    assert.deepEqual([...AUDIENCE_KEYS], ["tech", "pm", "biz", "exec"]);
+  });
+
+  it("pickAudience honours per-user pm setting", () => {
+    const cfg = loadGatewayConfig();
+    cfg.audience.users["U_PM1"] = "pm";
+    saveGatewayConfig(cfg);
+    const reload = loadGatewayConfig();
+    assert.equal(pickAudience(reload, "U_PM1"), "pm");
   });
 });
 

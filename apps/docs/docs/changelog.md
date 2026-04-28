@@ -8,6 +8,24 @@ All notable changes to **pm-workspace-kit** are documented here.
 
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Each release also has a longer narrative on [GitHub Releases](https://github.com/hanfour/pm-workspace-kit/releases) with rationale, dogfood notes, and test plans.
 
+## [v0.8.0] — 2026-04-28 — `pm` audience tier
+
+[GitHub release](https://github.com/hanfour/pm-workspace-kit/releases/tag/v0.8.0) · closes [#27](https://github.com/hanfour/pm-workspace-kit/issues/27)
+
+### Added
+
+- New audience tier `pm` between `tech` and `biz`. Keeps full structural depth (file paths, model names, real findings) for *what exists*, but translates *questions back to the user* into PM vocabulary — no formulas, no SQL, no bare schema column names. Includes a translation cheat-sheet in the prompt so the model has explicit examples ("vCPM = cv / impression × 1000 × price?" → "vCPM 在你們有兩種意思：對廣告主報的成本 vs 對媒體分潤的單價。要看哪一種？").
+- `pmk gateway audience set <userId> pm` and `pmk gateway audience default pm` now valid.
+- `AUDIENCE_KEYS` exported from `@pmk/shared` updated to `["tech", "pm", "biz", "exec"]`.
+
+### Caught by
+
+Live dogfood 2026-04-28: a real PM project-scoping question got an excellent tech-tier reply (BigQuery vs API Gateway structural finding was perfect) but alignment questions phrased in formula-grade vocabulary that no PM could answer without first re-asking engineering — defeating the point. The PM tier closes that gap.
+
+### Tests
+
+148 → 151 (+3: prompt body assertions, AUDIENCE_KEYS shape, per-user pm setting).
+
 ## [v0.7.5] — 2026-04-28 — mra timeout-kill mis-classification
 
 [GitHub release](https://github.com/hanfour/pm-workspace-kit/releases/tag/v0.7.5) · PR [#25](https://github.com/hanfour/pm-workspace-kit/pull/25)

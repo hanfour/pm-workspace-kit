@@ -82,6 +82,7 @@ LLM call 的 system prompt 由 `pickGatewayPrompt(audience)` 決定，其中 `au
 | Audience | 口吻 |
 |---|---|
 | `tech` | 直接引用 `app/models/x.rb`、API endpoint、scope 名稱 |
+| `pm` | (v0.8) 結構發現 + 檔案/model 引用照給，但**反問使用者的問題**翻成 PM 用語 — 不出現公式、不出現 schema 欄位名 |
 | `biz` | 先講業務意義、翻譯 jargon、把 code 問題推給 IT |
 | `exec` | 嚴格三段式 結論 / 影響(含風險) / 建議行動 — 不出現程式碼、API、檔案路徑 |
 

@@ -268,9 +268,9 @@ function audienceUsage(): void {
     chalk.yellow(
       "usage:\n" +
         "  pmk gateway audience list\n" +
-        "  pmk gateway audience set <userId> <tech|biz|exec>\n" +
+        "  pmk gateway audience set <userId> <tech|pm|biz|exec>\n" +
         "  pmk gateway audience unset <userId>\n" +
-        "  pmk gateway audience default <tech|biz|exec>",
+        "  pmk gateway audience default <tech|pm|biz|exec>",
     ),
   );
 }
@@ -304,7 +304,7 @@ function audienceCmd(rest: string[]): void {
       if (!isAudienceKey(audience)) {
         println(
           chalk.red(
-            `invalid audience '${audience}'. Allowed: tech / biz / exec.`,
+            `invalid audience '${audience}'. Allowed: tech / pm / biz / exec.`,
           ),
         );
         process.exit(1);
