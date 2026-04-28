@@ -29,6 +29,14 @@ const config: Config = {
     },
   },
 
+  // Enable Mermaid in markdown so docs can embed flow diagrams.
+  // Used by gateway/lifecycle.md (v0.7+).
+  markdown: {
+    mermaid: true,
+  },
+
+  themes: ["@docusaurus/theme-mermaid"],
+
   presets: [
     [
       "classic",
