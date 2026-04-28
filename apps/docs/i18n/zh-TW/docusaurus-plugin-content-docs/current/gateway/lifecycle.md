@@ -197,13 +197,13 @@ Phase 9 結束後寄給原提問者的合成回覆**不**經過 approval gate（
 
 `/pmk admin <subcommand>` 讓管理員直接從 Slack 內部跑 gateway-config 變更 — 跟 host CLI 同一組面向，日常運維不需要回終端機。
 
-:::caution 在 Slack 輸入 `/pmk` 時請加一個 leading space
+:::tip 兩種觸發方式（v0.9.1+）
 
-Slack client 會把所有 `/` 開頭的訊息當成 slash-command 攔下，由 Slackbot 提示「/pmk 是無效指令」。pmk 目前沒有把 `/pmk` 註冊成真正的 Slack slash-command — 是在 bot 收到 `message` / `app_mention` 事件後，從訊息文字解析出來的。
+[v0.9.1](https://github.com/hanfour/pm-workspace-kit/releases/tag/v0.9.1)（[#39](https://github.com/hanfour/pm-workspace-kit/issues/39)）開始，`/pmk` 已註冊為正式的 Slack slash-command。建議直接打 `/pmk admin help` — Slack 會自動補完，把 `slash_commands` envelope 直接送給 bot。不用加 leading space、不會被 Slackbot 提示、回應也不開 thread。
 
-繞過方式：在斜線前打一個空格，例如 ` /pmk admin help`。Gateway 端的 `text.trim()` 會把空格透明地拿掉。所有 v0.7+ 指令（`/pmk open`、`/pmk show`、`/pmk close`、`/pmk cases`、`/pmk help`）都一樣。
+舊的 text-message 路徑（` /pmk admin help` 前面加空格）仍保留為 fallback：給已經習慣這種寫法的人用，也給未來部署到沒註冊 slash-command 的 Slack app 時備用。Gateway 端 `handleDmMessage` / `handleChannelMention` 還是會在 `text.trim()` 後比對 `text.startsWith("/pmk ")`。
 
-追蹤在 [#39](https://github.com/hanfour/pm-workspace-kit/issues/39) — v0.9.1 會把 `/pmk` 註冊成真正的 Slack slash-command（Socket Mode `slash_commands` event）。
+涵蓋指令：`/pmk help`、`/pmk open`、`/pmk show`、`/pmk close`、`/pmk cases`、`/pmk admin`。
 
 :::
 

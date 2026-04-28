@@ -79,6 +79,7 @@ import {
   searchAtomsRanked,
 } from "../src/gateway/atom-index";
 import { extractKnowledgeAtom } from "../src/gateway/extractor";
+import { slashCommandArgsFromBody } from "../src/gateway/slack";
 import type { LlmProvider } from "../src/llm";
 
 const ORIG_HOME = process.env.HOME;
@@ -1908,5 +1909,81 @@ describe("Slack admin handler (#31)", () => {
     const reload = loadGatewayConfig();
     assert.deepEqual(reload.escalation.repos["erp"], ["U0IT1"]);
     assert.deepEqual(reload.escalation.default, []);
+  });
+});
+
+// ─────────────────────── v0.9.1 slash_commands (#39) ────────────────────────
+
+describe("slashCommandArgsFromBody (#39)", () => {
+  it("DM channel id (D…) → user scope, args trimmed", () => {
+    const args = slashCommandArgsFromBody({
+      user_id: "U0OWNER",
+      channel_id: "D0DMCHAN",
+      text: "  admin help  ",
+    });
+    assert.ok(args);
+    assert.equal(args?.userId, "U0OWNER");
+    assert.equal(args?.channelId, "D0DMCHAN");
+    assert.equal(args?.rest, "admin help");
+    assert.deepEqual(args?.scope, { kind: "user", userId: "U0OWNER" });
+  });
+
+  it("non-DM channel (C…) → channel scope", () => {
+    const args = slashCommandArgsFromBody({
+      user_id: "U0HX",
+      channel_id: "C0CHAN",
+      text: "help",
+    });
+    assert.ok(args);
+    assert.deepEqual(args?.scope, { kind: "channel", channelId: "C0CHAN" });
+  });
+
+  it("empty text routes to help (so /pmk alone is discoverable)", () => {
+    const args = slashCommandArgsFromBody({
+      user_id: "U0X",
+      channel_id: "D0X",
+      text: "",
+    });
+    assert.equal(args?.rest, "help");
+  });
+
+  it("missing text field also routes to help", () => {
+    const args = slashCommandArgsFromBody({
+      user_id: "U0X",
+      channel_id: "D0X",
+    });
+    assert.equal(args?.rest, "help");
+  });
+
+  it("missing user_id → null (envelope dropped)", () => {
+    assert.equal(
+      slashCommandArgsFromBody({ channel_id: "D0X", text: "help" }),
+      null,
+    );
+  });
+
+  it("missing channel_id → null (envelope dropped)", () => {
+    assert.equal(
+      slashCommandArgsFromBody({ user_id: "U0X", text: "help" }),
+      null,
+    );
+  });
+
+  it("undefined body → null", () => {
+    assert.equal(slashCommandArgsFromBody(undefined), null);
+  });
+
+  it("DM-only check is downstream — /pmk admin in a channel still reaches the handler with channel scope", () => {
+    // The body→args helper itself doesn't enforce DM-only; the
+    // `case "admin"` branch in handleSlashCommand does. This test
+    // documents that boundary so a future refactor doesn't accidentally
+    // gate at the wrong layer.
+    const args = slashCommandArgsFromBody({
+      user_id: "U0X",
+      channel_id: "C0PUBLIC",
+      text: "admin status",
+    });
+    assert.ok(args);
+    assert.equal(args?.scope.kind, "channel");
   });
 });

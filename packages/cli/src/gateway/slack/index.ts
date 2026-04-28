@@ -80,6 +80,43 @@ interface FreeChatSession {
   approxTokens: number;
 }
 
+export type SlashCommandScope =
+  | { kind: "user"; userId: string }
+  | { kind: "channel"; channelId: string };
+
+export interface SlashCommandArgs {
+  channelId: string;
+  userId: string;
+  rest: string;
+  scope: SlashCommandScope;
+}
+
+/**
+ * v0.9.1 (#39): pure translation of a Slack `slash_commands` envelope
+ * body into the `handleSlashCommand` arg shape. Exported for tests so
+ * the rest/scope decision is verifiable without spinning up a
+ * SlackAdapter (which needs real Slack tokens to construct).
+ *
+ * Returns null when the body lacks the minimum fields the handler
+ * needs — caller should drop the envelope.
+ */
+export function slashCommandArgsFromBody(
+  body: { user_id?: string; channel_id?: string; text?: string } | undefined,
+): SlashCommandArgs | null {
+  if (!body) return null;
+  const userId = body.user_id;
+  const channelId = body.channel_id;
+  if (!userId || !channelId) return null;
+  // Empty body text (user typed just `/pmk`) routes to the help surface
+  // rather than a "未知指令" reply, so first-time users discover the
+  // command list.
+  const rest = (body.text ?? "").trim() || "help";
+  const scope: SlashCommandScope = channelId.startsWith("D")
+    ? { kind: "user", userId }
+    : { kind: "channel", channelId };
+  return { channelId, userId, rest, scope };
+}
+
 /**
  * Cap for `seenEnvelopes`. Slack retries any un-acked event up to 3
  * times within ~30s; 2 000 entries gives a generous window even on
@@ -159,6 +196,17 @@ export class SlackAdapter {
     // works as the safety net.
     this.socket.on("reaction_added", (event) =>
       this.handleReactionAdded(event),
+    );
+    // v0.9.1 (#39): real Slack slash-command path. Requires `/pmk` to
+    // be registered as a Slash Command on the Slack app side
+    // (https://api.slack.com/apps/<id>/slash-commands). Without that
+    // registration Slack's client blocks `/pmk ...` messages with the
+    // "/pmk 是無效指令" warning before they reach the bot. With it,
+    // `slash_commands` envelopes flow here and skip the leading-space
+    // workaround. The legacy ` /pmk ...` text-message path stays in
+    // place as a fallback.
+    this.socket.on("slash_commands", (event) =>
+      this.handleSlashCommandEnvelope(event),
     );
     this.socket.on("disconnected", () =>
       this.onLog("slack socket disconnected"),
@@ -1059,9 +1107,60 @@ export class SlackAdapter {
 
   // ─────────────────────────── slash commands ───────────────────────────
 
+  /**
+   * v0.9.1 (#39): handle real Slack slash-command envelopes (e.g. user
+   * typed `/pmk admin help` in Slack and Slack delivered a
+   * `slash_commands` envelope because we registered `/pmk` on the app
+   * side). Distinct from the legacy text-message path in
+   * `handleDmMessage` / `handleChannelMention` which fires when users
+   * type ` /pmk admin help` (leading space) as a regular message.
+   *
+   * Envelope shape (via @slack/socket-mode):
+   *   payload.body = {
+   *     command: "/pmk",
+   *     text: "admin help",        // args, no /pmk prefix
+   *     user_id, channel_id, response_url, ...
+   *   }
+   *
+   * Slack expects `payload.ack()` within 3 s; we ack immediately and
+   * post the reply via `chat.postMessage` so the user sees a top-level
+   * bot message rather than the auto-disappearing slash-command echo.
+   */
+  private async handleSlashCommandEnvelope(
+    payload: Slack.SlashCommandPayload,
+  ): Promise<void> {
+    await payload.ack?.().catch(() => {});
+
+    const args = slashCommandArgsFromBody(payload?.body);
+    if (!args) return;
+    if (this.config.blocklist.includes(args.userId)) return;
+
+    if (
+      this.seenEnvelopeSet.has(payload.envelope_id) ||
+      (payload.retry_num ?? 0) > 0
+    ) {
+      return;
+    }
+    this.rememberEnvelope(payload.envelope_id);
+
+    try {
+      await this.handleSlashCommand(args);
+    } catch (err) {
+      this.onLog(
+        `error handling slash command from ${args.userId}: ${(err as Error).message}`,
+      );
+    }
+  }
+
   private async handleSlashCommand(args: {
     channelId: string;
-    threadTs: string;
+    /**
+     * v0.9.1 (#39): optional. Omitted when invoked via the real Slack
+     * `slash_commands` envelope, since slash commands have no anchoring
+     * message to thread under. Present when invoked via the legacy
+     * leading-space `/pmk` text-message path (Phase 11 backwards compat).
+     */
+    threadTs?: string;
     userId: string;
     rest: string;
     scope:
@@ -1079,7 +1178,7 @@ export class SlackAdapter {
     const reply = (text: string) =>
       this.web.chat.postMessage({
         channel: channelId,
-        thread_ts: threadTs,
+        ...(threadTs ? { thread_ts: threadTs } : {}),
         text,
       });
 
@@ -1287,5 +1386,23 @@ declare namespace Slack {
     retry_num?: number;
     retry_reason?: string;
     event?: ReactionEvent;
+  }
+  // v0.9.1 (#39) — real Slack slash-command envelopes. Shape per
+  // @slack/socket-mode body.
+  interface SlashCommandBody {
+    command?: string;
+    text?: string;
+    user_id?: string;
+    channel_id?: string;
+    response_url?: string;
+    trigger_id?: string;
+    team_id?: string;
+  }
+  interface SlashCommandPayload {
+    ack?: (response?: unknown) => Promise<void>;
+    envelope_id: string;
+    retry_num?: number;
+    retry_reason?: string;
+    body?: SlashCommandBody;
   }
 }

@@ -197,13 +197,13 @@ The post-absorb synthesised reply (sent to the original asker after Phase 9 comp
 
 `/pmk admin <subcommand>` runs gateway-config mutations from inside Slack — same surface as the host CLI, no terminal needed for day-to-day ops.
 
-:::caution Type a leading space before `/pmk` in Slack
+:::tip Two ways to invoke (v0.9.1+)
 
-Slack's client treats any message starting with `/` as a slash-command attempt and blocks it via Slackbot ("/pmk 是無效指令"). pmk doesn't currently register `/pmk` as a real Slack slash-command — it's parsed from the message text on the gateway side after the bot receives the `message` / `app_mention` event.
+Since [v0.9.1](https://github.com/hanfour/pm-workspace-kit/releases/tag/v0.9.1) ([#39](https://github.com/hanfour/pm-workspace-kit/issues/39)), `/pmk` is registered as a real Slack slash-command. The recommended path is just to type `/pmk admin help` — Slack autocompletes the command and routes a `slash_commands` envelope to the bot. No leading space, no Slackbot warning, no thread.
 
-Workaround: type a space before the slash, e.g. ` /pmk admin help` (leading-space). The gateway's `text.trim()` strips the space transparently. Same applies to all the v0.7+ commands (`/pmk open`, `/pmk show`, `/pmk close`, `/pmk cases`, `/pmk help`).
+The legacy text-message path (` /pmk admin help` with a leading space) still works as a fallback for users who learned the workaround before v0.9.1, and for any future Slack-app deployment where the slash-command isn't registered. The gateway's `handleDmMessage` / `handleChannelMention` path still fires on `text.startsWith("/pmk ")` after `trim()`.
 
-Tracked in [#39](https://github.com/hanfour/pm-workspace-kit/issues/39) — registering `/pmk` as a real Slack slash-command (Socket Mode `slash_commands` event) is on the v0.9.1 plate.
+Affected commands: `/pmk help`, `/pmk open`, `/pmk show`, `/pmk close`, `/pmk cases`, `/pmk admin`.
 
 :::
 
