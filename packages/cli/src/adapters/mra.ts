@@ -301,7 +301,11 @@ export async function runMraAsk(
     };
   }
   const maxRetries = opts.maxRetries ?? 1;
-  const timeoutMs = args.timeoutMs ?? 120_000;
+  // 300s default — bumped from 120s in v0.7.5. Live dogfood (2026-04-28)
+  // showed a complex multi-clause CJK question took 160s of mra-internal
+  // LLM time, so the v0.7.0 cap of 120s was killing legitimate queries
+  // mid-flight. 300s gives ~2× headroom for the worst we've observed.
+  const timeoutMs = args.timeoutMs ?? 300_000;
   let last: MraAskResult | undefined;
   for (let attempt = 1; attempt <= maxRetries + 1; attempt++) {
     const result = await runMraAskOnce(binary, args, timeoutMs);
@@ -332,12 +336,27 @@ function runMraAskOnce(
       },
       (err, stdout, stderr) => {
         if (err) {
-          const killed = (err as NodeJS.ErrnoException).code === "ETIMEDOUT";
+          // execFile's timeout sends SIGTERM (the configured killSignal,
+          // which defaults to SIGTERM). Node populates `err.killed` and
+          // `err.signal` on the resulting error. The earlier
+          // `code === "ETIMEDOUT"` check basically never fired — Node's
+          // signaled-kill path sets `code: null`, so timeouts were
+          // mis-classified as "Command failed" generic errors and
+          // (worse) looksTransient would retry them. Detecting via
+          // `killed`/`signal` is what the docs actually describe.
+          const errAny = err as NodeJS.ErrnoException & {
+            killed?: boolean;
+            signal?: string;
+          };
+          const isTimeout =
+            errAny.killed === true ||
+            errAny.signal === "SIGTERM" ||
+            errAny.code === "ETIMEDOUT";
           resolve({
             ok: false,
             stdout: String(stdout ?? ""),
             stderr: String(stderr ?? ""),
-            reason: killed
+            reason: isTimeout
               ? `mra ask timed out after ${timeoutMs}ms`
               : err.message,
             attempts: 1,
