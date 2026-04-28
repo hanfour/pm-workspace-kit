@@ -48,6 +48,13 @@ export interface EscalationConfig {
 
 export interface GatewayConfig {
   version: 1;
+  /**
+   * Slack user IDs allowed to run `/pmk admin <subcmd>` from inside
+   * Slack (v0.9). Empty = no admins via Slack; host CLI is the only
+   * admin path. Bootstrap requires terminal access — there's no way
+   * to grant yourself admin via Slack, by design.
+   */
+  admins: string[];
   /** When set, every new session is seeded with this ingest spec. */
   defaultIngest?: string;
   /**
@@ -101,6 +108,7 @@ export function loadGatewayConfig(): GatewayConfig {
     return {
       version: GATEWAY_CONFIG_VERSION,
       blocklist: [],
+      admins: [],
       audience: defaultAudience(),
       escalation: defaultEscalation(),
       slack: {},
@@ -118,6 +126,7 @@ export function loadGatewayConfig(): GatewayConfig {
   if (!raw.escalation) raw.escalation = defaultEscalation();
   if (!raw.escalation.repos) raw.escalation.repos = {};
   if (!raw.escalation.default) raw.escalation.default = [];
+  if (!Array.isArray(raw.admins)) raw.admins = [];
   // Env overrides — handy for CI / containerised hosts.
   raw.slack.appToken = process.env.PMK_SLACK_APP_TOKEN ?? raw.slack.appToken;
   raw.slack.botToken = process.env.PMK_SLACK_BOT_TOKEN ?? raw.slack.botToken;
@@ -160,6 +169,16 @@ export function pickEffectiveEscalationPool(
   askerUserId: string,
 ): string[] {
   return pickEscalationPool(cfg, repo).filter((id) => id !== askerUserId);
+}
+
+/**
+ * v0.9 (#31): is this Slack user authorised to run `/pmk admin`
+ * subcommands? Bootstrap requires terminal access — there's no
+ * "/pmk admin admins add @first-admin" path because no one is yet
+ * admin to authorise it.
+ */
+export function isAdmin(cfg: GatewayConfig, userId: string): boolean {
+  return Array.isArray(cfg.admins) && cfg.admins.includes(userId);
 }
 
 export function saveGatewayConfig(cfg: GatewayConfig): string {

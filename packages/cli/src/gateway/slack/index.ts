@@ -2,10 +2,12 @@ import { SocketModeClient } from "@slack/socket-mode";
 import { WebClient } from "@slack/web-api";
 import type { GatewayConfig } from "../config";
 import {
+  isAdmin,
   pickAudience,
   pickEffectiveEscalationPool,
   pickEscalationPool,
 } from "../config";
+import { handleAdminSlash } from "./admin";
 import {
   formatBackOnlineNotice,
   formatOfflineNotice,
@@ -1157,6 +1159,27 @@ export class SlackAdapter {
           return void (await reply("(此 scope 還沒有 case)"));
         const lines = files.map((f) => `• \`${path.basename(f, ".json")}\``);
         await reply(["*Cases*", ...lines].join("\n"));
+        return;
+      }
+
+      // v0.9.0 (#31): admin-restricted, DM-only gateway-config mutations.
+      // Bootstrap (the very first admin) requires terminal access via
+      // `pmk gateway admin add` — there is no Slack path to grant
+      // yourself admin, by design.
+      case "admin": {
+        if (scope.kind !== "user") {
+          await reply(":no_entry_sign: `/pmk admin` 只能在 DM 使用。");
+          return;
+        }
+        if (!isAdmin(this.config, args.userId)) {
+          await reply(":lock: 此命令限管理員使用。");
+          return;
+        }
+        const result = await handleAdminSlash({
+          actor: args.userId,
+          tokens,
+        });
+        await reply(result.text);
         return;
       }
 

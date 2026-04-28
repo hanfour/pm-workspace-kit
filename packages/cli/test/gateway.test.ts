@@ -116,6 +116,7 @@ describe("gateway config", () => {
     const cfg = {
       version: 1 as const,
       blocklist: ["U-bad"],
+      admins: [],
       defaultIngest: "mra:--all",
       audience: { default: "tech" as const, users: {} },
       escalation: { default: [], repos: {} },
@@ -134,6 +135,7 @@ describe("gateway config", () => {
     saveGatewayConfig({
       version: 1,
       blocklist: [],
+      admins: [],
       audience: { default: "tech", users: {} },
       escalation: { default: [], repos: {} },
       slack: { appToken: "xapp-from-file", botToken: "xoxb-from-file" },
@@ -150,6 +152,7 @@ describe("gateway config", () => {
       hasValidSlackTokens({
         version: 1,
         blocklist: [],
+        admins: [],
         audience: { default: "tech", users: {} },
         escalation: { default: [], repos: {} },
         slack: { appToken: "wrong", botToken: "xoxb-x" },
@@ -160,6 +163,7 @@ describe("gateway config", () => {
       hasValidSlackTokens({
         version: 1,
         blocklist: [],
+        admins: [],
         audience: { default: "tech", users: {} },
         escalation: { default: [], repos: {} },
         slack: { appToken: "xapp-x", botToken: "wrong" },
@@ -195,6 +199,7 @@ describe("gateway config", () => {
     saveGatewayConfig({
       version: 1,
       blocklist: [],
+      admins: [],
       mraWorkspace: "/tmp/some/workspace",
       audience: { default: "tech", users: {} },
       escalation: { default: [], repos: {} },
@@ -209,6 +214,7 @@ describe("gateway config", () => {
     saveGatewayConfig({
       version: 1,
       blocklist: [],
+      admins: [],
       mraWorkspace: "/from/file",
       audience: { default: "tech", users: {} },
       escalation: { default: [], repos: {} },
@@ -1589,5 +1595,318 @@ describe("thread escalation marker", () => {
 
   it("returns undefined for unknown thread", () => {
     assert.equal(loadThreadEscalation("C0", "nope"), undefined);
+  });
+});
+
+// ─────────────────────────── v0.9.0 admin (#31) ───────────────────────────
+
+describe("isAdmin + admins back-fill (#31)", () => {
+  let tmpHome: string;
+  beforeEach(() => {
+    tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), "pmk-admin-"));
+    process.env.HOME = tmpHome;
+  });
+  afterEach(() => {
+    fs.rmSync(tmpHome, { recursive: true, force: true });
+    if (ORIG_HOME !== undefined) process.env.HOME = ORIG_HOME;
+  });
+
+  it("default empty admins → isAdmin returns false", async () => {
+    const { isAdmin } = await import("../src/gateway/config");
+    const cfg = loadGatewayConfig();
+    assert.deepEqual(cfg.admins, []);
+    assert.equal(isAdmin(cfg, "U-anyone"), false);
+  });
+
+  it("isAdmin true only for listed Slack user IDs", async () => {
+    const { isAdmin } = await import("../src/gateway/config");
+    const cfg = loadGatewayConfig();
+    cfg.admins = ["U_OWNER", "U_OPS"];
+    saveGatewayConfig(cfg);
+    const reload = loadGatewayConfig();
+    assert.equal(isAdmin(reload, "U_OWNER"), true);
+    assert.equal(isAdmin(reload, "U_OPS"), true);
+    assert.equal(isAdmin(reload, "U_RAND"), false);
+  });
+
+  it("legacy config without admins field back-fills to []", async () => {
+    const { isAdmin } = await import("../src/gateway/config");
+    const file = path.join(tmpHome, ".pmk", "gateway.json");
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(
+      file,
+      JSON.stringify(
+        {
+          version: 1,
+          blocklist: [],
+          audience: { default: "tech", users: {} },
+          escalation: { default: [], repos: {} },
+          slack: { appToken: "xapp-x", botToken: "xoxb-x" },
+        },
+        null,
+        2,
+      ),
+    );
+    const loaded = loadGatewayConfig();
+    assert.deepEqual(loaded.admins, []);
+    assert.equal(isAdmin(loaded, "U-anyone"), false);
+  });
+});
+
+describe("admin-log (#31)", () => {
+  let tmpHome: string;
+  beforeEach(() => {
+    tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), "pmk-admin-log-"));
+    process.env.HOME = tmpHome;
+  });
+  afterEach(() => {
+    fs.rmSync(tmpHome, { recursive: true, force: true });
+    if (ORIG_HOME !== undefined) process.env.HOME = ORIG_HOME;
+  });
+
+  it("appendAdminLog → readAdminLog round-trips one entry", async () => {
+    const { appendAdminLog, readAdminLog } =
+      await import("../src/gateway/admin-log");
+    appendAdminLog({
+      actor: "U_OWNER",
+      origin: "slack",
+      action: "audience.set",
+      args: "U_X pm",
+      ok: true,
+    });
+    const entries = readAdminLog();
+    assert.equal(entries.length, 1);
+    assert.equal(entries[0].actor, "U_OWNER");
+    assert.equal(entries[0].action, "audience.set");
+    assert.equal(entries[0].ok, true);
+  });
+
+  it("readAdminLog returns [] when file missing (no log written yet)", async () => {
+    const { readAdminLog } = await import("../src/gateway/admin-log");
+    assert.deepEqual(readAdminLog(), []);
+  });
+
+  it("readAdminLog tails to the requested limit (newest last)", async () => {
+    const { appendAdminLog, readAdminLog } =
+      await import("../src/gateway/admin-log");
+    for (let i = 0; i < 30; i++) {
+      appendAdminLog({
+        actor: "cli:test",
+        origin: "cli",
+        action: "audit",
+        args: `n=${i}`,
+        ok: true,
+      });
+    }
+    const tail = readAdminLog(5);
+    assert.equal(tail.length, 5);
+    assert.equal(tail[0].args, "n=25");
+    assert.equal(tail[4].args, "n=29");
+  });
+
+  it("malformed lines are skipped, well-formed lines still parse", async () => {
+    const { appendAdminLog, readAdminLog, adminLogPath } =
+      await import("../src/gateway/admin-log");
+    appendAdminLog({
+      actor: "U_X",
+      origin: "slack",
+      action: "status",
+      ok: true,
+    });
+    fs.appendFileSync(adminLogPath(), "this is not json\n");
+    appendAdminLog({
+      actor: "U_X",
+      origin: "slack",
+      action: "audience.list",
+      ok: true,
+    });
+    const entries = readAdminLog();
+    // Two valid + one garbage; readAdminLog must skip the garbage rather
+    // than throw or short-circuit.
+    assert.equal(entries.length, 2);
+    assert.equal(entries[0].action, "status");
+    assert.equal(entries[1].action, "audience.list");
+  });
+
+  it("audit-log write failure is non-fatal", async () => {
+    // Point HOME at a path that cannot be created (file occupies the dir).
+    const blocking = fs.mkdtempSync(path.join(os.tmpdir(), "pmk-block-"));
+    fs.writeFileSync(path.join(blocking, ".pmk"), "not a directory");
+    process.env.HOME = blocking;
+    const { appendAdminLog } = await import("../src/gateway/admin-log");
+    // Must not throw even though mkdir/write under .pmk will fail.
+    appendAdminLog({
+      actor: "U_X",
+      origin: "slack",
+      action: "status",
+      ok: true,
+    });
+    fs.rmSync(blocking, { recursive: true, force: true });
+  });
+});
+
+describe("Slack admin handler (#31)", () => {
+  let tmpHome: string;
+  beforeEach(() => {
+    tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), "pmk-slack-admin-"));
+    process.env.HOME = tmpHome;
+  });
+  afterEach(() => {
+    fs.rmSync(tmpHome, { recursive: true, force: true });
+    if (ORIG_HOME !== undefined) process.env.HOME = ORIG_HOME;
+  });
+
+  it("extractUserId handles <@U…> mention, <@U…|name>, bare U…, garbage", async () => {
+    const { extractUserId } = await import("../src/gateway/slack/admin");
+    assert.equal(extractUserId("<@U0XYZ>"), "U0XYZ");
+    assert.equal(extractUserId("<@U0XYZ|hanfour>"), "U0XYZ");
+    assert.equal(extractUserId("U0XYZ"), "U0XYZ");
+    assert.equal(extractUserId("WABCDEF"), "WABCDEF");
+    assert.equal(extractUserId("not-a-user"), undefined);
+    assert.equal(extractUserId(""), undefined);
+  });
+
+  it("help (no args) returns the command list", async () => {
+    const { handleAdminSlash } = await import("../src/gateway/slack/admin");
+    const r = await handleAdminSlash({ actor: "U_OWNER", tokens: [] });
+    assert.match(r.text, /pmk admin commands/);
+    assert.match(r.text, /audience set/);
+    assert.match(r.text, /admins add/);
+  });
+
+  it("unknown subcommand returns help with the unknown name", async () => {
+    const { handleAdminSlash } = await import("../src/gateway/slack/admin");
+    const r = await handleAdminSlash({
+      actor: "U_OWNER",
+      tokens: ["wat"],
+    });
+    assert.match(r.text, /未知的 admin 子指令/);
+    assert.match(r.text, /`wat`/);
+  });
+
+  it("audience set @user pm mutates per-user override", async () => {
+    const { handleAdminSlash } = await import("../src/gateway/slack/admin");
+    // Seed an admin so the trust path mirrors prod (handler trusts caller).
+    const cfg = loadGatewayConfig();
+    cfg.admins = ["U0OWNER"];
+    saveGatewayConfig(cfg);
+
+    const r = await handleAdminSlash({
+      actor: "U0OWNER",
+      tokens: ["audience", "set", "<@U0TARGET>", "pm"],
+    });
+    assert.match(r.text, /audience set to `pm`/);
+
+    const reload = loadGatewayConfig();
+    assert.equal(reload.audience.users["U0TARGET"], "pm");
+  });
+
+  it("audience set rejects invalid audience key", async () => {
+    const { handleAdminSlash } = await import("../src/gateway/slack/admin");
+    const r = await handleAdminSlash({
+      actor: "U0OWNER",
+      tokens: ["audience", "set", "<@U0TGT>", "not-a-tier"],
+    });
+    assert.match(r.text, /invalid audience/);
+    const reload = loadGatewayConfig();
+    assert.equal(reload.audience.users["U0TGT"], undefined);
+  });
+
+  it("admins remove blocks last-admin removal", async () => {
+    const { handleAdminSlash } = await import("../src/gateway/slack/admin");
+    const cfg = loadGatewayConfig();
+    cfg.admins = ["U0ONLY"];
+    saveGatewayConfig(cfg);
+
+    const r = await handleAdminSlash({
+      actor: "U0ONLY",
+      tokens: ["admins", "remove", "<@U0ONLY>"],
+    });
+    assert.match(r.text, /cannot remove last admin/);
+    const reload = loadGatewayConfig();
+    assert.deepEqual(reload.admins, ["U0ONLY"]);
+  });
+
+  it("admins add then remove succeeds when ≥2 admins remain", async () => {
+    const { handleAdminSlash } = await import("../src/gateway/slack/admin");
+    const cfg = loadGatewayConfig();
+    cfg.admins = ["U0OWNER"];
+    saveGatewayConfig(cfg);
+
+    const add = await handleAdminSlash({
+      actor: "U0OWNER",
+      tokens: ["admins", "add", "<@U0NEW>"],
+    });
+    assert.match(add.text, /added to admins/);
+    const afterAdd = loadGatewayConfig();
+    assert.deepEqual(afterAdd.admins.sort(), ["U0NEW", "U0OWNER"]);
+
+    const remove = await handleAdminSlash({
+      actor: "U0OWNER",
+      tokens: ["admins", "remove", "<@U0NEW>"],
+    });
+    assert.match(remove.text, /removed from admins/);
+    const afterRemove = loadGatewayConfig();
+    assert.deepEqual(afterRemove.admins, ["U0OWNER"]);
+  });
+
+  it("admins add rejects non-Slack-id input", async () => {
+    const { handleAdminSlash } = await import("../src/gateway/slack/admin");
+    const r = await handleAdminSlash({
+      actor: "U_OWNER",
+      tokens: ["admins", "add", "alice@example.com"],
+    });
+    assert.match(r.text, /usage:/);
+    const reload = loadGatewayConfig();
+    assert.deepEqual(reload.admins, []);
+  });
+
+  it("audit subcommand surfaces recent log entries", async () => {
+    const { handleAdminSlash } = await import("../src/gateway/slack/admin");
+    const { appendAdminLog } = await import("../src/gateway/admin-log");
+    appendAdminLog({
+      actor: "U_OWNER",
+      origin: "slack",
+      action: "audience.set",
+      args: "U_T pm",
+      ok: true,
+    });
+    appendAdminLog({
+      actor: "U_OWNER",
+      origin: "slack",
+      action: "admins.remove",
+      args: "U_ONLY",
+      ok: false,
+      reason: "last-admin protection",
+    });
+    const r = await handleAdminSlash({
+      actor: "U_OWNER",
+      tokens: ["audit"],
+    });
+    assert.match(r.text, /admin audit/);
+    assert.match(r.text, /audience\.set/);
+    assert.match(r.text, /last-admin protection/);
+  });
+
+  it("escalation add @user appends to default pool", async () => {
+    const { handleAdminSlash } = await import("../src/gateway/slack/admin");
+    const r = await handleAdminSlash({
+      actor: "U0OWNER",
+      tokens: ["escalation", "add", "default", "<@U0IT1>"],
+    });
+    assert.match(r.text, /added/);
+    const reload = loadGatewayConfig();
+    assert.deepEqual(reload.escalation.default, ["U0IT1"]);
+  });
+
+  it("escalation add to a repo pool isolates it from default", async () => {
+    const { handleAdminSlash } = await import("../src/gateway/slack/admin");
+    await handleAdminSlash({
+      actor: "U0OWNER",
+      tokens: ["escalation", "add", "erp", "<@U0IT1>"],
+    });
+    const reload = loadGatewayConfig();
+    assert.deepEqual(reload.escalation.repos["erp"], ["U0IT1"]);
+    assert.deepEqual(reload.escalation.default, []);
   });
 });

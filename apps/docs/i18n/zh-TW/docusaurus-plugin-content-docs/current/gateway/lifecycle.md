@@ -193,6 +193,43 @@ Promote 完後 atom 對 retrieval 可見。下一個問類似問題的人在 Pha
 
 Phase 9 結束後寄給原提問者的合成回覆**不**經過 approval gate（設計如此） — 人問了問題，授權的 IT 同事答了，這個答案應該立刻送到提問者手上，即便 atom 對**未來**查詢還在 pending。只有持久化 retrieval store 才被 gate 住。
 
+## 11. Admin 指令（v0.9.0）
+
+`/pmk admin <subcommand>` 讓管理員直接從 Slack 內部跑 gateway-config 變更 — 跟 host CLI 同一組面向，日常運維不需要回終端機。
+
+**Bootstrap 必須走終端機。**第一個 admin 必須在 host 端用 `pmk gateway admin add <userId>` 加進去。沒有「從 Slack 把自己加成 admin」的路徑 — 設計如此，因為 workspace 裡每個人都能跑 slash command。
+
+**只能在 DM 用。**在 channel 跑 `/pmk admin` 會回 `:no_entry_sign:`，什麼也不做。這樣可以把審計相關的 mutation 排除在 channel 的 scroll history 之外，也避免不小心外洩。
+
+**Last-admin 保護。**移除唯一的 admin（不論用 `/pmk admin admins remove` 還是 host CLI 的 `pmk gateway admin remove`、即便對象是自己）會被拒絕。請先加一個替補。
+
+指令列表（DM + 限 admin）：
+
+| 指令 | 用途 |
+|---|---|
+| `/pmk admin status` | mra workspace、default ingest、audience default、admin 數量、escalation pool 大小 |
+| `/pmk admin audience set @user <tier>` / `unset @user` / `default <tier>` / `list` | 個別使用者 audience override + 預設值。`<tier>` 為 `tech`、`pm`、`biz`、`exec` 之一。 |
+| `/pmk admin escalation add <repo\|default> @user` / `remove ...` / `list` | IT / 領域聯絡人池 |
+| `/pmk admin atoms list [pending\|approved\|all]` / `show <id-prefix>` / `approve ...` / `reject ...` | 跟 CLI 同樣的 atom 審核；**edit** 仍只走 CLI（避免直接從 Slack 貼入的內容 verbatim 進 retrieval） |
+| `/pmk admin admins list` / `add @user` / `remove @user` | 管理 admin 列表 |
+| `/pmk admin audit [N]` | 最近 N 筆 admin 動作（預設 20）— 涵蓋 Slack / CLI 兩種來源 |
+
+**Audit log。**每筆 admin 變更（不論來自 Slack 還是 host CLI）都會在 `~/.pmk/gateway/admin.log` 加一行 JSONL：
+
+```json
+{"at":"2026-04-28T...","actor":"U0HANFOUR","origin":"slack","action":"audience.set","args":"U0XYZ pm","ok":true}
+```
+
+`origin: "slack"` 時 `actor` 是 Slack user ID；`origin: "cli"` 時則是 `cli:<unix_user>`。權限不足、驗證失敗、last-admin 保護等狀況會以 `ok: false` 記錄，並附上 `reason`。
+
+**刻意不開放給 Slack 的範圍：**
+
+- `init`（會把 Slack tokens 明文 echo 出來）
+- Token 輪替
+- `atoms edit`（貼入內容會 verbatim 進 retrieval — `$EDITOR` + 驗證的 CLI 路徑安全得多）
+- Process stop / restart
+- Blocklist 變更（等之後有 tier-2 admin 模型再說）
+
 ## Honest offline UX
 
 跟 directive 流程獨立，但屬於 gateway 生命週期的一部分：

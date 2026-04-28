@@ -193,6 +193,43 @@ After promotion, the atom is now retrieval-visible. The next person who asks a s
 
 The post-absorb synthesised reply (sent to the original asker after Phase 9 completes) bypasses the approval gate by design — the human asked a question, an authorised IT contact answered it, the answer should reach them now even if the atom is still pending for *future* queries. Only the persistent retrieval store is gated.
 
+## 11. Admin commands (v0.9.0)
+
+`/pmk admin <subcommand>` runs gateway-config mutations from inside Slack — same surface as the host CLI, no terminal needed for day-to-day ops.
+
+**Bootstrap is terminal-only.** The very first admin must be added via `pmk gateway admin add <userId>` on the host. There is no Slack path to grant yourself admin — by design, since everyone in the workspace can run slash commands.
+
+**DM-only.** `/pmk admin` in a channel returns `:no_entry_sign:` and does nothing. This keeps audit-relevant mutations out of channel scrollback and prevents accidental visibility leaks.
+
+**Last-admin protection.** Removing the only admin (via `/pmk admin admins remove` or `pmk gateway admin remove`) is refused — even by self. Add a replacement first.
+
+Subcommands (DM, admin only):
+
+| Command | Purpose |
+|---|---|
+| `/pmk admin status` | Mra workspace, default ingest, audience default, admin count, escalation pool sizes |
+| `/pmk admin audience set @user <tier>` / `unset @user` / `default <tier>` / `list` | Per-user audience overrides + default. `<tier>` ∈ `tech`, `pm`, `biz`, `exec`. |
+| `/pmk admin escalation add <repo\|default> @user` / `remove ...` / `list` | IT/domain contact pools |
+| `/pmk admin atoms list [pending\|approved\|all]` / `show <id-prefix>` / `approve ...` / `reject ...` | Same atom moderation as the CLI; **edit** stays CLI-only (pasted content into Slack would land verbatim in retrieval) |
+| `/pmk admin admins list` / `add @user` / `remove @user` | Manage the admin set |
+| `/pmk admin audit [N]` | Last N admin actions (default 20) — both Slack and CLI origins |
+
+**Audit log.** Every admin mutation, whether via Slack or host CLI, appends one JSONL line to `~/.pmk/gateway/admin.log`:
+
+```json
+{"at":"2026-04-28T...","actor":"U0HANFOUR","origin":"slack","action":"audience.set","args":"U0XYZ pm","ok":true}
+```
+
+`actor` is the Slack user ID for `origin: "slack"` and `cli:<unix_user>` for `origin: "cli"`. Permission denials, validation failures, and last-admin protection trips all log with `ok: false` and a `reason`.
+
+**Scope deliberately not exposed via Slack:**
+
+- `init` (would echo Slack tokens in plaintext)
+- Token rotation
+- `atoms edit` (pasted content lands verbatim in retrieval — `$EDITOR`-with-validation is safer)
+- Process stop/restart
+- Blocklist mutation (until a tier-2 admin model exists)
+
 ## Honest offline UX
 
 Orthogonal to the directive flow but part of the gateway lifecycle:
