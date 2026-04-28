@@ -244,5 +244,5 @@ Phase 9 結束後寄給原提問者的合成回覆**不**經過 approval gate（
 
 - [ADR-0006: pmk gateway — Slack/LINE bot, not SaaS](../adr/0006-pmk-gateway-slack.md)
 - [PRD-2026-0005: pmk gateway v0.7.0 surface](../prds/2026-04-27-pmk-gateway-prd.md)
-- [v0.7.0–v0.7.4 release notes on GitHub](https://github.com/hanfour/pm-workspace-kit/releases)
+- [v0.7.0–v0.9.0 release notes on GitHub](https://github.com/hanfour/pm-workspace-kit/releases)
 - [Changelog](../changelog.md) — release-by-release 摘要
