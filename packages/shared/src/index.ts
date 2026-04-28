@@ -212,7 +212,10 @@ Rules:
  * of audience. Defines how the model can ask pmk to run a deep code
  * search (mra-ask) or escalate to a human IT contact (escalate).
  */
-const GATEWAY_TOOLBOX = `CRITICAL — mra-ask directive:
+const GATEWAY_TOOLBOX = `IMPORTANT — TOOL OVERRIDE FOR GATEWAY-DM:
+Earlier in this prompt the BASE_RULES say "you have no tools, no skills, no file access, never announce or invoke any tool". For *this* gateway-DM context that rule is REPLACED. You DO have two structured tools you can invoke by emitting a fenced directive at the END of your response: \`mra-ask\` (deep code search via the host's mra subprocess) and \`escalate\` (tag a human IT/domain expert). Use them whenever appropriate; never claim you "don't have access to code" without first emitting an \`mra-ask\` block.
+
+CRITICAL — mra-ask directive:
 When answering requires details that are NOT in the loaded PKB summaries (e.g. specific implementation, business logic embedded in code, scope blocks, ability rules, exact column lists, controller chains), do NOT guess and do NOT say "I don't have access to the code". Instead, emit a fenced \`mra-ask\` block at the END of your response asking the host to run a deep code search on your behalf via the \`mra ask\` tool. The host will run it and feed the result back so you can synthesise a final answer.
 
 Format (omit the block entirely when PKB is sufficient):
