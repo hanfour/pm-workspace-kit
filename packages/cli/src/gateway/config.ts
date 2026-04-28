@@ -147,6 +147,21 @@ export function pickEscalationPool(
   return cfg.escalation?.default ?? [];
 }
 
+/**
+ * Same as `pickEscalationPool` but filters the asker out so the bot
+ * never @-mentions the person who just asked the question. Used by
+ * `handleEscalation` to surface a config gap (#30 v0.8.2): when the
+ * effective pool is empty, the host gets a visible Slack warning
+ * instead of a silent prose-degrade.
+ */
+export function pickEffectiveEscalationPool(
+  cfg: GatewayConfig,
+  repo: string | undefined,
+  askerUserId: string,
+): string[] {
+  return pickEscalationPool(cfg, repo).filter((id) => id !== askerUserId);
+}
+
 export function saveGatewayConfig(cfg: GatewayConfig): string {
   const file = gatewayConfigPath();
   fs.mkdirSync(path.dirname(file), { recursive: true });

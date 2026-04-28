@@ -8,6 +8,27 @@ All notable changes to **pm-workspace-kit** are documented here.
 
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Each release also has a longer narrative on [GitHub Releases](https://github.com/hanfour/pm-workspace-kit/releases) with rationale, dogfood notes, and test plans.
 
+## [v0.8.2] — 2026-04-28 — escalate self-tag detection
+
+[GitHub release](https://github.com/hanfour/pm-workspace-kit/releases/tag/v0.8.2) · closes [#30](https://github.com/hanfour/pm-workspace-kit/issues/30)
+
+### Fixed
+
+- When a model emits `escalate` but the resolved escalation pool is empty (or contains only the asker themselves), the gateway no longer silently logs and drops the mention. It now posts a visible `:warning:` message in the Slack thread naming the config gap and the exact `pmk gateway escalation add ...` commands to fix it. The pending-escalation marker is also skipped (no point waiting for an absorb that can't happen).
+- The asker is filtered out of the resolved pool before any `@`-mention. Previously, if the only configured contact happened to be the same person who asked the question, the bot would `@`-mention them at themselves.
+
+### Added
+
+- `pickEffectiveEscalationPool(cfg, repo, askerUserId)` helper in `gateway/config.ts` — single-source-of-truth for "which contacts should we @-mention given this asker?". Used by `handleEscalation` and unit-tested in isolation.
+
+### Caught by
+
+2026-04-28 dogfood: real escalate flow on a PM scoping question logged `escalate requested but no contacts configured; skipping mention` while the bot's Slack reply degraded to prose ("建議兩個行動: SQL 查 / 找 AOE/PM 同仁"). The host had no way to tell from Slack that the v0.7 escalate flow was suppressed for a config reason.
+
+### Tests
+
+156 → 158 (+2: pool-with-asker filters self; both-pools-empty stays empty).
+
 ## [v0.8.1] — 2026-04-28 — session context-window auto-pruning
 
 [GitHub release](https://github.com/hanfour/pm-workspace-kit/releases/tag/v0.8.1) · closes [#18](https://github.com/hanfour/pm-workspace-kit/issues/18)

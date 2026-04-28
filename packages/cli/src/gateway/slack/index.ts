@@ -1,7 +1,11 @@
 import { SocketModeClient } from "@slack/socket-mode";
 import { WebClient } from "@slack/web-api";
 import type { GatewayConfig } from "../config";
-import { pickAudience, pickEscalationPool } from "../config";
+import {
+  pickAudience,
+  pickEffectiveEscalationPool,
+  pickEscalationPool,
+} from "../config";
 import {
   formatBackOnlineNotice,
   formatOfflineNotice,
@@ -524,13 +528,55 @@ export class SlackAdapter {
   }): Promise<void> {
     const { channelId, threadTs, askerUserId, request } = args;
     const pool = pickEscalationPool(this.config, request.repo);
-    if (pool.length === 0) {
+    // v0.8.2 (#30): filter out the asker themselves — @-mentioning the
+    // person who just asked the question is useless and creates the
+    // weird "<@U_asker> 想麻煩你補充..." artefact when the pool only
+    // happens to contain them. Helper lives in config.ts so it's
+    // unit-testable in isolation.
+    const effectivePool = pickEffectiveEscalationPool(
+      this.config,
+      request.repo,
+      askerUserId,
+    );
+
+    if (effectivePool.length === 0) {
+      // Two distinct config gaps land here:
+      //   - pool is genuinely empty (host hasn't run `pmk gateway escalation add`)
+      //   - pool resolves to [askerUserId] only (would tag self)
+      // Pre-v0.8.2 we silently logged + skipped, so the host had no
+      // way to know from the Slack thread that the v0.7 escalate flow
+      // was suppressed for a config reason. Now we post a visible
+      // warning naming the fix.
       this.onLog(
-        `escalate requested (repo=${request.repo ?? "—"}) but no contacts configured; skipping mention`,
+        `escalate requested (repo=${request.repo ?? "—"}) but no usable contacts ` +
+          `(pool=[${pool.join(",")}], asker=${askerUserId}); ` +
+          `posting config-hint instead of @-mention`,
       );
+      const scopeLabel = request.repo ? `\`${request.repo}\`` : "default";
+      await this.web.chat
+        .postMessage({
+          channel: channelId,
+          thread_ts: threadTs,
+          text:
+            `:warning: pmk 想 escalate 這題，但目前 ${scopeLabel} 池沒有設定其他 IT/domain 聯絡人。\n` +
+            `host 端設定方式：\n` +
+            (request.repo
+              ? `\`pmk gateway escalation add ${request.repo} <userId>\`（針對此 repo）\n`
+              : "") +
+            `\`pmk gateway escalation add default <userId>\`（fallback 池）\n` +
+            `bot 仍會用既有 PKB 給出 best-effort 答案；之後設定好 pool 再問同樣問題就會自動 @ 對的人。`,
+        })
+        .catch((err) => {
+          this.onLog(
+            `failed to post escalation config-hint: ${(err as Error).message}`,
+          );
+        });
+      // Deliberately do NOT save the pending marker — there's nobody
+      // to wait for, so an absorb hook would never fire.
       return;
     }
-    const mentions = pool.map((id) => `<@${id}>`).join(" ");
+
+    const mentions = effectivePool.map((id) => `<@${id}>`).join(" ");
     const reasonLine = request.reason ? `\n_原因_：${request.reason}` : "";
     await this.web.chat
       .postMessage({
@@ -550,7 +596,7 @@ export class SlackAdapter {
       scope: request.repo,
       reason: request.reason,
       pendingSince: Date.now(),
-      mentionedUserIds: pool,
+      mentionedUserIds: effectivePool,
       askerUserId,
     });
   }

@@ -47,7 +47,11 @@ import {
   truncate,
 } from "../src/gateway/messaging";
 import type { ChatMessage } from "@pmk/shared";
-import { pickAudience, pickEscalationPool } from "../src/gateway/config";
+import {
+  pickAudience,
+  pickEffectiveEscalationPool,
+  pickEscalationPool,
+} from "../src/gateway/config";
 import {
   AUDIENCE_KEYS,
   pickGatewayPrompt,
@@ -861,6 +865,42 @@ describe("escalation pool picker", () => {
     assert.deepEqual(pickEscalationPool(reload, "erp"), ["U_ERP1", "U_ERP2"]);
     assert.deepEqual(pickEscalationPool(reload, "unknown-repo"), ["U_DEFAULT"]);
     assert.deepEqual(pickEscalationPool(reload, undefined), ["U_DEFAULT"]);
+  });
+
+  // v0.8.2 (#30) — pickEffectiveEscalationPool drops the asker so we
+  // never @-mention the person who just asked.
+  it("pickEffectiveEscalationPool removes asker from the resolved pool", () => {
+    const cfg = loadGatewayConfig();
+    cfg.escalation.default = ["U_HOST"];
+    cfg.escalation.repos = { erp: ["U_HOST", "U_IT1", "U_IT2"] };
+    saveGatewayConfig(cfg);
+    const reload = loadGatewayConfig();
+    // Asker is in the repo pool — should drop self, keep U_IT1, U_IT2.
+    assert.deepEqual(pickEffectiveEscalationPool(reload, "erp", "U_HOST"), [
+      "U_IT1",
+      "U_IT2",
+    ]);
+    // Asker is the only one in the default pool — effective pool empty.
+    assert.deepEqual(
+      pickEffectiveEscalationPool(reload, "unknown-repo", "U_HOST"),
+      [],
+    );
+    // Asker not in pool at all — pool unchanged.
+    assert.deepEqual(pickEffectiveEscalationPool(reload, "erp", "U_OTHER"), [
+      "U_HOST",
+      "U_IT1",
+      "U_IT2",
+    ]);
+  });
+
+  it("pickEffectiveEscalationPool returns [] when both pool branches are empty", () => {
+    const cfg = loadGatewayConfig();
+    cfg.escalation.default = [];
+    cfg.escalation.repos = {};
+    saveGatewayConfig(cfg);
+    const reload = loadGatewayConfig();
+    assert.deepEqual(pickEffectiveEscalationPool(reload, "erp", "U_X"), []);
+    assert.deepEqual(pickEffectiveEscalationPool(reload, undefined, "U_X"), []);
   });
 });
 
