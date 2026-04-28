@@ -733,7 +733,19 @@ export class SlackAdapter {
       cwd: doctor.workspace,
     });
     if (!result.ok) {
+      // Diagnostic-friendly: surface stderr / partial stdout so the
+      // host operator can see WHY mra exited non-zero. Without this,
+      // failures collapse to Node's default "Command failed: <argv>"
+      // which is useless when triaging mra integration issues.
       this.onLog(`mra ask failed: ${result.reason ?? "(no reason)"}`);
+      if (result.stderr.trim()) {
+        this.onLog(`mra ask stderr: ${truncate(result.stderr.trim(), 600)}`);
+      }
+      if (result.stdout.trim()) {
+        this.onLog(
+          `mra ask partial stdout: ${truncate(result.stdout.trim(), 200)}`,
+        );
+      }
     }
 
     return await this.synthesiseAfterMra({
@@ -777,10 +789,7 @@ export class SlackAdapter {
           truncate(result.stdout.trim(), 24_000),
           "```",
         ].join("\n")
-      : [
-          `\`mra ask ${request.repo}\` 失敗：${result.reason ?? "unknown"}`,
-          "請以目前已載入的 PKB context 直接回答；若 PKB 也不足，請老實說「目前資料不夠」，不要編造。",
-        ].join("\n");
+      : buildMraFailureMessage(request.repo, result);
     session.messages.push({ role: "user", content: mraMessage });
 
     // Retrieval atoms come back here too — synthesis benefits from
@@ -1086,6 +1095,41 @@ function buildIngestSeed(
 function truncate(s: string, max: number): string {
   if (s.length <= max) return s;
   return `${s.slice(0, max)}\n…(truncated ${s.length - max} chars)`;
+}
+
+/**
+ * Compose the user-message that flows back to the LLM after mra ask
+ * failed. Includes stderr / stdout excerpts when present so the model
+ * can apologise with a specific cause ("mra reported missing PKB",
+ * "mra timed out") instead of a generic "unknown" — which is all
+ * Node's err.message gives us by default.
+ */
+function buildMraFailureMessage(
+  repo: string,
+  result: { stdout: string; stderr: string; reason?: string },
+): string {
+  const lines = [`\`mra ask ${repo}\` 失敗：${result.reason ?? "unknown"}`];
+  if (result.stderr.trim()) {
+    lines.push(
+      "",
+      "```mra-stderr",
+      truncate(result.stderr.trim(), 4_000),
+      "```",
+    );
+  }
+  if (result.stdout.trim()) {
+    lines.push(
+      "",
+      "```mra-partial-stdout",
+      truncate(result.stdout.trim(), 2_000),
+      "```",
+    );
+  }
+  lines.push(
+    "",
+    "請以目前已載入的 PKB context 直接回答；若 PKB 也不足，請老實說「目前資料不夠」並引用上面 stderr 提到的具體原因（如有），不要編造。",
+  );
+  return lines.join("\n");
 }
 
 // ─────────────────────────── ambient Slack types ──────────────────────
