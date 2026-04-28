@@ -66,14 +66,16 @@ npx pmk propose "weekly digest"              # PRD interview → docs/prds/*.md
 npx pmk ask "how does our auth flow work?"   # RAG over your indexed docs
 npx pmk case open prod-checkout-503          # long-lived bug investigation file
 
-# Slack gateway (v0.7) — host-run bridge so PMs/stakeholders DM pmk in Slack
+# Slack gateway (v0.7+) — host-run bridge so PMs/stakeholders DM pmk in Slack
 npx pmk gateway init                          # one-time: paste Slack tokens + mra workspace path
 npx pmk gateway start                         # run the bridge (foreground)
 npx pmk gateway status                        # configured? running? mra workspace ok?
-npx pmk gateway audience set <userId> biz     # tech / biz / exec tone per user
+npx pmk gateway admin add <userId>            # (v0.9) bootstrap first Slack admin — required for /pmk admin
+npx pmk gateway audience set <userId> pm      # (v0.8) tech / pm / biz / exec tone per user
 npx pmk gateway escalation add <repo> <userId>  # IT/domain contact pool for `escalate`
 npx pmk gateway atoms list --pending          # absorbed knowledge atoms awaiting promotion
 npx pmk gateway atoms approve <id-prefix>     # promote a pending atom to retrieval-visible
+# After bootstrap: in Slack DM with the bot, run `/pmk admin help` for the in-Slack surface (v0.9).
 ```
 
 The CLI delegates code-intelligence work to [**multi-repo-agent (mra)**](https://github.com/hanfour/multi-repo-agent) when present. The gateway specifically uses three integrated mechanisms:
@@ -101,9 +103,9 @@ You don't have to take the whole monorepo. Pick the layer that matches your need
 
 Read [Getting Started](https://hanfour.github.io/pm-workspace-kit/docs/getting-started) to set up front-matter on your first PRD; the [Confluence sync guide](https://hanfour.github.io/pm-workspace-kit/docs/guides/confluence-sync) covers the Confluence loop.
 
-## Latest release: v0.7.4 (2026-04-28)
+## Latest release: v0.9.0 (2026-04-28)
 
-The v0.7.x series matured the Slack gateway through real dogfood. Highlights:
+The v0.7.x series matured the Slack gateway through real dogfood; v0.8.x built retrieval quality and an in-Slack approval loop on top; v0.9.0 brings the operator surface itself into Slack so day-to-day ops no longer need host terminal access.
 
 | Release | Highlight |
 |---|---|
@@ -112,8 +114,16 @@ The v0.7.x series matured the Slack gateway through real dogfood. Highlights:
 | [`v0.7.2`](https://github.com/hanfour/pm-workspace-kit/releases/tag/v0.7.2) | Explicit `mraWorkspace` config, mra stderr surfaced, `pmk gateway escalation add default` positional |
 | [`v0.7.3`](https://github.com/hanfour/pm-workspace-kit/releases/tag/v0.7.3) | Startup mra validation, `runMraAsk` retry-once on transient flake, helpers extracted |
 | [`v0.7.4`](https://github.com/hanfour/pm-workspace-kit/releases/tag/v0.7.4) | Atom approval **TTL hybrid** — fresh atoms enter `pending` for 24h, auto-promote, or `pmk gateway atoms approve <id>` early |
+| [`v0.7.5`](https://github.com/hanfour/pm-workspace-kit/releases/tag/v0.7.5) | mra timeout-kill no longer mis-classified as `Command failed` — surfaces the real reason in apologies |
+| [`v0.8.0`](https://github.com/hanfour/pm-workspace-kit/releases/tag/v0.8.0) | **PM audience tier** — `tech` / `pm` / `biz` / `exec` with translation cheat-sheet, file-line refs OK but no formulas in question-back-to-user |
+| [`v0.8.1`](https://github.com/hanfour/pm-workspace-kit/releases/tag/v0.8.1) | Session context-window auto-pruning — drops oldest turns past `MAX_SESSION_TOKENS`, preserves PKB seed + last 10 pairs |
+| [`v0.8.2`](https://github.com/hanfour/pm-workspace-kit/releases/tag/v0.8.2) | Escalate **self-tag detection** — surfaces a config-fix hint instead of silently @-mentioning the asker |
+| [`v0.8.3`](https://github.com/hanfour/pm-workspace-kit/releases/tag/v0.8.3) | `pmk gateway atoms search / edit` + Commander option pass-through (`--pending`, `--scope`, `--limit` no longer eaten) |
+| [`v0.8.4`](https://github.com/hanfour/pm-workspace-kit/releases/tag/v0.8.4) | **BM25 / TF-IDF retrieval** for knowledge atoms — corpus-size threshold switches between keyword and BM25 |
+| [`v0.8.5`](https://github.com/hanfour/pm-workspace-kit/releases/tag/v0.8.5) | **Slack reaction approval** — ✅ / ❌ on the bot's pending notice approves or rejects in-flow (only the original IT contributor) |
+| [`v0.9.0`](https://github.com/hanfour/pm-workspace-kit/releases/tag/v0.9.0) | **`/pmk admin <subcommand>`** — DM-only admin surface for audience / escalation / atoms / admins / audit, with append-only JSONL audit log spanning Slack + CLI origins |
 
-The full knowledge loop — *PM asks in Slack → bot tries PKB → escalates to mra-ask → escalates to a human IT contact → absorbs the answer → next person who asks gets the cached answer* — works end-to-end. Tests: 75 → **148** in the v0.7 series. Walk through it phase-by-phase in the [Gateway lifecycle](https://hanfour.github.io/pm-workspace-kit/docs/gateway/lifecycle) deep-dive, or skim the release-by-release [changelog](https://hanfour.github.io/pm-workspace-kit/docs/changelog).
+The full knowledge loop — *PM asks in Slack → bot tries PKB → escalates to mra-ask → escalates to a human IT contact → absorbs the answer → next person who asks gets the cached answer* — works end-to-end, with retrieval quality improved by BM25 (v0.8.4), in-flow ✅ approval (v0.8.5), and Slack-side admin commands (v0.9.0). Tests: 75 → **185** across the v0.7–v0.9 series. Walk through it phase-by-phase in the [Gateway lifecycle](https://hanfour.github.io/pm-workspace-kit/docs/gateway/lifecycle) deep-dive (now with a Phase 11 covering admin commands), or skim the release-by-release [changelog](https://hanfour.github.io/pm-workspace-kit/docs/changelog).
 
 ## Design principles
 
