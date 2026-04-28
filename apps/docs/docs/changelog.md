@@ -8,6 +8,43 @@ All notable changes to **pm-workspace-kit** are documented here.
 
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Each release also has a longer narrative on [GitHub Releases](https://github.com/hanfour/pm-workspace-kit/releases) with rationale, dogfood notes, and test plans.
 
+## [v0.9.1] — 2026-04-28 — `/pmk` real Slack slash-command (no leading-space workaround)
+
+[GitHub release](https://github.com/hanfour/pm-workspace-kit/releases/tag/v0.9.1) · closes [#39](https://github.com/hanfour/pm-workspace-kit/issues/39)
+
+### Why
+
+Real-Slack verification of v0.9.0 found that typing `/pmk admin help` in Slack triggered Slackbot's "/pmk 是無效指令" intercept and never reached the bot. Slack's client blocks `/`-prefixed messages whose slash-command isn't registered on the app side. The only way to actually deliver the message was to type a leading space (` /pmk admin help`) so the gateway's existing `message`-event path could pick it up after `text.trim()`. Same gap had existed for every `/pmk` command since v0.7.0 (`help`, `open`, `show`, `close`, `cases`).
+
+### Fixed
+
+- **Real Slack slash-command** — `/pmk` is now registered as a Slack slash-command on the app side; SlackAdapter subscribes to the Socket Mode `slash_commands` envelope (`packages/cli/src/gateway/slack/index.ts`). No more leading-space workaround. Slack autocompletes `/pmk` and the bot replies as a top-level message (slash commands have no anchoring message, so no thread).
+- The legacy ` /pmk ...` text-message path stays in place as a fallback for users who learned the workaround and for deployments where the slash-command isn't registered.
+- Empty body (`/pmk` alone) routes to `help` so first-time users discover the surface.
+
+### Added
+
+- `slashCommandArgsFromBody(body)` — exported pure helper that translates a Slack `slash_commands` envelope body into `handleSlashCommand` args. Lets us unit-test the rest/scope decision without instantiating `SlackAdapter`.
+
+### Changed
+
+- `handleSlashCommand`'s `threadTs` is now optional. Slash-command envelopes have no anchor message, so omitting it is correct; the legacy text-message path still passes a thread_ts.
+- `chat.postMessage` only includes `thread_ts` when defined (was always passing it before, even when undefined).
+
+### Tests
+
+185 → 193 (+8): `slashCommandArgsFromBody` for DM/channel scope split, empty-text fallback to `help`, missing user_id/channel_id returns null, undefined body returns null, DM-only check stays downstream.
+
+### Operator note
+
+Existing v0.9.0 deployments need to (one-time):
+
+1. Register `/pmk` as a Slash Command at `https://api.slack.com/apps/<APP_ID>/slash-commands` (Socket Mode is on, no Request URL needed)
+2. Reinstall the app to add the `commands` scope
+3. Restart `pmk gateway start` with the v0.9.1 binary
+
+Until step 3 is done, the leading-space path is the only one that works. After step 3, both paths work in parallel.
+
 ## [v0.9.0] — 2026-04-28 — Slack admin commands + audit log
 
 [GitHub release](https://github.com/hanfour/pm-workspace-kit/releases/tag/v0.9.0) · closes [#31](https://github.com/hanfour/pm-workspace-kit/issues/31)
