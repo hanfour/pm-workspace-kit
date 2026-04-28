@@ -113,11 +113,33 @@ npx pmk ask "how does our auth flow work?"
 若希望利害關係人直接從 Slack 驅動 `pmk`，而不是進終端機：
 
 ```bash
-npx pmk gateway init    # 一次性：貼上 Slack App + Bot tokens
+npx pmk gateway init    # 一次性：貼上 Slack tokens + 設定 mra workspace 路徑
 npx pmk gateway start   # 前景跑 bridge — 讓它一直跑
 ```
 
 Gateway 是 host 自架的 Slack bridge（Socket Mode），不是 SaaS bot — token 與你的 code 都不離開你自己的機器。設計動機請見 [ADR-0006: pmk gateway](./adr/0006-pmk-gateway-slack.md)。
+
+### v0.7 gateway 表面
+
+v0.7.x 透過實際 Slack dogfood 把 gateway 磨成熟。在 `init` / `start` / `status` / `stats` 之外的關鍵指令：
+
+```bash
+# Audience 切換（tech / biz / exec）— 同樣答案、不同口吻
+pmk gateway audience set <userId> biz       # 這個人收到的是商業語意優先的回覆
+pmk gateway audience default tech           # 其他人的預設
+
+# Escalation pool — PKB 與 mra-ask 都答不出時，pmk 要 @ 誰
+pmk gateway escalation add <repo> <userId>  # repo 特定的人選
+pmk gateway escalation add default <userId> # 沒指定 repo 時的後援
+
+# Knowledge atoms — IT 回覆吸收後，24h TTL 才會被檢索
+pmk gateway atoms list --pending            # 待生效清單
+pmk gateway atoms show <id-prefix>          # 看完整內容
+pmk gateway atoms approve <id-prefix>       # 提前生效（不等 24h）
+pmk gateway atoms reject <id-prefix>        # 刪除
+```
+
+完整 gateway 流程 — *PM 在 Slack 問 → bot 看 PKB → 不夠就問 mra → 仍不夠就 @ 真人 → 吸收答案 → 下一個人問同樣問題直接命中* — 見 [PRD-2026-0005](./prds/2026-04-27-pmk-gateway-prd.md) 與 v0.7 系列 [release notes](https://github.com/hanfour/pm-workspace-kit/releases)。
 
 ## 接下來
 
