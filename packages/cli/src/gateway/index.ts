@@ -1,4 +1,5 @@
 import * as fs from "node:fs";
+import * as path from "node:path";
 import { SlackAdapter } from "./slack";
 import {
   gatewayPidPath,
@@ -29,6 +30,24 @@ export async function runGateway(opts: GatewayRunOptions = {}): Promise<void> {
   if (!hasValidSlackTokens(cfg)) {
     throw new Error(
       "gateway not configured. Run `pmk gateway init` and paste your Slack tokens.",
+    );
+  }
+
+  // Pre-flight validate the configured mra workspace so the host
+  // catches a stale path at start-up, not at first DM. Non-fatal —
+  // mra-ask will degrade gracefully later either way.
+  if (cfg.mraWorkspace) {
+    const marker = path.join(cfg.mraWorkspace, ".collab", "repos.json");
+    if (!fs.existsSync(marker)) {
+      log(
+        `WARN: mraWorkspace='${cfg.mraWorkspace}' has no .collab/repos.json — mra-ask will fail until you run \`mra init\` there or fix the path with \`pmk gateway init\``,
+      );
+    } else {
+      log(`mra workspace: ${cfg.mraWorkspace}`);
+    }
+  } else {
+    log(
+      "mra workspace: not configured (set via `pmk gateway init`); falling back to launch-cwd walk",
     );
   }
 

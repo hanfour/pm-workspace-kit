@@ -38,6 +38,11 @@ import {
 import { parseMraAsk, stripMraAskBlock } from "../src/gateway/mra-ask";
 import { parseEscalate, stripEscalateBlock } from "../src/gateway/escalate";
 import { mraDoctor, runMraAsk } from "../src/adapters/mra";
+import {
+  buildMraFailureMessage,
+  buildMraSuccessMessage,
+  truncate,
+} from "../src/gateway/messaging";
 import { pickAudience, pickEscalationPool } from "../src/gateway/config";
 import {
   pickGatewayPrompt,
@@ -436,6 +441,90 @@ describe("runMraAsk", () => {
     });
     assert.equal(r.ok, false);
     assert.match(r.reason ?? "", /not found/);
+  });
+});
+
+describe("messaging helpers", () => {
+  it("truncate is a no-op below the cap", () => {
+    assert.equal(truncate("short", 100), "short");
+  });
+
+  it("truncate slices and appends a marker", () => {
+    const out = truncate("a".repeat(200), 50);
+    assert.equal(out.startsWith("a".repeat(50)), true);
+    assert.match(out, /truncated 150 chars/);
+  });
+
+  it("buildMraSuccessMessage wraps stdout in mra-result fence", () => {
+    const m = buildMraSuccessMessage(
+      "erp",
+      "module X lives at app/models/x.rb",
+    );
+    assert.match(m, /^這是 `mra ask erp`/);
+    assert.match(m, /```mra-result\n/);
+    assert.match(m, /app\/models\/x\.rb/);
+  });
+
+  it("buildMraSuccessMessage truncates very long stdout", () => {
+    const big = "x".repeat(40_000);
+    const m = buildMraSuccessMessage("erp", big);
+    assert.ok(m.length < 30_000);
+    assert.match(m, /truncated/);
+  });
+
+  it("buildMraFailureMessage uses 'unknown' when reason missing", () => {
+    const m = buildMraFailureMessage("erp", { stdout: "", stderr: "" });
+    assert.match(m, /失敗：unknown/);
+    assert.ok(!m.includes("mra-stderr"));
+    assert.ok(!m.includes("mra-partial-stdout"));
+  });
+
+  it("buildMraFailureMessage emits stderr fence when stderr present", () => {
+    const m = buildMraFailureMessage("erp", {
+      stdout: "",
+      stderr: "PKB index not built; run `mra build erp` first.",
+      reason: "exit 1",
+    });
+    assert.match(m, /失敗：exit 1/);
+    assert.match(m, /```mra-stderr\n/);
+    assert.match(m, /PKB index not built/);
+  });
+
+  it("buildMraFailureMessage emits partial-stdout fence when present", () => {
+    const m = buildMraFailureMessage("erp", {
+      stdout: "[ask] querying erp\nfound 3 results before crash",
+      stderr: "",
+      reason: "killed",
+    });
+    assert.match(m, /```mra-partial-stdout\n/);
+    assert.match(m, /found 3 results/);
+  });
+
+  it("buildMraFailureMessage instructs model to cite stderr cause", () => {
+    const m = buildMraFailureMessage("erp", {
+      stdout: "",
+      stderr: "rate limited",
+    });
+    assert.match(m, /引用上面 stderr 提到的具體原因/);
+  });
+});
+
+describe("runMraAsk retry-once", () => {
+  const ORIG_PROBE = process.env.PMK_SKIP_MRA_PROBE;
+  afterEach(() => {
+    if (ORIG_PROBE === undefined) delete process.env.PMK_SKIP_MRA_PROBE;
+    else process.env.PMK_SKIP_MRA_PROBE = ORIG_PROBE;
+  });
+
+  it("returns attempts=1 for binary-not-found (no retry)", async () => {
+    process.env.PMK_SKIP_MRA_PROBE = "1";
+    const r = await runMraAsk({
+      repo: "erp",
+      question: "anything",
+      cwd: process.cwd(),
+    });
+    assert.equal(r.ok, false);
+    assert.equal(r.attempts, 1);
   });
 });
 
