@@ -344,10 +344,33 @@ function escalationUsage(): void {
     chalk.yellow(
       "usage:\n" +
         "  pmk gateway escalation list\n" +
-        "  pmk gateway escalation add <repo|--default> <userId>\n" +
-        "  pmk gateway escalation remove <repo|--default> <userId>",
+        "  pmk gateway escalation add <repo|default> <userId>\n" +
+        "  pmk gateway escalation remove <repo|default> <userId>",
     ),
   );
+}
+
+/**
+ * Resolve a user-supplied scope token to the canonical form. The
+ * canonical name for the default pool is `default` (positional, no
+ * dashes), but we also tolerate the legacy `--default` form for
+ * scripts that worked around the commander option-eating bug with
+ * `pmk gateway escalation add -- --default <id>`. Returns `null` when
+ * the token is the default sentinel; the actual repo string otherwise.
+ *
+ * Side effect: warns once when the deprecated form is used.
+ */
+function normaliseEscalationScope(scope: string): string | null {
+  if (scope === "default") return null;
+  if (scope === "--default") {
+    println(
+      chalk.yellow(
+        "  warning: `--default` is deprecated; use the positional `default` (no dashes) instead.",
+      ),
+    );
+    return null;
+  }
+  return scope;
 }
 
 function escalationCmd(rest: string[]): void {
@@ -382,15 +405,16 @@ function escalationCmd(rest: string[]): void {
         process.exit(1);
       }
       if (!ensureValidSlackUserId(userId)) process.exit(1);
+      const repo = normaliseEscalationScope(scope);
       const pool =
-        scope === "--default"
+        repo === null
           ? cfg.escalation.default
-          : (cfg.escalation.repos[scope] ??= []);
+          : (cfg.escalation.repos[repo] ??= []);
       if (!pool.includes(userId)) pool.push(userId);
       saveGatewayConfig(cfg);
       println(
         chalk.green(
-          `added ${userId} to ${scope === "--default" ? "default pool" : `${scope} pool`}`,
+          `added ${userId} to ${repo === null ? "default pool" : `${repo} pool`}`,
         ),
       );
       return;
@@ -401,12 +425,11 @@ function escalationCmd(rest: string[]): void {
         process.exit(1);
       }
       if (!ensureValidSlackUserId(userId)) process.exit(1);
+      const repo = normaliseEscalationScope(scope);
       const pool =
-        scope === "--default"
-          ? cfg.escalation.default
-          : cfg.escalation.repos[scope];
+        repo === null ? cfg.escalation.default : cfg.escalation.repos[repo];
       if (!pool) {
-        println(chalk.dim(`(${scope} pool empty; nothing to do)`));
+        println(chalk.dim(`(${repo} pool empty; nothing to do)`));
         return;
       }
       const idx = pool.indexOf(userId);
@@ -414,7 +437,7 @@ function escalationCmd(rest: string[]): void {
       saveGatewayConfig(cfg);
       println(
         chalk.green(
-          `removed ${userId} from ${scope === "--default" ? "default pool" : `${scope} pool`}`,
+          `removed ${userId} from ${repo === null ? "default pool" : `${repo} pool`}`,
         ),
       );
       return;
