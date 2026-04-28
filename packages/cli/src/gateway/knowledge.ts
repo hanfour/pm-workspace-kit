@@ -15,6 +15,21 @@ import * as os from "node:os";
 import * as path from "node:path";
 import matter from "gray-matter";
 
+/**
+ * TTL hybrid approval state (v0.7.4):
+ *   - "pending"  — fresh atom, NOT visible to retrieval; auto-promotes
+ *                  to "approved" once `expiresAt` passes, or earlier
+ *                  via `pmk gateway atoms approve <id>`.
+ *   - "approved" — visible to retrieval; no expiry.
+ *
+ * Atoms written by older builds (no `status` field) are treated as
+ * "approved" on load so the v0.7.0–v0.7.3 corpus keeps working.
+ */
+export type KnowledgeAtomStatus = "pending" | "approved";
+
+/** How long a fresh atom sits in pending before auto-promoting. */
+export const ATOM_PENDING_TTL_MS = 24 * 60 * 60 * 1000;
+
 export interface KnowledgeAtom {
   id: string;
   createdAt: number;
@@ -34,6 +49,16 @@ export interface KnowledgeAtom {
     /** Slack user ID of whoever supplied the answer. */
     contributorUserId: string;
   };
+  /**
+   * Approval state — see {@link KnowledgeAtomStatus}. Optional at the
+   * type level so test fixtures + back-compat callers don't need
+   * boilerplate; saveAtom defaults a missing value to "approved".
+   * The extractor always sets "pending" explicitly, so production
+   * absorb-flow atoms are never accidentally approved-on-creation.
+   */
+  status?: KnowledgeAtomStatus;
+  /** Epoch ms when a pending atom auto-promotes; absent on approved. */
+  expiresAt?: number;
 }
 
 export function knowledgeRoot(): string {
@@ -101,6 +126,8 @@ interface AtomFrontMatter {
   summary?: string;
   tags: string[];
   source: { threadKey: string; contributorUserId: string };
+  status?: KnowledgeAtomStatus;
+  expiresAt?: number;
 }
 
 function renderAtomMarkdown(atom: KnowledgeAtom): string {
@@ -115,8 +142,10 @@ function renderAtomMarkdown(atom: KnowledgeAtom): string {
     question: atom.question,
     tags: atom.tags,
     source: atom.source,
+    status: atom.status,
   };
   if (atom.summary) data.summary = atom.summary;
+  if (atom.expiresAt !== undefined) data.expiresAt = atom.expiresAt;
   const body = [
     `# ${atom.question}`,
     "",
@@ -153,6 +182,10 @@ function parseAtomMarkdown(raw: string): KnowledgeAtom | undefined {
     parsed.content,
   );
   const answer = answerMatch ? answerMatch[1].trim() : parsed.content.trim();
+  // Back-compat: atoms written before v0.7.4 have no `status` field —
+  // they were already in the store, so treat them as approved.
+  const status: KnowledgeAtomStatus =
+    data.status === "pending" ? "pending" : "approved";
   return {
     id: data.id,
     createdAt: data.createdAt,
@@ -167,12 +200,20 @@ function parseAtomMarkdown(raw: string): KnowledgeAtom | undefined {
       threadKey: data.source?.threadKey ?? "",
       contributorUserId: data.source?.contributorUserId ?? "",
     },
+    status,
+    expiresAt: typeof data.expiresAt === "number" ? data.expiresAt : undefined,
   };
 }
 
 export function saveAtom(atom: KnowledgeAtom): string {
   // Sanitise on the way in — caller may pass an LLM-influenced scope.
-  const safe: KnowledgeAtom = { ...atom, scope: safeScope(atom.scope) };
+  // Default status to "approved" when caller didn't specify; production
+  // absorb-flow always sets "pending" explicitly via the extractor.
+  const safe: KnowledgeAtom = {
+    ...atom,
+    scope: safeScope(atom.scope),
+    status: atom.status ?? "approved",
+  };
   const dir = scopeDir(safe.scope);
   fs.mkdirSync(dir, { recursive: true });
   const file = atomFile(safe);
@@ -197,6 +238,7 @@ export function loadAtoms(opts: { scope?: string } = {}): KnowledgeAtom[] {
           return false;
         }
       });
+  const now = Date.now();
   for (const scope of scopes) {
     const dir = scopeDir(scope);
     if (!fs.existsSync(dir)) continue;
@@ -205,7 +247,28 @@ export function loadAtoms(opts: { scope?: string } = {}): KnowledgeAtom[] {
       try {
         const raw = fs.readFileSync(path.join(dir, f), "utf8");
         const atom = parseAtomMarkdown(raw);
-        if (atom) atoms.push(atom);
+        if (!atom) continue;
+        // Auto-promote pending atoms whose TTL has passed. Rewrite to
+        // disk so the side-effect is persistent (next load is a no-op).
+        if (
+          atom.status === "pending" &&
+          atom.expiresAt !== undefined &&
+          atom.expiresAt <= now
+        ) {
+          atom.status = "approved";
+          atom.expiresAt = undefined;
+          try {
+            fs.writeFileSync(
+              path.join(dir, f),
+              renderAtomMarkdown(atom),
+              "utf8",
+            );
+          } catch {
+            /* best-effort; if rewrite fails, in-memory promotion still
+               applies for this load() call. */
+          }
+        }
+        atoms.push(atom);
       } catch {
         /* skip corrupt */
       }
@@ -213,6 +276,76 @@ export function loadAtoms(opts: { scope?: string } = {}): KnowledgeAtom[] {
   }
   atoms.sort((a, b) => b.createdAt - a.createdAt);
   return atoms;
+}
+
+/**
+ * Approve a pending atom by id (or unique id-prefix). Returns the
+ * promoted atom on success, undefined if no match / multiple matches.
+ * If already approved, returns the existing atom unchanged.
+ */
+export function approveAtom(idOrPrefix: string): KnowledgeAtom | undefined {
+  const found = findAtomByPrefix(idOrPrefix);
+  if (!found) return undefined;
+  if (found.atom.status === "approved") return found.atom;
+  found.atom.status = "approved";
+  found.atom.expiresAt = undefined;
+  fs.writeFileSync(found.file, renderAtomMarkdown(found.atom), "utf8");
+  return found.atom;
+}
+
+/**
+ * Reject a pending or approved atom by id (or unique id-prefix).
+ * Deletes the file. Returns true on success, false when no match /
+ * multiple matches.
+ */
+export function rejectAtom(idOrPrefix: string): boolean {
+  const found = findAtomByPrefix(idOrPrefix);
+  if (!found) return false;
+  fs.unlinkSync(found.file);
+  return true;
+}
+
+interface AtomLocation {
+  atom: KnowledgeAtom;
+  file: string;
+}
+
+/**
+ * Resolve an atom by full id or unique prefix. Used by the CLI so the
+ * host doesn't have to type the full timestamp-suffixed id.
+ *
+ * Multi-match returns undefined — caller should ask the user to add
+ * more chars.
+ */
+export function findAtomByPrefix(idOrPrefix: string): AtomLocation | undefined {
+  const root = knowledgeRoot();
+  if (!fs.existsSync(root)) return undefined;
+  const matches: AtomLocation[] = [];
+  for (const scope of fs.readdirSync(root)) {
+    const dir = scopeDir(scope);
+    if (!fs.existsSync(dir)) continue;
+    let stat: fs.Stats;
+    try {
+      stat = fs.statSync(dir);
+    } catch {
+      continue;
+    }
+    if (!stat.isDirectory()) continue;
+    for (const f of fs.readdirSync(dir)) {
+      if (!f.endsWith(".md")) continue;
+      const id = f.replace(/\.md$/, "");
+      if (id !== idOrPrefix && !id.startsWith(idOrPrefix)) continue;
+      try {
+        const raw = fs.readFileSync(path.join(dir, f), "utf8");
+        const atom = parseAtomMarkdown(raw);
+        if (atom) matches.push({ atom, file: path.join(dir, f) });
+      } catch {
+        /* skip */
+      }
+    }
+  }
+  if (matches.length !== 1) return undefined;
+  return matches[0];
 }
 
 /**
@@ -231,7 +364,12 @@ export function searchAtoms(
   opts: { scope?: string; limit?: number } = {},
 ): KnowledgeAtom[] {
   const limit = opts.limit ?? 3;
-  const atoms = loadAtoms({ scope: opts.scope });
+  // Pending atoms are deliberately invisible to retrieval — that's the
+  // whole point of the TTL gate. They become visible after auto-promote
+  // (loadAtoms rewrites them) or after manual approval.
+  const atoms = loadAtoms({ scope: opts.scope }).filter(
+    (a) => a.status === "approved",
+  );
   if (atoms.length === 0) return [];
   const tokens = tokenize(query);
   if (tokens.length === 0) return [];
