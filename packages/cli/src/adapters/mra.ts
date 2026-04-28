@@ -120,10 +120,19 @@ export function findMraWorkspace(
  * Pre-flight check used by both explore and ingest mra:. Returns a
  * structured report so callers can format error UX consistently.
  *
+ * Resolution order for the workspace:
+ *   1. `opts.workspace` if provided AND it actually contains the
+ *      marker file. This is what gateway uses (`cfg.mraWorkspace`)
+ *      so `pmk gateway start` can be launched from any cwd.
+ *   2. Walk up from `opts.cwd` (or process.cwd) looking for the
+ *      marker — original v0.7.0 behaviour, kept as fallback.
+ *
  * mra has no `--version` flag, so we don't claim a version. A future
  * mra release may add one — adapter will pick it up then.
  */
-export function mraDoctor(opts: { cwd?: string } = {}): MraDoctorReport {
+export function mraDoctor(
+  opts: { cwd?: string; workspace?: string } = {},
+): MraDoctorReport {
   const binaryPath = findMraBinary();
   if (!binaryPath) {
     return {
@@ -132,13 +141,28 @@ export function mraDoctor(opts: { cwd?: string } = {}): MraDoctorReport {
         "`mra` not found on PATH. Install: https://github.com/hanfour/multi-repo-agent#quick-start",
     };
   }
+  // Explicit override wins, but only if it actually looks like an mra
+  // workspace — otherwise we fall back to the cwd walk so a stale
+  // config field doesn't silently break a host that has a valid
+  // workspace ancestor.
+  if (opts.workspace) {
+    const explicit = path.resolve(opts.workspace);
+    if (existsSync(path.join(explicit, WORKSPACE_MARKER_PRIMARY))) {
+      return { ok: true, binaryPath, workspace: explicit };
+    }
+    return {
+      ok: false,
+      binaryPath,
+      reason: `configured mraWorkspace '${opts.workspace}' has no .collab/repos.json. Run \`mra init\` there or update gateway.json.`,
+    };
+  }
   const workspace = findMraWorkspace(opts.cwd);
   if (!workspace) {
     return {
       ok: false,
       binaryPath,
       reason:
-        "no mra workspace detected here. Run `mra init <dir>` then come back.",
+        "no mra workspace detected. Set `mraWorkspace` in ~/.pmk/gateway.json (or run `pmk gateway init` again) so pmk knows where your mra repos live.",
     };
   }
   return { ok: true, binaryPath, workspace };

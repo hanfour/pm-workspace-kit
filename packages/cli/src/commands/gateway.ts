@@ -1,4 +1,6 @@
 import * as readline from "node:readline/promises";
+import * as fs from "node:fs";
+import * as path from "node:path";
 import chalk from "chalk";
 import { AUDIENCE_KEYS, type AudienceKey } from "@pmk/shared";
 import { println } from "../io";
@@ -10,6 +12,7 @@ import {
 } from "../gateway/config";
 import { gatewayRunningPid, runGateway } from "../gateway";
 import { userStats } from "../gateway/session-store";
+import { findMraWorkspace } from "../adapters/mra";
 
 export async function gatewayCommand(
   action: string,
@@ -112,10 +115,41 @@ async function initCmd(): Promise<void> {
         )
       ).trim() || existing.defaultIngest;
 
+    // mra workspace path. Auto-detect from cwd if the user is sitting
+    // inside one; otherwise leave blank so the gateway uses the launch
+    // cwd at runtime (v0.7.0 behaviour). Stored as absolute path.
+    const detected = findMraWorkspace(process.cwd());
+    const suggestion = existing.mraWorkspace ?? detected ?? "";
+    const mraWorkspaceRaw = (
+      await rl.question(
+        chalk.cyan(
+          `mra workspace path (where .collab/repos.json lives) ${
+            suggestion ? `[${suggestion}]` : "[blank to skip]"
+          }: `,
+        ),
+      )
+    ).trim();
+    const mraWorkspace = mraWorkspaceRaw
+      ? path.resolve(
+          mraWorkspaceRaw.replace(/^~(?=$|\/)/, process.env.HOME ?? "~"),
+        )
+      : suggestion || undefined;
+    if (
+      mraWorkspace &&
+      !fs.existsSync(path.join(mraWorkspace, ".collab", "repos.json"))
+    ) {
+      println(
+        chalk.yellow(
+          `  warning: '${mraWorkspace}' has no .collab/repos.json. mra-ask will fail until you run \`mra init\` there.`,
+        ),
+      );
+    }
+
     const cfg = {
       version: 1 as const,
       blocklist: existing.blocklist,
       defaultIngest: defaultIngest || undefined,
+      mraWorkspace,
       audience: existing.audience,
       escalation: existing.escalation,
       slack: { appToken, botToken },
@@ -165,6 +199,18 @@ function statusCmd(): void {
   println(
     `  running:   ${pid ? chalk.green(`yes (pid ${pid})`) : chalk.gray("no")}`,
   );
+  if (cfg.mraWorkspace) {
+    const valid = fs.existsSync(
+      path.join(cfg.mraWorkspace, ".collab", "repos.json"),
+    );
+    println(
+      `  mra ws:    ${cfg.mraWorkspace} ${valid ? chalk.green("(ok)") : chalk.red("(no .collab/repos.json)")}`,
+    );
+  } else {
+    println(
+      `  mra ws:    ${chalk.gray("not set — falls back to launch cwd walk")}`,
+    );
+  }
   if (cfg.blocklist.length) {
     println(`  blocklist: ${cfg.blocklist.join(", ")}`);
   }

@@ -393,7 +393,10 @@ export class SlackAdapter {
     // truthfully says it has no idea about the user's codebase even
     // though we configured the ingest spec at gateway init.
     if (session.messages.length === 0 && this.config.defaultIngest) {
-      const seed = buildIngestSeed(this.config.defaultIngest);
+      const seed = buildIngestSeed(
+        this.config.defaultIngest,
+        this.config.mraWorkspace,
+      );
       if (seed) {
         session.messages.push({ role: "user", content: seed });
         session.messages.push({
@@ -691,8 +694,11 @@ export class SlackAdapter {
       request,
       systemPrompt,
     } = args;
-    const doctor = mraDoctor();
+    const doctor = mraDoctor({ workspace: this.config.mraWorkspace });
     if (!doctor.ok || !doctor.workspace) {
+      // Host-side log so the gateway operator can see WHY mra-ask
+      // bailed (config-fixable vs binary-missing vs workspace-stale).
+      this.onLog(`mra-ask short-circuited: ${doctor.reason ?? "(no reason)"}`);
       // Surface as a synthetic mra failure so the model can degrade gracefully.
       return await this.synthesiseAfterMra({
         session,
@@ -1035,9 +1041,15 @@ export class SlackAdapter {
  * Pattern: same as the case command's buildSeedMessage — we package
  * the four base docs per repo so the model can ground answers in real
  * module names / API endpoints.
+ *
+ * `mraWorkspace` overrides the cwd-walk in mraDoctor; pass through
+ * cfg.mraWorkspace so the seed can be built from any launch directory.
  */
-function buildIngestSeed(ingestSpec: string): string | undefined {
-  const doctor = mraDoctor();
+function buildIngestSeed(
+  ingestSpec: string,
+  mraWorkspace?: string,
+): string | undefined {
+  const doctor = mraDoctor({ workspace: mraWorkspace });
   if (!doctor.ok) return undefined;
   const tail = ingestSpec.startsWith("mra:") ? ingestSpec.slice(4) : ingestSpec;
   const repos =

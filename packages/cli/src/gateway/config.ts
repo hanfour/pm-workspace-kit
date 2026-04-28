@@ -50,6 +50,16 @@ export interface GatewayConfig {
   version: 1;
   /** When set, every new session is seeded with this ingest spec. */
   defaultIngest?: string;
+  /**
+   * Absolute path to the mra workspace (the directory holding
+   * `.collab/repos.json`). When set, `mraDoctor` uses this directly
+   * instead of walking up from the gateway's launch cwd — so
+   * `pmk gateway start` can be run from any directory and mra-ask /
+   * PKB seed still know where to look.
+   *
+   * When unset, falls back to the v0.7.0 behaviour (cwd-walk).
+   */
+  mraWorkspace?: string;
   /** Slack-user-IDs blocked from the bot (host-managed). */
   blocklist: string[];
   /** Audience overrides per user (tech / biz / exec). */
@@ -111,6 +121,7 @@ export function loadGatewayConfig(): GatewayConfig {
   // Env overrides — handy for CI / containerised hosts.
   raw.slack.appToken = process.env.PMK_SLACK_APP_TOKEN ?? raw.slack.appToken;
   raw.slack.botToken = process.env.PMK_SLACK_BOT_TOKEN ?? raw.slack.botToken;
+  raw.mraWorkspace = process.env.PMK_MRA_WORKSPACE ?? raw.mraWorkspace;
   return raw;
 }
 
