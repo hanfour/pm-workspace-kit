@@ -72,6 +72,11 @@ import {
   searchAtoms,
   slugifyQuestion,
 } from "../src/gateway/knowledge";
+import {
+  approvedAtomCount,
+  buildAtomsIndex,
+  searchAtomsRanked,
+} from "../src/gateway/atom-index";
 import { extractKnowledgeAtom } from "../src/gateway/extractor";
 import type { LlmProvider } from "../src/llm";
 
@@ -1244,6 +1249,121 @@ describe("atom TTL approval", () => {
     });
     const r = approveAtom(sharedPrefix);
     assert.equal(r, undefined);
+  });
+});
+
+describe("atom-index BM25 (#19)", () => {
+  let tmpHome: string;
+  beforeEach(() => {
+    tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), "pmk-atomidx-"));
+    process.env.HOME = tmpHome;
+  });
+  afterEach(() => {
+    fs.rmSync(tmpHome, { recursive: true, force: true });
+    if (ORIG_HOME !== undefined) process.env.HOME = ORIG_HOME;
+  });
+
+  function seedThreeApprovedAtoms() {
+    saveAtom({
+      id: generateAtomId("widget config"),
+      createdAt: Date.now(),
+      scope: "erp",
+      question: "How is widget A configured for the campaign flow?",
+      answer:
+        "Widget A is configured via the campaign settings page; uses placement_id as primary grain.",
+      summary:
+        "Widget A configuration overview — campaign settings page, placement_id grain.",
+      tags: ["widget", "campaign", "configuration"],
+      source: { threadKey: "T1", contributorUserId: "U1" },
+      status: "approved",
+    });
+    saveAtom({
+      id: generateAtomId("budget allocation"),
+      createdAt: Date.now() - 1000,
+      scope: "erp",
+      question: "How is the monthly budget allocated across departments?",
+      answer:
+        "Budget allocation lives in placement_revenues; query by month and department.",
+      summary: "Monthly budget allocation across departments.",
+      tags: ["budget", "allocation", "monthly", "placement_revenues"],
+      source: { threadKey: "T2", contributorUserId: "U1" },
+      status: "approved",
+    });
+    saveAtom({
+      id: generateAtomId("pending unindexed"),
+      createdAt: Date.now() - 2000,
+      scope: "erp",
+      question: "This atom should never appear in the index.",
+      answer: "It is pending and BM25 must skip it.",
+      summary: "pending excluded sentinel",
+      tags: ["pending"],
+      source: { threadKey: "T3", contributorUserId: "U1" },
+      status: "pending",
+      expiresAt: Date.now() + 60_000,
+    });
+  }
+
+  it("buildAtomsIndex includes only approved atoms (skips pending)", () => {
+    seedThreeApprovedAtoms();
+    const idx = buildAtomsIndex({ scope: "erp" });
+    assert.equal(idx.chunks.length, 2);
+    // Verify the pending atom isn't in the chunk list
+    const ids = idx.chunks.map((c) => c.id);
+    const pendingAtom = loadAtoms({ scope: "erp" }).find(
+      (a) => a.status === "pending",
+    );
+    assert.ok(pendingAtom);
+    assert.equal(
+      ids.includes(pendingAtom.id),
+      false,
+      "pending atom should not be in index",
+    );
+  });
+
+  it("searchAtomsRanked returns BM25-ordered approved atoms", () => {
+    seedThreeApprovedAtoms();
+    const hits = searchAtomsRanked("budget allocation", {
+      scope: "erp",
+      limit: 5,
+    });
+    assert.ok(hits.length >= 1);
+    // Top result should be the budget atom
+    assert.match(hits[0].question, /budget/i);
+    // Pending atom must not appear
+    assert.ok(hits.every((a) => a.status === "approved"));
+  });
+
+  it("approvedAtomCount excludes pending", () => {
+    seedThreeApprovedAtoms();
+    assert.equal(approvedAtomCount("erp"), 2);
+  });
+
+  it("index file is rebuilt when atoms change (mtime invalidation)", () => {
+    seedThreeApprovedAtoms();
+    const first = buildAtomsIndex({ scope: "erp" });
+    const firstBuiltAt = new Date(first.builtAt).getTime();
+    // Add another atom AFTER the index built; mtime should now be newer
+    // than firstBuiltAt, triggering a rebuild on next searchAtomsRanked.
+    fs.utimesSync(
+      path.join(knowledgeRoot(), "erp"),
+      new Date(),
+      new Date(firstBuiltAt + 60_000), // dir mtime well after index
+    );
+    saveAtom({
+      id: generateAtomId("late addition"),
+      createdAt: Date.now(),
+      scope: "erp",
+      question: "Late-added atom about budget reporting",
+      answer: "More info on budget allocation reports.",
+      summary: "Budget reporting details added later.",
+      tags: ["budget", "reporting"],
+      source: { threadKey: "T4", contributorUserId: "U1" },
+      status: "approved",
+    });
+    const hits = searchAtomsRanked("budget", { scope: "erp", limit: 5 });
+    // Late-added atom is now retrievable.
+    assert.ok(hits.length >= 2);
+    assert.ok(hits.some((a) => a.question.includes("Late-added")));
   });
 });
 

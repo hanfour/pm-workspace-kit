@@ -20,6 +20,11 @@ import {
   rejectAtom,
   searchAtoms,
 } from "../gateway/knowledge";
+import {
+  approvedAtomCount,
+  ATOM_RANKED_THRESHOLD,
+  buildAtomsIndex,
+} from "../gateway/atom-index";
 import { spawnSync } from "node:child_process";
 
 export async function gatewayCommand(
@@ -467,7 +472,8 @@ function atomsUsage(): void {
         "  pmk gateway atoms search <query> [--scope <name>] [--limit N]\n" +
         "  pmk gateway atoms edit <id-or-prefix>\n" +
         "  pmk gateway atoms approve <id-or-prefix>\n" +
-        "  pmk gateway atoms reject <id-or-prefix>",
+        "  pmk gateway atoms reject <id-or-prefix>\n" +
+        "  pmk gateway atoms reindex [--scope <name>]",
     ),
   );
 }
@@ -727,6 +733,30 @@ function atomsCmd(rest: string[]): void {
         process.exit(1);
       }
       println(chalk.green(`rejected (file deleted): ${idOrPrefix}`));
+      return;
+    }
+    case "reindex": {
+      // pmk gateway atoms reindex [--scope <name>]
+      // Force-rebuild the BM25 index. Auto-rebuild on staleness
+      // already happens at search-time, so this is mostly for
+      // operators who want to confirm the index is up-to-date or
+      // who tweaked PMK_ATOM_VECTOR_THRESHOLD and want to see what
+      // would be ranked.
+      const scopeIdx = args.indexOf("--scope");
+      const scope = scopeIdx >= 0 ? args[scopeIdx + 1] : undefined;
+      const before = approvedAtomCount(scope);
+      println(
+        chalk.dim(
+          `building BM25 index over ${before} approved atoms${scope ? ` in scope ${scope}` : ""}…`,
+        ),
+      );
+      const idx = buildAtomsIndex({ scope });
+      println(
+        chalk.green(
+          `indexed ${idx.chunks.length} chunk(s); ranking threshold = ${ATOM_RANKED_THRESHOLD} ` +
+            `(${before >= ATOM_RANKED_THRESHOLD ? "BM25 active" : "still using keyword scoring"})`,
+        ),
+      );
       return;
     }
     default:

@@ -8,6 +8,33 @@ All notable changes to **pm-workspace-kit** are documented here.
 
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Each release also has a longer narrative on [GitHub Releases](https://github.com/hanfour/pm-workspace-kit/releases) with rationale, dogfood notes, and test plans.
 
+## [v0.8.4] — 2026-04-28 — BM25 / TF-IDF retrieval for knowledge atoms
+
+[GitHub release](https://github.com/hanfour/pm-workspace-kit/releases/tag/v0.8.4) · closes [#19](https://github.com/hanfour/pm-workspace-kit/issues/19)
+
+### Added
+
+- New `packages/cli/src/gateway/atom-index.ts` — BM25-scored TF-IDF index over approved atoms via `@pmk/rag`. Pending atoms are excluded at index-build time (the v0.7.4 TTL gate is preserved). Index file persisted at `~/.pmk/knowledge/.index/<scope>.json`; auto-rebuilds when any atom file's mtime is newer than the index's `builtAt`.
+- `pmk gateway atoms reindex [--scope <name>]` — force-rebuild the index. Useful after tweaking thresholds or to confirm the index is current.
+- `PMK_ATOM_VECTOR_THRESHOLD` env var — corpus-size threshold above which `searchAtoms` switches from keyword overlap to BM25. Default `50`.
+
+### Changed
+
+- `searchAtoms` now picks its scoring path at runtime by corpus size:
+  - `< threshold` (small corpus): keyword + tag overlap (the v0.7.0 path; cheap, predictable)
+  - `>= threshold` (large corpus): BM25 via the new index
+- BM25 falls back to keyword on empty results, so single-token CJK queries that the tokenizer can't handle still work.
+
+### Why
+
+The keyword + tag scoring drifts as the corpus grows past a few dozen atoms — partial token matches and CJK bigram noise surface irrelevant atoms above relevant ones. Atom retrieval that's *worse* than no retrieval is dangerous because the model treats them as ground truth. BM25 fixes the ranking quality without requiring an external embedding API.
+
+(Issue title was "vector retrieval" but `@pmk/rag` is BM25 / TF-IDF, which is the practically-useful upgrade. Pure JS, no embedding cost, no network dependency.)
+
+### Tests
+
+158 → 162 (+4: index excludes pending, BM25 returns approved-ordered, approvedAtomCount filter, mtime invalidation triggers rebuild).
+
 ## [v0.8.3] — 2026-04-28 — atoms search + edit CLI + commander option pass-through
 
 [GitHub release](https://github.com/hanfour/pm-workspace-kit/releases/tag/v0.8.3) · closes [#20](https://github.com/hanfour/pm-workspace-kit/issues/20)

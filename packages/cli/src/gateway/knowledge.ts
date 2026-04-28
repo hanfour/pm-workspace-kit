@@ -349,21 +349,43 @@ export function findAtomByPrefix(idOrPrefix: string): AtomLocation | undefined {
 }
 
 /**
- * Score atoms against a query — keyword + tag overlap. Cheap and
- * understandable; upgrade to vector retrieval when atom counts pass
- * a few hundred.
+ * Score atoms against a query.
  *
- * Scoring (per atom):
- *   - 3 points per query token that appears in question
- *   - 2 points per query token matching a tag
- *   - 1 point per query token in summary
- *   - 1 point per query token in answer
+ * Two paths, picked at runtime by corpus size:
+ *
+ *   - **Keyword + tag overlap** (default, used when corpus is small):
+ *     cheap and understandable; 3 pts question, 2 pts tag, 1 pt
+ *     summary, 1 pt answer. Works fine until ranking quality starts
+ *     to matter.
+ *   - **BM25 / TF-IDF** (when approved-atom count >= ATOM_RANKED_THRESHOLD,
+ *     v0.8.4): delegates to `@pmk/rag`'s query() with a per-scope
+ *     index cached at `~/.pmk/knowledge/.index/<scope>.json`.
+ *     Auto-rebuilds when the index is stale (any atom file mtime
+ *     newer than index builtAt) or missing.
+ *
+ * Pending atoms are filtered out either way — that's the v0.7.4 TTL
+ * gate's whole point. They become visible only after auto-promote or
+ * manual approval.
  */
 export function searchAtoms(
   query: string,
   opts: { scope?: string; limit?: number } = {},
 ): KnowledgeAtom[] {
   const limit = opts.limit ?? 3;
+
+  // BM25 fast-path when corpus is large enough to need real ranking.
+  // Imported lazily to avoid pulling @pmk/rag into the keyword path's
+  // hot loop (and to keep this file's startup cost low).
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const { approvedAtomCount, ATOM_RANKED_THRESHOLD, searchAtomsRanked } =
+    require("./atom-index") as typeof import("./atom-index");
+  if (approvedAtomCount(opts.scope) >= ATOM_RANKED_THRESHOLD) {
+    const ranked = searchAtomsRanked(query, opts);
+    if (ranked.length > 0) return ranked;
+    // BM25 yielded nothing — fall through to keyword as a safety net
+    // for queries the index can't handle (single-token CJK, etc).
+  }
+
   // Pending atoms are deliberately invisible to retrieval — that's the
   // whole point of the TTL gate. They become visible after auto-promote
   // (loadAtoms rewrites them) or after manual approval.
