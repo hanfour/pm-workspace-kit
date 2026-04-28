@@ -54,7 +54,10 @@ import {
 } from "../messaging";
 import { parseEscalate, stripEscalateBlock } from "../escalate";
 import {
+  approveAtom,
+  findAtomByApprovalMessage,
   formatAtomsForInjection,
+  rejectAtom,
   saveAtom,
   searchAtoms,
   type KnowledgeAtom,
@@ -147,6 +150,14 @@ export class SlackAdapter {
 
     this.socket.on("message", (event) => this.handleMessage(event));
     this.socket.on("app_mention", (event) => this.handleAppMention(event));
+    // v0.8.5 (#21): reaction-based atom approval. Requires
+    // `reactions:read` Slack scope + `reaction_added` event subscription
+    // on the app side. When the scope isn't granted, no events fire
+    // and the handler is silently inert — TTL auto-promote still
+    // works as the safety net.
+    this.socket.on("reaction_added", (event) =>
+      this.handleReactionAdded(event),
+    );
     this.socket.on("disconnected", () =>
       this.onLog("slack socket disconnected"),
     );
@@ -647,19 +658,37 @@ export class SlackAdapter {
       return true;
     }
     try {
+      // First save: atom in pending without approval anchor.
       const file = saveAtom(atom);
       this.onLog(`absorbed knowledge atom (pending) → ${file}`);
       const idShort = atom.id.split("-").slice(0, 2).join("-");
-      await this.web.chat
+      const post = await this.web.chat
         .postMessage({
           channel: channelId,
           thread_ts: threadTs,
           text:
             `:hourglass_flowing_sand: pmk 已收下這份補充（標籤：${atom.tags.join(", ") || "—"}），暫存為 *pending*，` +
             `24 小時後自動生效，期間不會被其他查詢抓到。\n` +
-            `要立即生效或刪除：\`pmk gateway atoms approve ${idShort}\` / \`pmk gateway atoms reject ${idShort}\``,
+            `直接 ✅ 或 ❌ react 這條訊息可立即 approve / reject；` +
+            `或 host 端：\`pmk gateway atoms approve ${idShort}\` / \`pmk gateway atoms reject ${idShort}\``,
         })
-        .catch(() => {});
+        .catch((err) => {
+          this.onLog(
+            `failed to post pending notice: ${(err as Error).message}`,
+          );
+          return undefined;
+        });
+      // v0.8.5 (#21): if the bot's confirmation message landed, anchor
+      // the atom to its `ts` so reaction-approval can find it. Re-save
+      // — cheap (one extra fs.write) and keeps the storage layer the
+      // single-source-of-truth.
+      if (post?.ts) {
+        const updated: typeof atom = {
+          ...atom,
+          approval: { channelId, messageTs: String(post.ts) },
+        };
+        saveAtom(updated);
+      }
     } catch (err) {
       this.onLog(`failed to save atom: ${(err as Error).message}`);
       return true;
@@ -676,6 +705,81 @@ export class SlackAdapter {
       this.onLog(`post-absorb synthesis failed: ${(err as Error).message}`),
     );
     return true;
+  }
+
+  /**
+   * v0.8.5 (#21): handle a reaction added to one of pmk's pending-
+   * notice messages. ✅ promotes the atom; ❌ deletes it. Layered on
+   * top of the v0.7.4 TTL gate — if no reaction comes in, the atom
+   * still auto-promotes after 24h.
+   *
+   * Trust model: the **original IT contributor** (atom.source.
+   * contributorUserId) is the only Slack user authorised to react.
+   * Random thread participants reacting do nothing. v0.9 admin
+   * commands (#31) will add a separate override path.
+   */
+  private async handleReactionAdded(
+    payload: Slack.ReactionEventPayload,
+  ): Promise<void> {
+    await payload.ack?.().catch(() => {});
+
+    const event = payload?.event;
+    if (!event || !this.botInfo) return;
+    // We only listen for reactions on the bot's own messages
+    // (item_user is the author of the reacted-to message).
+    if (event.item_user !== this.botInfo.botUserId) return;
+    const reaction = event.reaction;
+    const isApprove =
+      reaction === "white_check_mark" ||
+      reaction === "heavy_check_mark" ||
+      reaction === "+1";
+    const isReject = reaction === "x" || reaction === "-1";
+    if (!isApprove && !isReject) return;
+
+    const channelId = event.item?.channel;
+    const messageTs = event.item?.ts;
+    const reactorUserId = event.user;
+    if (!channelId || !messageTs || !reactorUserId) return;
+
+    const found = findAtomByApprovalMessage(channelId, messageTs);
+    if (!found) {
+      // Reaction on some other bot message — not an atom-pending one.
+      return;
+    }
+
+    if (reactorUserId !== found.atom.source.contributorUserId) {
+      this.onLog(
+        `reaction-approval ignored: ${reactorUserId} is not the atom contributor (${found.atom.source.contributorUserId})`,
+      );
+      return;
+    }
+
+    if (isApprove) {
+      const promoted = approveAtom(found.atom.id);
+      this.onLog(
+        `reaction-approval: ${found.atom.id} approved via :${reaction}: from ${reactorUserId}`,
+      );
+      const tags = promoted?.tags?.length ? promoted.tags.join(", ") : "—";
+      await this.web.chat
+        .postMessage({
+          channel: channelId,
+          thread_ts: messageTs,
+          text: `:books: 已生效（標籤：${tags}），下次同類問題會自動帶進來。`,
+        })
+        .catch(() => {});
+    } else {
+      const ok = rejectAtom(found.atom.id);
+      this.onLog(
+        `reaction-approval: ${found.atom.id} rejected via :${reaction}: from ${reactorUserId} (deleted=${ok})`,
+      );
+      await this.web.chat
+        .postMessage({
+          channel: channelId,
+          thread_ts: messageTs,
+          text: `:wastebasket: 已捨棄，atom 檔案已刪除。`,
+        })
+        .catch(() => {});
+    }
   }
 
   /**
@@ -1145,5 +1249,20 @@ declare namespace Slack {
     retry_num?: number;
     retry_reason?: string;
     event?: AppMentionEvent;
+  }
+  // v0.8.5 (#21) — reactions:read scope on the Slack app side.
+  interface ReactionEvent {
+    type: "reaction_added";
+    user?: string;
+    reaction?: string;
+    item_user?: string;
+    item?: { type: string; channel: string; ts: string };
+  }
+  interface ReactionEventPayload {
+    ack?: (response?: unknown) => Promise<void>;
+    envelope_id: string;
+    retry_num?: number;
+    retry_reason?: string;
+    event?: ReactionEvent;
   }
 }

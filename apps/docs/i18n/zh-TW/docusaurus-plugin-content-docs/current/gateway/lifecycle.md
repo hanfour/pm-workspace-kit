@@ -180,13 +180,14 @@ Pending marker 在 extraction **之前**就會被清掉 — 兩個 IT 同事連�
 - **retrieval 看不到**（`searchAtoms` 過濾掉）— Phase 4 不會撈到
 - **CLI 看得到** — `pmk gateway atoms list --pending`
 
-三條離開路徑：
+四條離開路徑：
 
 | 觸發 | 效果 |
 |---|---|
 | 24h 過了；下次 `loadAtoms()` | 自動 promote：重寫檔案 `status: approved`、清掉 `expiresAt`。後續 load 是 idempotent 的。 |
 | `pmk gateway atoms approve <id-prefix>` | 同上，但立即。ID prefix matching：唯一的 prefix 就解析得出 atom。 |
 | `pmk gateway atoms reject <id-prefix>` | 刪掉 `.md` 檔。 |
+| **(v0.8.5)** 在 bot 的 pending 通知上 ✅ react | 同 `approve` — 但在 Slack 裡完成、不用回 host 終端。只有原 IT contributor（`atom.source.contributorUserId`）有權限；其他人 react 會被忽略。❌ react 等同 `reject`。需 Slack app 加 `reactions:read` scope。 |
 
 Promote 完後 atom 對 retrieval 可見。下一個問類似問題的人在 Phase 4 就會被 prepend — loop 收口。
 
