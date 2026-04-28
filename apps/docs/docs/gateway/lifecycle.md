@@ -197,6 +197,16 @@ The post-absorb synthesised reply (sent to the original asker after Phase 9 comp
 
 `/pmk admin <subcommand>` runs gateway-config mutations from inside Slack — same surface as the host CLI, no terminal needed for day-to-day ops.
 
+:::caution Type a leading space before `/pmk` in Slack
+
+Slack's client treats any message starting with `/` as a slash-command attempt and blocks it via Slackbot ("/pmk 是無效指令"). pmk doesn't currently register `/pmk` as a real Slack slash-command — it's parsed from the message text on the gateway side after the bot receives the `message` / `app_mention` event.
+
+Workaround: type a space before the slash, e.g. ` /pmk admin help` (leading-space). The gateway's `text.trim()` strips the space transparently. Same applies to all the v0.7+ commands (`/pmk open`, `/pmk show`, `/pmk close`, `/pmk cases`, `/pmk help`).
+
+Tracked in [#39](https://github.com/hanfour/pm-workspace-kit/issues/39) — registering `/pmk` as a real Slack slash-command (Socket Mode `slash_commands` event) is on the v0.9.1 plate.
+
+:::
+
 **Bootstrap is terminal-only.** The very first admin must be added via `pmk gateway admin add <userId>` on the host. There is no Slack path to grant yourself admin — by design, since everyone in the workspace can run slash commands.
 
 **DM-only.** `/pmk admin` in a channel returns `:no_entry_sign:` and does nothing. This keeps audit-relevant mutations out of channel scrollback and prevents accidental visibility leaks.
