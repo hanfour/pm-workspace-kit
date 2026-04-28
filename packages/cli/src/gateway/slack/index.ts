@@ -724,7 +724,7 @@ export class SlackAdapter {
       .update({
         channel: channelId,
         ts: placeholderTs,
-        text: `:mag: 正在用 mra 查 \`${request.repo}\` 的 code…（最多 2 分鐘）`,
+        text: `:mag: 正在用 mra 查 \`${request.repo}\` 的 code…（最多 5 分鐘）`,
       })
       .catch(() => {});
 
