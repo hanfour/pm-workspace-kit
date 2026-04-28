@@ -8,6 +8,29 @@ All notable changes to **pm-workspace-kit** are documented here.
 
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Each release also has a longer narrative on [GitHub Releases](https://github.com/hanfour/pm-workspace-kit/releases) with rationale, dogfood notes, and test plans.
 
+## [v0.9.0] — 2026-04-28 — Slack admin commands + audit log
+
+[GitHub release](https://github.com/hanfour/pm-workspace-kit/releases/tag/v0.9.0) · closes [#31](https://github.com/hanfour/pm-workspace-kit/issues/31)
+
+### Added
+
+- **`/pmk admin <subcommand>`** runs gateway-config mutations from inside Slack — no host terminal needed for day-to-day ops. Subcommands cover `status`, `audience`, `escalation`, `atoms` (list/show/approve/reject), `admins`, and `audit`. See the [Admin commands section](./gateway/lifecycle.md#11-admin-commands-v090) of the lifecycle doc.
+- **`pmk gateway admin <add|remove|list|audit>`** — host CLI counterpart for bootstrapping the very first admin and rotating the set. Bootstrap is intentionally terminal-only — there is no Slack path to grant yourself admin.
+- **Append-only audit log** at `~/.pmk/gateway/admin.log`. Every admin mutation, whether from Slack or CLI, writes one JSONL line capturing `actor`, `origin`, `action`, `args`, `ok`, and (on failure) a `reason`. Surfaced via `/pmk admin audit [N]` and `pmk gateway admin audit [N]`.
+- **`cfg.admins: string[]`** in `~/.pmk/gateway.json`. Back-fills to `[]` for legacy configs so existing deployments keep working with no migration step.
+- **`isAdmin(cfg, userId)`** helper used by the Slack adapter's `/pmk admin` route gate.
+
+### Trust model
+
+- **Bootstrap requires terminal access.** The first admin must come from the host CLI; you cannot grant yourself admin from Slack.
+- **DM-only.** `/pmk admin` in a channel returns `:no_entry_sign:` and does nothing. Keeps audit-relevant mutations out of channel scrollback.
+- **Last-admin protection.** Removing the only admin is refused — even self-removal — to prevent locking the workspace out of the Slack admin path entirely. Add a replacement first.
+- **Slash-command surface is a deliberate subset.** `init`, token rotation, `atoms edit`, process stop/restart, and blocklist mutation are all CLI-only. `atoms edit` in particular: pasted Slack content would land verbatim in retrieval, and the CLI's `$EDITOR`-with-validation path is safer.
+
+### Tests
+
+166 → 185 (+19): `isAdmin` true/false + legacy back-fill, audit-log round-trip + tail-limit + malformed-line skip + non-fatal write failure, Slack handler help / unknown subcommand / audience set + invalid tier / admins add+remove + last-admin protection + invalid Slack-id rejection / audit subcommand surfaces entries / escalation default vs repo pool isolation, plus mention parsing (`<@U0X>`, `<@U0X|name>`, bare `U0X`, garbage).
+
 ## [v0.8.5] — 2026-04-28 — Slack reaction-based atom approval
 
 [GitHub release](https://github.com/hanfour/pm-workspace-kit/releases/tag/v0.8.5) · closes [#21](https://github.com/hanfour/pm-workspace-kit/issues/21)
