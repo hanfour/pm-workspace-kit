@@ -8,6 +8,24 @@ All notable changes to **pm-workspace-kit** are documented here.
 
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Each release also has a longer narrative on [GitHub Releases](https://github.com/hanfour/pm-workspace-kit/releases) with rationale, dogfood notes, and test plans.
 
+## [v0.7.5] — 2026-04-28 — mra timeout-kill mis-classification
+
+[GitHub release](https://github.com/hanfour/pm-workspace-kit/releases/tag/v0.7.5) · PR [#25](https://github.com/hanfour/pm-workspace-kit/pull/25)
+
+### Fixed
+
+- **Critical**: Node's `execFile` timeout-kill produces `err.killed=true` / `err.signal="SIGTERM"` (with `err.code=null`), but the v0.7.0 detection checked `err.code === "ETIMEDOUT"` — so timeouts had **never** been correctly identified. Every timeout was labeled `Command failed: <argv>`, mis-leading operators and the LLM, and tripping the v0.7.3 retry-once on questions that always needed more time than the cap.
+- Detect signaled-kill via `err.killed` / `err.signal === "SIGTERM"` in addition to the original `ETIMEDOUT` code path.
+
+### Changed
+
+- Default mra-ask timeout 120s → **300s**. Live dogfood (2026-04-28) showed a complex 4-clause CJK question legitimately needs 160s of mra-internal LLM time; the v0.7.0 cap was killing healthy queries.
+- Slack placeholder copy `(最多 2 分鐘)` → `(最多 5 分鐘)` to match.
+
+### Caught by
+
+A real escalate-flow turn with a multi-clause CJK whitelist question. Symptoms looked like "mra returned no results" but were actually pmk's premature `SIGTERM`. Manual reproduction of the same query: exit 0, 160s, perfect 3 KB answer.
+
 ## [v0.7.4] — 2026-04-28 — atom approval (TTL hybrid)
 
 [GitHub release](https://github.com/hanfour/pm-workspace-kit/releases/tag/v0.7.4) · PR [#15](https://github.com/hanfour/pm-workspace-kit/pull/15) · closes [#14](https://github.com/hanfour/pm-workspace-kit/issues/14)
