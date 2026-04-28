@@ -82,6 +82,7 @@ The system prompt for the LLM call comes from `pickGatewayPrompt(audience)` wher
 | Audience | Tone |
 |---|---|
 | `tech` | Cites `app/models/x.rb`, API endpoints, scope names directly |
+| `pm` | (v0.8) Structural findings + file/model citations OK, but questions back to the user are translated into PM vocabulary — no formulas, no bare schema names |
 | `biz` | Leads with business meaning, translates jargon, defers code questions to IT |
 | `exec` | Strict 結論 / 影響(含風險) / 建議行動 — no code, no API, no file paths |
 
