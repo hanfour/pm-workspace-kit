@@ -7,7 +7,12 @@
  */
 
 import type { LlmProvider } from "../llm";
-import { generateAtomId, safeScope, type KnowledgeAtom } from "./knowledge";
+import {
+  ATOM_PENDING_TTL_MS,
+  generateAtomId,
+  safeScope,
+  type KnowledgeAtom,
+} from "./knowledge";
 
 const EXTRACTOR_PROMPT = `You are a knowledge-base curator. You receive a Slack thread snippet:
 - The original question someone asked pmk
@@ -66,11 +71,9 @@ export async function extractKnowledgeAtom(
   let out: string;
   try {
     out = await withTimeout(
-      llm.chat(
-        EXTRACTOR_PROMPT,
-        [{ role: "user", content: userMessage }],
-        { onToken: () => {} },
-      ),
+      llm.chat(EXTRACTOR_PROMPT, [{ role: "user", content: userMessage }], {
+        onToken: () => {},
+      }),
       EXTRACT_TIMEOUT_MS,
     );
   } catch {
@@ -99,9 +102,10 @@ export async function extractKnowledgeAtom(
         .filter(Boolean)
         .slice(0, 8)
     : [];
+  const now = Date.now();
   return {
     id: generateAtomId(parsed.question),
-    createdAt: Date.now(),
+    createdAt: now,
     scope: safeScope(input.scope),
     question: parsed.question.trim(),
     answer: input.expertAnswer.trim(),
@@ -111,6 +115,10 @@ export async function extractKnowledgeAtom(
       threadKey: input.threadKey,
       contributorUserId: input.contributorUserId,
     },
+    // v0.7.4 TTL hybrid gate: fresh atoms are pending and invisible
+    // to retrieval until the host approves or the TTL elapses.
+    status: "pending",
+    expiresAt: now + ATOM_PENDING_TTL_MS,
   };
 }
 

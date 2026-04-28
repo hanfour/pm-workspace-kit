@@ -13,6 +13,12 @@ import {
 import { gatewayRunningPid, runGateway } from "../gateway";
 import { userStats } from "../gateway/session-store";
 import { findMraWorkspace } from "../adapters/mra";
+import {
+  approveAtom,
+  findAtomByPrefix,
+  loadAtoms,
+  rejectAtom,
+} from "../gateway/knowledge";
 
 export async function gatewayCommand(
   action: string,
@@ -31,10 +37,12 @@ export async function gatewayCommand(
       return audienceCmd(rest);
     case "escalation":
       return escalationCmd(rest);
+    case "atoms":
+      return atomsCmd(rest);
     default:
       println(
         chalk.yellow(
-          "usage: pmk gateway <init|start|status|stats|audience|escalation>",
+          "usage: pmk gateway <init|start|status|stats|audience|escalation|atoms>",
         ),
       );
       process.exit(1);
@@ -444,6 +452,153 @@ function escalationCmd(rest: string[]): void {
     }
     default:
       escalationUsage();
+      process.exit(1);
+  }
+}
+
+function atomsUsage(): void {
+  println(
+    chalk.yellow(
+      "usage:\n" +
+        "  pmk gateway atoms list [--all|--pending|--approved] [--scope <name>]\n" +
+        "  pmk gateway atoms show <id-or-prefix>\n" +
+        "  pmk gateway atoms approve <id-or-prefix>\n" +
+        "  pmk gateway atoms reject <id-or-prefix>",
+    ),
+  );
+}
+
+function formatAtomRow(atom: {
+  id: string;
+  scope: string;
+  question: string;
+  status?: string;
+  expiresAt?: number;
+}): string {
+  const statusTag =
+    atom.status === "pending"
+      ? chalk.yellow("pending ")
+      : chalk.green("approved");
+  const idShort = atom.id
+    .split("-")
+    .slice(0, 2)
+    .join("-")
+    .padEnd(20)
+    .slice(0, 20);
+  const ttl = atom.expiresAt
+    ? ` (TTL ${Math.max(0, Math.floor((atom.expiresAt - Date.now()) / 60_000))}m)`
+    : "";
+  const q = atom.question.slice(0, 70);
+  return `  ${statusTag}  ${idShort}  ${atom.scope.padEnd(10).slice(0, 10)}  ${q}${ttl}`;
+}
+
+function atomsCmd(rest: string[]): void {
+  const [action, ...args] = rest;
+  switch (action) {
+    case undefined:
+    case "list": {
+      const filter = args.includes("--pending")
+        ? "pending"
+        : args.includes("--approved")
+          ? "approved"
+          : "all";
+      const scopeIdx = args.indexOf("--scope");
+      const scope = scopeIdx >= 0 ? args[scopeIdx + 1] : undefined;
+      const atoms = loadAtoms({ scope }).filter((a) =>
+        filter === "all" ? true : a.status === filter,
+      );
+      println(chalk.bold(`\npmk gateway atoms (${filter})`));
+      if (atoms.length === 0) {
+        println(chalk.dim("  (none)"));
+        return;
+      }
+      println(
+        chalk.dim("  status    id-prefix             scope       question"),
+      );
+      for (const a of atoms) println(formatAtomRow(a));
+      return;
+    }
+    case "show": {
+      const [idOrPrefix] = args;
+      if (!idOrPrefix) {
+        atomsUsage();
+        process.exit(1);
+      }
+      const found = findAtomByPrefix(idOrPrefix);
+      if (!found) {
+        println(
+          chalk.red(
+            `no unique match for '${idOrPrefix}'. Try a longer prefix.`,
+          ),
+        );
+        process.exit(1);
+      }
+      println(chalk.bold(`\n${found.atom.question}`));
+      println(chalk.dim(`  id:       ${found.atom.id}`));
+      println(chalk.dim(`  scope:    ${found.atom.scope}`));
+      println(chalk.dim(`  status:   ${found.atom.status}`));
+      if (found.atom.expiresAt) {
+        const minsLeft = Math.max(
+          0,
+          Math.floor((found.atom.expiresAt - Date.now()) / 60_000),
+        );
+        println(chalk.dim(`  expires:  in ${minsLeft}m`));
+      }
+      println(
+        chalk.dim(
+          `  source:   ${found.atom.source.threadKey} via <@${found.atom.source.contributorUserId}>`,
+        ),
+      );
+      println(chalk.dim(`  tags:     ${found.atom.tags.join(", ") || "—"}`));
+      println(chalk.dim(`  file:     ${found.file}`));
+      println("");
+      if (found.atom.summary) {
+        println(chalk.bold("Summary"));
+        println(found.atom.summary);
+        println("");
+      }
+      println(chalk.bold("Answer"));
+      println(found.atom.answer);
+      return;
+    }
+    case "approve": {
+      const [idOrPrefix] = args;
+      if (!idOrPrefix) {
+        atomsUsage();
+        process.exit(1);
+      }
+      const atom = approveAtom(idOrPrefix);
+      if (!atom) {
+        println(
+          chalk.red(
+            `no unique match for '${idOrPrefix}'. Try a longer prefix.`,
+          ),
+        );
+        process.exit(1);
+      }
+      println(chalk.green(`approved: ${atom.id}`));
+      return;
+    }
+    case "reject": {
+      const [idOrPrefix] = args;
+      if (!idOrPrefix) {
+        atomsUsage();
+        process.exit(1);
+      }
+      const ok = rejectAtom(idOrPrefix);
+      if (!ok) {
+        println(
+          chalk.red(
+            `no unique match for '${idOrPrefix}'. Try a longer prefix.`,
+          ),
+        );
+        process.exit(1);
+      }
+      println(chalk.green(`rejected (file deleted): ${idOrPrefix}`));
+      return;
+    }
+    default:
+      atomsUsage();
       process.exit(1);
   }
 }

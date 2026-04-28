@@ -51,10 +51,12 @@ import {
   PROMPT_GATEWAY_DM_TECH,
 } from "@pmk/shared";
 import {
+  approveAtom,
   formatAtomsForInjection,
   generateAtomId,
   knowledgeRoot,
   loadAtoms,
+  rejectAtom,
   safeScope,
   saveAtom,
   searchAtoms,
@@ -885,6 +887,167 @@ describe("knowledge store", () => {
     assert.match(atoms[0].question, /quotes/);
     assert.match(atoms[0].answer, /Line one/);
     assert.match(atoms[0].answer, /Line three/);
+  });
+});
+
+describe("atom TTL approval", () => {
+  let tmpHome: string;
+  beforeEach(() => {
+    tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), "pmk-atom-ttl-"));
+    process.env.HOME = tmpHome;
+  });
+  afterEach(() => {
+    fs.rmSync(tmpHome, { recursive: true, force: true });
+    if (ORIG_HOME !== undefined) process.env.HOME = ORIG_HOME;
+  });
+
+  it("pending atoms are excluded from searchAtoms", () => {
+    saveAtom({
+      id: generateAtomId("pending widget"),
+      createdAt: Date.now(),
+      scope: "erp",
+      question: "How is widget configured?",
+      answer: "Pending answer about widget setup.",
+      summary: "Widget pending summary.",
+      tags: ["widget"],
+      source: { threadKey: "T1", contributorUserId: "U_IT1" },
+      status: "pending",
+      expiresAt: Date.now() + 24 * 60 * 60 * 1000,
+    });
+    const hits = searchAtoms("widget", { limit: 5 });
+    assert.equal(hits.length, 0);
+  });
+
+  it("approved atoms are visible to searchAtoms", () => {
+    saveAtom({
+      id: generateAtomId("approved widget"),
+      createdAt: Date.now(),
+      scope: "erp",
+      question: "How is widget configured?",
+      answer: "Approved answer about widget setup.",
+      summary: "Widget summary.",
+      tags: ["widget"],
+      source: { threadKey: "T1", contributorUserId: "U_IT1" },
+      status: "approved",
+    });
+    const hits = searchAtoms("widget", { limit: 5 });
+    assert.equal(hits.length, 1);
+  });
+
+  it("legacy atoms (no status field on disk) are treated as approved", () => {
+    // Simulate v0.7.3 atom: write a markdown file without `status`
+    // in the front-matter and ensure searchAtoms still finds it.
+    const dir = path.join(knowledgeRoot(), "erp");
+    fs.mkdirSync(dir, { recursive: true });
+    const id = generateAtomId("legacy widget");
+    fs.writeFileSync(
+      path.join(dir, `${id}.md`),
+      `---\nid: ${id}\ncreatedAt: 1700000000000\nscope: erp\nquestion: How is widget legacy?\ntags: [widget]\nsource:\n  threadKey: T-old\n  contributorUserId: U_OLD\n---\n# How is widget legacy?\n\n## Answer\n\nLegacy answer about widget.\n`,
+    );
+    const hits = searchAtoms("widget", { limit: 5 });
+    assert.equal(hits.length, 1);
+    assert.match(hits[0].question, /legacy/);
+  });
+
+  it("loadAtoms auto-promotes pending atoms past expiresAt", () => {
+    const id = generateAtomId("expired pending");
+    saveAtom({
+      id,
+      createdAt: Date.now() - 25 * 60 * 60 * 1000,
+      scope: "erp",
+      question: "expired question",
+      answer: "expired answer",
+      summary: "expired summary",
+      tags: ["expired"],
+      source: { threadKey: "T1", contributorUserId: "U_IT1" },
+      status: "pending",
+      expiresAt: Date.now() - 60_000, // already expired
+    });
+    // First load triggers auto-promote.
+    loadAtoms({ scope: "erp" });
+    // Second load reads the rewritten atom — should now be approved
+    // and visible to retrieval.
+    const hits = searchAtoms("expired", { limit: 5 });
+    assert.equal(hits.length, 1);
+    assert.equal(hits[0].status, "approved");
+    assert.equal(hits[0].expiresAt, undefined);
+  });
+
+  it("approveAtom by id-prefix promotes pending → approved", () => {
+    const id = generateAtomId("approve me");
+    saveAtom({
+      id,
+      createdAt: Date.now(),
+      scope: "erp",
+      question: "approve me?",
+      answer: "yes",
+      summary: "promote test",
+      tags: ["t"],
+      source: { threadKey: "T1", contributorUserId: "U1" },
+      status: "pending",
+      expiresAt: Date.now() + 60_000,
+    });
+    // Use a unique short prefix from the id.
+    const prefix = id.slice(0, 12);
+    const promoted = approveAtom(prefix);
+    assert.ok(promoted);
+    assert.equal(promoted?.status, "approved");
+    assert.equal(promoted?.expiresAt, undefined);
+    // After approve, retrieval finds it.
+    const hits = searchAtoms("approve", { limit: 5 });
+    assert.equal(hits.length, 1);
+  });
+
+  it("rejectAtom by id-prefix deletes the file", () => {
+    const id = generateAtomId("reject me");
+    saveAtom({
+      id,
+      createdAt: Date.now(),
+      scope: "erp",
+      question: "reject me?",
+      answer: "no",
+      summary: "reject test",
+      tags: ["t"],
+      source: { threadKey: "T1", contributorUserId: "U1" },
+      status: "pending",
+      expiresAt: Date.now() + 60_000,
+    });
+    const ok = rejectAtom(id.slice(0, 12));
+    assert.equal(ok, true);
+    const atoms = loadAtoms();
+    assert.equal(atoms.length, 0);
+  });
+
+  it("approveAtom returns undefined when prefix matches multiple atoms", () => {
+    // Two atoms whose ids share a prefix because generateAtomId uses
+    // a timestamp; force collision by using identical timestamps.
+    const sharedPrefix = "20990101T0000000-aaaa";
+    saveAtom({
+      id: `${sharedPrefix}-one`,
+      createdAt: Date.now(),
+      scope: "erp",
+      question: "one",
+      answer: "a",
+      summary: "s",
+      tags: [],
+      source: { threadKey: "T1", contributorUserId: "U1" },
+      status: "pending",
+      expiresAt: Date.now() + 60_000,
+    });
+    saveAtom({
+      id: `${sharedPrefix}-two`,
+      createdAt: Date.now(),
+      scope: "erp",
+      question: "two",
+      answer: "b",
+      summary: "s",
+      tags: [],
+      source: { threadKey: "T1", contributorUserId: "U1" },
+      status: "pending",
+      expiresAt: Date.now() + 60_000,
+    });
+    const r = approveAtom(sharedPrefix);
+    assert.equal(r, undefined);
   });
 });
 

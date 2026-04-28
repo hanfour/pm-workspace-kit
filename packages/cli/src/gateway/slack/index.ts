@@ -590,12 +590,16 @@ export class SlackAdapter {
     }
     try {
       const file = saveAtom(atom);
-      this.onLog(`absorbed knowledge atom → ${file}`);
+      this.onLog(`absorbed knowledge atom (pending) → ${file}`);
+      const idShort = atom.id.split("-").slice(0, 2).join("-");
       await this.web.chat
         .postMessage({
           channel: channelId,
           thread_ts: threadTs,
-          text: `:books: pmk 已吸收這份補充（標籤：${atom.tags.join(", ") || "—"}）。下次有人問類似問題會直接帶進來。`,
+          text:
+            `:hourglass_flowing_sand: pmk 已收下這份補充（標籤：${atom.tags.join(", ") || "—"}），暫存為 *pending*，` +
+            `24 小時後自動生效，期間不會被其他查詢抓到。\n` +
+            `要立即生效或刪除：\`pmk gateway atoms approve ${idShort}\` / \`pmk gateway atoms reject ${idShort}\``,
         })
         .catch(() => {});
     } catch (err) {
