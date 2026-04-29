@@ -12,6 +12,7 @@ import {
   PKB_BASE_DOCS,
   PKB_DIR_RELATIVE,
   resolveMraRepo,
+  runMraAskWithBinary,
 } from "../src/adapters/mra";
 
 const ORIG = {
@@ -248,5 +249,178 @@ describe("mraDoctor", () => {
     assert.equal(r.ok, false);
     assert.match(r.reason ?? "", /not found on PATH/);
     assert.equal(r.binaryPath, undefined);
+  });
+});
+
+/**
+ * runMraAskWithBinary spawn-behaviour tests (#22 / v0.10).
+ *
+ * Strategy: ship a tiny POSIX shell wrapper that mimics the mra CLI
+ * shape (`mra ask <repo> <question>`) but `eval`s the question
+ * through `node -e`, letting each test express its own fake-mra
+ * behaviour inline without scattering temp scripts.
+ *
+ *   wrapper invoked as:  ./mra ask <repo> <question>
+ *   wrapper does:        node -e "<question>" -- <repo> <question>
+ *
+ * That way `runMraAskWithBinary` calls the real binary with the real
+ * argv shape, but the subprocess we actually exercise is a node
+ * one-liner under our control.
+ */
+const FAKE_MRA_WRAPPER = `#!/bin/sh
+# argv: ask <repo> <question>
+exec ${process.execPath} -e "$3" -- "$1" "$2" "$3"
+`;
+let wrapperDir: string;
+let wrapperPath: string;
+
+describe("runMraAskWithBinary spawn behaviour (#22)", () => {
+  beforeEach(() => {
+    wrapperDir = fs.mkdtempSync(path.join(os.tmpdir(), "pmk-fake-mra-"));
+    wrapperPath = path.join(wrapperDir, "mra");
+    fs.writeFileSync(wrapperPath, FAKE_MRA_WRAPPER, { mode: 0o755 });
+  });
+
+  afterEach(() => {
+    if (wrapperDir) fs.rmSync(wrapperDir, { recursive: true, force: true });
+  });
+
+  it("returns ok=true and concatenated stdout on a clean exit", async () => {
+    const r = await runMraAskWithBinary(
+      wrapperPath,
+      {
+        repo: "erp",
+        question: `process.stdout.write("line one\\nline two\\nline three\\n");`,
+        cwd: process.cwd(),
+        timeoutMs: 5000,
+      },
+      { maxRetries: 0 },
+    );
+    assert.equal(r.ok, true, `unexpected fail: ${r.reason ?? ""}`);
+    assert.match(r.stdout, /line one[\s\S]*line two[\s\S]*line three/);
+    assert.equal(r.attempts, 1);
+  });
+
+  it("invokes onProgress for each non-empty line, stripping CR, skipping the trailing partial line", async () => {
+    const lines: string[] = [];
+    const r = await runMraAskWithBinary(
+      wrapperPath,
+      {
+        repo: "erp",
+        question: `process.stdout.write("[ask] PKB loaded\\r\\n[ask] querying...\\n[ask] done\\n[partial without newline");`,
+        cwd: process.cwd(),
+        timeoutMs: 5000,
+      },
+      { onProgress: (l) => lines.push(l), maxRetries: 0 },
+    );
+    assert.equal(r.ok, true, `unexpected fail: ${r.reason ?? ""}`);
+    assert.deepEqual(lines, [
+      "[ask] PKB loaded",
+      "[ask] querying...",
+      "[ask] done",
+    ]);
+    assert.match(r.stdout, /\[partial without newline$/);
+  });
+
+  it("captures stderr and surfaces a tail of it in the failure reason", async () => {
+    const r = await runMraAskWithBinary(
+      wrapperPath,
+      {
+        repo: "erp",
+        question: `process.stderr.write("step ok\\nfatal: bad question\\n"); process.exit(2);`,
+        cwd: process.cwd(),
+        timeoutMs: 5000,
+      },
+      { maxRetries: 0 },
+    );
+    assert.equal(r.ok, false);
+    assert.match(r.stderr, /fatal: bad question/);
+    assert.match(r.reason ?? "", /code=2/);
+    assert.match(r.reason ?? "", /fatal: bad question/);
+  });
+
+  it("times out via SIGTERM kill and reports a timeout reason (not a generic 'exited' reason)", async () => {
+    const r = await runMraAskWithBinary(
+      wrapperPath,
+      {
+        repo: "erp",
+        // setInterval keeps the event loop alive — SIGTERM is the
+        // only way out, mirroring how a wedged mra ask would behave.
+        question: `setInterval(() => {}, 60000);`,
+        cwd: process.cwd(),
+        timeoutMs: 200,
+      },
+      { maxRetries: 0 },
+    );
+    assert.equal(r.ok, false);
+    assert.match(r.reason ?? "", /timed out after 200ms/);
+  });
+
+  it("onProgress callback errors do not tear down stdout reading", async () => {
+    let firedCount = 0;
+    const r = await runMraAskWithBinary(
+      wrapperPath,
+      {
+        repo: "erp",
+        question: `process.stdout.write("a\\nb\\nc\\n");`,
+        cwd: process.cwd(),
+        timeoutMs: 5000,
+      },
+      {
+        onProgress: () => {
+          firedCount += 1;
+          throw new Error("sink down");
+        },
+        maxRetries: 0,
+      },
+    );
+    assert.equal(r.ok, true, `unexpected fail: ${r.reason ?? ""}`);
+    assert.equal(firedCount, 3, "all lines still produced despite throws");
+    assert.match(r.stdout, /a\nb\nc\n/);
+  });
+
+  it("reports a non-ok result with the spawn-error message when the binary cannot start", async () => {
+    const r = await runMraAskWithBinary(
+      "/path/to/definitely-not-a-binary-here-xyzzy",
+      {
+        repo: "erp",
+        question: "ignored",
+        cwd: process.cwd(),
+        timeoutMs: 5000,
+      },
+      { maxRetries: 0 },
+    );
+    assert.equal(r.ok, false);
+    assert.ok(
+      (r.reason ?? "").length > 0,
+      "expected a non-empty reason when the binary fails to spawn",
+    );
+  });
+
+  it("retries once when the first attempt looks transient (empty stderr + non-zero exit)", async () => {
+    // Stateful fake: first invocation exits 1 with no stderr (which
+    // looksTransient classifies as worth retrying), second exits 0.
+    const stateFile = path.join(wrapperDir, "attempts");
+    fs.writeFileSync(stateFile, "0");
+    const r = await runMraAskWithBinary(
+      wrapperPath,
+      {
+        repo: "erp",
+        question: `
+          const fs = require("node:fs");
+          const f = ${JSON.stringify(stateFile)};
+          const n = parseInt(fs.readFileSync(f, "utf8"), 10) + 1;
+          fs.writeFileSync(f, String(n));
+          if (n === 1) process.exit(1);
+          process.stdout.write("ok on attempt " + n + "\\n");
+        `,
+        cwd: process.cwd(),
+        timeoutMs: 5000,
+      },
+      { maxRetries: 1 },
+    );
+    assert.equal(r.ok, true, `expected eventual success: ${r.reason ?? ""}`);
+    assert.equal(r.attempts, 2);
+    assert.match(r.stdout, /ok on attempt 2/);
   });
 });
