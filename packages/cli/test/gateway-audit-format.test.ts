@@ -165,7 +165,7 @@ describe("formatAuditReport", () => {
     });
     const out = stripAnsi(formatAuditReport(report));
     assert.match(out, /total:\s+42 \(38 approved, 4 pending\)/);
-    assert.match(out, /retrieval injections:\s+61 \(24\.7% of turns\)/);
+    assert.match(out, /retrieval injections:\s+61 \(0\.25 atoms\/turn\)/);
     assert.match(out, /median atoms-injected\/turn:\s+1\.3/);
     assert.match(out, /U_IT1 ×11.*U_IT2 ×8.*U_IT3 ×5/);
   });

@@ -19,7 +19,13 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
+import type { AudienceKey } from "@pmk/shared";
 import { gatewayDir } from "./config";
+
+// TODO(v0.10.x): events.log grows unbounded. At single-host workloads
+// (~100 events/day) we'd hit ~1MB/year — acceptable for now but the
+// admin.log has the same gap; a single rotation helper covering both
+// is the right shape when we get there.
 
 /**
  * `mra ask` round outcome. `retried=true` means the call succeeded or
@@ -46,7 +52,13 @@ export interface MraAskEndEvent {
 export interface TurnProcessedEvent {
   type: "turn.processed";
   actor: string;
-  audience: string;
+  /**
+   * Tightened to {@link AudienceKey} (rather than `string`) so emitter
+   * sites can't slip in a typo'd tier. The reader still tolerates any
+   * string (legacy events from earlier dev builds aren't rejected) —
+   * only the write boundary is policed.
+   */
+  audience: AudienceKey;
   hadMraAsk: boolean;
   /** Number of approved knowledge atoms injected via retrieval. */
   atomsInjected: number;

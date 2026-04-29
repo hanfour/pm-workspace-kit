@@ -14,9 +14,7 @@ const TOP_N = 3;
 
 export function formatAuditReport(report: AuditReport): string {
   const lines: string[] = [];
-  lines.push(
-    chalk.bold(`pmk gateway audit (last ${report.windowDays} days)`),
-  );
+  lines.push(chalk.bold(`pmk gateway audit (last ${report.windowDays} days)`));
   lines.push("");
 
   // Conversations
@@ -24,7 +22,7 @@ export function formatAuditReport(report: AuditReport): string {
   lines.push(label("total turns:") + report.conversations.totalTurns);
   lines.push(
     label("per-user breakdown:") +
-      formatTopWithOther(report.conversations.perUser, "userId", "turns"),
+      formatTopWithOther(report.conversations.perUser),
   );
   lines.push(
     label("per-audience breakdown:") +
@@ -49,7 +47,8 @@ export function formatAuditReport(report: AuditReport): string {
       `${report.mraAsk.successes} / ${report.mraAsk.retries} / ${report.mraAsk.failures}`,
   );
   lines.push(
-    label("median duration:") + formatDurationMs(report.mraAsk.medianDurationMs),
+    label("median duration:") +
+      formatDurationMs(report.mraAsk.medianDurationMs),
   );
   lines.push(
     label("top repos asked:") +
@@ -76,7 +75,7 @@ export function formatAuditReport(report: AuditReport): string {
   );
   lines.push(
     label("retrieval injections:") +
-      `${report.atoms.retrievalInjections}${pctOfTurns(
+      `${report.atoms.retrievalInjections}${ratePerTurn(
         report.atoms.retrievalInjections,
         report.conversations.totalTurns,
       )}`,
@@ -100,7 +99,7 @@ export function formatAuditReport(report: AuditReport): string {
     lines.push("");
     lines.push(chalk.bold(chalk.yellow("flags")));
     for (const f of report.flags) {
-      lines.push("  " + chalk.yellow("WARN ") + f);
+      lines.push("  " + chalk.bold(chalk.yellow("WARN")) + " " + f);
     }
   }
 
@@ -140,8 +139,30 @@ function pctOfTurns(numerator: number, totalTurns: number): string {
   return ` (${formatDecimal(pct)}% of turns)`;
 }
 
+/**
+ * Render a per-turn ratio. Used for atomsInjected which can exceed
+ * 1.0 (multiple atoms per turn average), where "% of turns" reads
+ * misleadingly above 100%. "0.25 atoms/turn" / "1.5 atoms/turn"
+ * scale cleanly at any density.
+ */
+function ratePerTurn(numerator: number, totalTurns: number): string {
+  if (totalTurns === 0) return "";
+  const rate = numerator / totalTurns;
+  return ` (${formatRate(rate)} atoms/turn)`;
+}
+
 function formatDecimal(n: number): string {
   return Number.isInteger(n) ? `${n}.0` : n.toFixed(1);
+}
+
+/**
+ * 2 decimals for sub-1 rates so 0.05 / 0.25 don't both collapse to
+ * "0.1"; 1 decimal once the rate is large enough that the second
+ * digit is noise.
+ */
+function formatRate(n: number): string {
+  if (!Number.isFinite(n)) return "—";
+  return n < 1 ? n.toFixed(2) : n.toFixed(1);
 }
 
 function formatList<T>(items: T[], render: (item: T) => string): string {
@@ -157,8 +178,6 @@ function formatList<T>(items: T[], render: (item: T) => string): string {
  */
 function formatTopWithOther(
   items: Array<{ userId: string; turns: number }>,
-  _keyName: "userId",
-  _countName: "turns",
 ): string {
   if (items.length === 0) return chalk.dim("(none)");
   const head = items.slice(0, TOP_N);

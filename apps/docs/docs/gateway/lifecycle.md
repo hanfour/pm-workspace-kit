@@ -266,7 +266,7 @@ escalate
 
 knowledge atoms
   total:                       42 (38 approved, 4 pending)
-  retrieval injections:        61 (24.7% of turns)
+  retrieval injections:        61 (0.25 atoms/turn)
   median atoms-injected/turn:  1.3
   top contributors:            U_IT1 ×11, U_IT2 ×8, U_IT3 ×5
 
