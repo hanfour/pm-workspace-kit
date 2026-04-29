@@ -314,3 +314,35 @@ export function clearThreadEscalation(
     /* may already be gone */
   }
 }
+
+/**
+ * List every escalation marker currently on disk. A marker existing
+ * means the thread is still waiting for an IT reply (clearThreadEscalation
+ * deletes the file the moment a reply lands and is absorbed). Used by
+ * `pmk gateway audit` to count + flag stale pending escalations.
+ *
+ * Returns parsed markers; corrupt or non-JSON files are skipped.
+ */
+export function listPendingEscalations(): ThreadEscalation[] {
+  const dir = escalationsDir();
+  if (!fs.existsSync(dir)) return [];
+  const out: ThreadEscalation[] = [];
+  for (const f of fs.readdirSync(dir)) {
+    if (!f.endsWith(".json")) continue;
+    try {
+      const parsed = JSON.parse(
+        fs.readFileSync(path.join(dir, f), "utf8"),
+      ) as ThreadEscalation;
+      if (
+        typeof parsed.channelId === "string" &&
+        typeof parsed.threadTs === "string" &&
+        typeof parsed.pendingSince === "number"
+      ) {
+        out.push(parsed);
+      }
+    } catch {
+      /* skip corrupt */
+    }
+  }
+  return out;
+}

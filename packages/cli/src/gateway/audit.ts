@@ -11,11 +11,9 @@
  * lifetime — atoms don't expire from the knowledge dir, so windowing
  * "total atoms" would be misleading.
  */
-import * as fs from "node:fs";
-import * as path from "node:path";
-import { gatewayDir } from "./config";
 import { readGatewayEvents } from "./events";
 import { loadAtoms, ATOM_PENDING_TTL_MS } from "./knowledge";
+import { listPendingEscalations } from "./session-store";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_WINDOW_DAYS = 7;
@@ -101,7 +99,14 @@ export function buildAuditReport(
 
   let escTriggered = 0;
   let escAbsorbed = 0;
-  const triggeredAt = new Map<string, number>();
+  /**
+   * Per-thread FIFO of pending trigger timestamps. Same Slack thread
+   * can be re-escalated (first round ignored, user re-asks, pmk fires
+   * another escalate) — pair the absorption with the OLDEST unmatched
+   * trigger so the median time-to-reply reflects "how long until the
+   * original question got answered" rather than the latest re-poke.
+   */
+  const triggeredAt = new Map<string, number[]>();
   const replyDurations: number[] = [];
 
   for (const e of events) {
@@ -123,13 +128,19 @@ export function buildAuditReport(
         mraDurations.push(e.durationMs);
         bump(mraRepos, e.repo);
         break;
-      case "escalate.triggered":
+      case "escalate.triggered": {
         escTriggered++;
-        triggeredAt.set(escKey(e.channelId, e.threadTs), Date.parse(e.at));
+        const k = escKey(e.channelId, e.threadTs);
+        const queue = triggeredAt.get(k) ?? [];
+        queue.push(Date.parse(e.at));
+        triggeredAt.set(k, queue);
         break;
+      }
       case "escalate.absorbed": {
         escAbsorbed++;
-        const start = triggeredAt.get(escKey(e.channelId, e.threadTs));
+        const k = escKey(e.channelId, e.threadTs);
+        const queue = triggeredAt.get(k);
+        const start = queue?.shift();
         if (start !== undefined) {
           const end = Date.parse(e.at);
           if (Number.isFinite(start) && Number.isFinite(end) && end >= start) {
@@ -141,7 +152,10 @@ export function buildAuditReport(
     }
   }
 
-  const atoms = loadAtoms();
+  // Audit is observational — never trigger TTL auto-promotion as a
+  // side effect of reading. The corpus state we report is exactly
+  // what's on disk at the moment of audit.
+  const atoms = loadAtoms({ promote: false });
   const approvedAtoms = atoms.filter((a) => a.status !== "pending").length;
   const pendingAtoms = atoms.length - approvedAtoms;
   const contributors = new Map<string, number>();
@@ -151,9 +165,7 @@ export function buildAuditReport(
 
   const flags: string[] = [];
   const stuckAtoms = atoms.filter(
-    (a) =>
-      a.status === "pending" &&
-      now - a.createdAt > ATOM_PENDING_FLAG_MS,
+    (a) => a.status === "pending" && now - a.createdAt > ATOM_PENDING_FLAG_MS,
   ).length;
   if (stuckAtoms > 0) {
     flags.push(
@@ -225,7 +237,8 @@ function rank<K extends string, V extends string>(
     });
   }
   out.sort(
-    (a, b) => (b as Record<V, number>)[countName] - (a as Record<V, number>)[countName],
+    (a, b) =>
+      (b as Record<V, number>)[countName] - (a as Record<V, number>)[countName],
   );
   return out;
 }
@@ -241,33 +254,4 @@ function median(samples: number[]): number | undefined {
 
 function escKey(channelId: string, threadTs: string): string {
   return `${channelId}__${threadTs}`;
-}
-
-interface PendingEscalation {
-  channelId: string;
-  threadTs: string;
-  pendingSince: number;
-}
-
-function listPendingEscalations(): PendingEscalation[] {
-  const dir = path.join(gatewayDir(), "slack", "escalations");
-  if (!fs.existsSync(dir)) return [];
-  const out: PendingEscalation[] = [];
-  for (const f of fs.readdirSync(dir)) {
-    if (!f.endsWith(".json")) continue;
-    try {
-      const raw = fs.readFileSync(path.join(dir, f), "utf8");
-      const parsed = JSON.parse(raw) as PendingEscalation;
-      if (
-        typeof parsed.channelId === "string" &&
-        typeof parsed.threadTs === "string" &&
-        typeof parsed.pendingSince === "number"
-      ) {
-        out.push(parsed);
-      }
-    } catch {
-      /* skip corrupt */
-    }
-  }
-  return out;
 }

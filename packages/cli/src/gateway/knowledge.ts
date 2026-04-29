@@ -247,7 +247,21 @@ export function saveAtom(atom: KnowledgeAtom): string {
  * Load every atom under `~/.pmk/knowledge/`. Returns sorted by
  * createdAt descending. Optionally filter by scope.
  */
-export function loadAtoms(opts: { scope?: string } = {}): KnowledgeAtom[] {
+export function loadAtoms(
+  opts: {
+    scope?: string;
+    /**
+     * When true (default), TTL-expired pending atoms are auto-promoted
+     * AND the file is rewritten to disk. Set to false for read-only
+     * callers (e.g. `pmk gateway audit`) that should not have a write
+     * side-effect just from reading the corpus. With promote=false the
+     * in-memory atom keeps its original `status` / `expiresAt`, so the
+     * audit reflects the true on-disk state at observation time.
+     */
+    promote?: boolean;
+  } = {},
+): KnowledgeAtom[] {
+  const promote = opts.promote ?? true;
   const root = knowledgeRoot();
   if (!fs.existsSync(root)) return [];
   const atoms: KnowledgeAtom[] = [];
@@ -273,6 +287,7 @@ export function loadAtoms(opts: { scope?: string } = {}): KnowledgeAtom[] {
         // Auto-promote pending atoms whose TTL has passed. Rewrite to
         // disk so the side-effect is persistent (next load is a no-op).
         if (
+          promote &&
           atom.status === "pending" &&
           atom.expiresAt !== undefined &&
           atom.expiresAt <= now

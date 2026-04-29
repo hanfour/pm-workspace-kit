@@ -241,6 +241,41 @@ describe("gateway audit aggregator (#24)", () => {
     );
   });
 
+  it("re-triggered same thread: absorption pairs FIFO with the oldest unmatched trigger", async () => {
+    // Same Slack thread escalated twice (first round ignored, user
+    // re-asks, pmk re-escalates), then absorbed once. The absorption
+    // should pair with the FIRST trigger so median time-to-reply
+    // reflects "from when the original question was asked".
+    const t1 = new Date(Date.now() - 4 * 60 * 60 * 1000).toISOString(); // 4h ago
+    const t2 = new Date(Date.now() - 1 * 60 * 60 * 1000).toISOString(); // 1h ago
+    const t3 = new Date().toISOString(); // now
+    seedEvent(tmpHome, t1, {
+      type: "escalate.triggered",
+      channelId: "C0X",
+      threadTs: "999.0",
+    });
+    seedEvent(tmpHome, t2, {
+      type: "escalate.triggered",
+      channelId: "C0X",
+      threadTs: "999.0",
+    });
+    seedEvent(tmpHome, t3, {
+      type: "escalate.absorbed",
+      channelId: "C0X",
+      threadTs: "999.0",
+      atomId: "atom-x",
+    });
+    const { buildAuditReport } = await import("../src/gateway/audit");
+    const r = buildAuditReport({ days: 7 });
+    assert.equal(r.escalate.triggered, 2);
+    assert.equal(r.escalate.absorbed, 1);
+    assert.ok(
+      r.escalate.medianTimeToReplyMs !== undefined &&
+        r.escalate.medianTimeToReplyMs >= 3.5 * 60 * 60 * 1000,
+      `expected pairing with t1 (~4h), got ${r.escalate.medianTimeToReplyMs}ms`,
+    );
+  });
+
   it("counts atoms by status and surfaces top contributors (lifetime, not window)", async () => {
     const now = Date.now();
     // 3 approved by U_IT1, 2 approved by U_IT2, 1 pending by U_IT3
@@ -348,6 +383,32 @@ describe("gateway audit aggregator (#24)", () => {
     assert.equal(r.conversations.totalTurns, 4);
     assert.equal(r.atoms.retrievalInjections, 6);
     assert.equal(r.atoms.medianAtomsInjectedPerTurn, 2);
+  });
+
+  it("does not auto-promote TTL-expired pending atoms (audit is read-only)", async () => {
+    // Pending atom whose expiresAt is already in the past. Without
+    // {promote: false} loadAtoms would silently rewrite it to
+    // approved at the moment of audit. The on-disk file must remain
+    // pending after running the audit.
+    const now = Date.now();
+    seedAtom(tmpHome, "erp", "expired", {
+      id: "expired",
+      createdAt: now - 30 * 60 * 60 * 1000,
+      scope: "erp",
+      question: "expired",
+      tags: [],
+      status: "pending",
+      expiresAt: now - 60 * 60 * 1000, // TTL passed an hour ago
+      source: { threadKey: "C:1", contributorUserId: "U_IT" },
+    });
+    const { buildAuditReport } = await import("../src/gateway/audit");
+    const r = buildAuditReport({ days: 7 });
+    assert.equal(r.atoms.pending, 1, "still pending in the report");
+    assert.equal(r.atoms.approved, 0);
+    // Verify the file on disk wasn't rewritten by the audit.
+    const file = path.join(tmpHome, ".pmk/knowledge/erp/expired.md");
+    const raw = fs.readFileSync(file, "utf8");
+    assert.match(raw, /status: pending/);
   });
 
   it("flags pending atoms older than 24h and pending escalations older than 48h", async () => {
