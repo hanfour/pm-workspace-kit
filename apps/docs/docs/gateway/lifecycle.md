@@ -108,7 +108,9 @@ question: where is the sales_performances scope defined?
 ```
 ````
 
-The gateway parses this, runs `mra ask <repo> <question>` as a subprocess (120s timeout, retry-once on transient empty-stderr failures since v0.7.3), wraps the stdout in a `mra-result` user message, and re-calls the LLM for synthesis. Failures are surfaced verbatim — stderr appears in the host log AND in the LLM's apology context (since v0.7.2), so the user never sees a mysterious "unknown" error.
+The gateway parses this, runs `mra ask <repo> <question>` as a subprocess (300s timeout since v0.7.5, retry-once on transient empty-stderr failures since v0.7.3), wraps the stdout in a `mra-result` user message, and re-calls the LLM for synthesis. Failures are surfaced verbatim — stderr appears in the host log AND in the LLM's apology context (since v0.7.2), so the user never sees a mysterious "unknown" error.
+
+**Live progress (v0.10).** Since [v0.10](https://github.com/hanfour/pm-workspace-kit/milestone/7) ([#22](https://github.com/hanfour/pm-workspace-kit/issues/22)), the subprocess uses `spawn` instead of `execFile` so the gateway can subscribe to stdout line-by-line. Each non-empty line flows through a 3-second last-line-wins throttle into a `web.chat.update` on the placeholder message. The user sees mra's `[ask] PKB loaded`, `[ask] querying...` markers tick by during the 30–90s round instead of staring at a static spinner. Throttle window is well below Slack's chat.update Tier 3 rate limit (~50 rpm); the trailing fire is cancelled the moment `runMraAsk` returns so a late progress line can't briefly overwrite the final synthesised reply.
 
 ## 7. Escalate directive (optional, falls back from mra-ask)
 
