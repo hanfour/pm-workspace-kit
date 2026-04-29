@@ -8,6 +8,20 @@ All notable changes to **pm-workspace-kit** are documented here.
 
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Each release also has a longer narrative on [GitHub Releases](https://github.com/hanfour/pm-workspace-kit/releases) with rationale, dogfood notes, and test plans.
 
+## [Unreleased] — v0.10 (gateway observability + Slack UX)
+
+Working milestone: [v0.10](https://github.com/hanfour/pm-workspace-kit/milestone/7). Items below land on `feat/v0.10-*` branches and roll up at release time.
+
+### Added
+
+- **`pmk gateway audit [--days N]`** ([#24](https://github.com/hanfour/pm-workspace-kit/issues/24)) — operator-facing rollup of recent knowledge-loop activity: per-user / per-audience turn breakdown, mra-ask success/retry/fail split with median duration, escalate triggered / absorbed / pending counts and median time-to-IT-reply, atom corpus stats with top contributors, plus flags for stuck pending atoms (> 24h) and stale escalations (> 48h). Window defaults to 7 days; `--days` accepts 1–365.
+- **`~/.pmk/gateway/events.log`** — append-only JSONL ledger for the four event types the audit consumes (`turn.processed`, `mra-ask.end`, `escalate.triggered`, `escalate.absorbed`). Mirrors `admin.log` in shape and contracts; tolerant reader skips malformed lines.
+
+### Notes
+
+- Audience binding is captured at turn time, so changing `audience default` after the fact does not rewrite the audit's history.
+- Atom corpus stats (`total`, `approved`, `pending`, `topContributors`) are intentionally lifetime, not window-scoped — atoms persist in `~/.pmk/knowledge/` across windows.
+
 ## [v0.9.1] — 2026-04-28 — `/pmk` real Slack slash-command (no leading-space workaround)
 
 [GitHub release](https://github.com/hanfour/pm-workspace-kit/releases/tag/v0.9.1) · closes [#39](https://github.com/hanfour/pm-workspace-kit/issues/39)

@@ -46,6 +46,7 @@ import {
   stripCaseUpdateBlock,
 } from "../../case";
 import { mraDoctor, runMraAsk } from "../../adapters/mra";
+import { appendGatewayEvent } from "../events";
 import { parseMraAsk, stripMraAskBlock } from "../mra-ask";
 import {
   buildIngestSeed,
@@ -530,6 +531,7 @@ export class SlackAdapter {
         firstResponse: full,
         request: askReq,
         systemPrompt,
+        actor: userId,
       });
     }
 
@@ -565,6 +567,14 @@ export class SlackAdapter {
       );
     }
     saveSession(session);
+
+    appendGatewayEvent({
+      type: "turn.processed",
+      actor: userId,
+      audience,
+      hadMraAsk: askReq !== undefined,
+      atomsInjected: retrieved.length,
+    });
 
     await this.web.chat.update({
       channel: channelId,
@@ -660,6 +670,12 @@ export class SlackAdapter {
       mentionedUserIds: effectivePool,
       askerUserId,
     });
+    appendGatewayEvent({
+      type: "escalate.triggered",
+      channelId,
+      threadTs,
+      scope: request.repo,
+    });
   }
 
   /**
@@ -711,6 +727,12 @@ export class SlackAdapter {
       // First save: atom in pending without approval anchor.
       const file = saveAtom(atom);
       this.onLog(`absorbed knowledge atom (pending) → ${file}`);
+      appendGatewayEvent({
+        type: "escalate.absorbed",
+        channelId,
+        threadTs,
+        atomId: atom.id,
+      });
       const idShort = atom.id.split("-").slice(0, 2).join("-");
       const post = await this.web.chat
         .postMessage({
@@ -900,6 +922,9 @@ export class SlackAdapter {
     firstResponse: string;
     request: { repo: string; question: string };
     systemPrompt: string;
+    /** Slack user ID that triggered this round — recorded in the
+     * audit event so per-user mra-ask cost is attributable. */
+    actor: string;
   }): Promise<string> {
     const {
       channelId,
@@ -909,6 +934,7 @@ export class SlackAdapter {
       firstResponse,
       request,
       systemPrompt,
+      actor,
     } = args;
     const doctor = mraDoctor({ workspace: this.config.mraWorkspace });
     if (!doctor.ok || !doctor.workspace) {
@@ -943,6 +969,7 @@ export class SlackAdapter {
     this.onLog(
       `mra ask repo=${request.repo} q=${truncate(request.question, 120)}`,
     );
+    const mraStartMs = Date.now();
     const result = await runMraAsk(
       {
         repo: request.repo,
@@ -957,6 +984,14 @@ export class SlackAdapter {
         },
       },
     );
+    appendGatewayEvent({
+      type: "mra-ask.end",
+      actor,
+      repo: request.repo,
+      ok: result.ok,
+      retried: result.attempts > 1,
+      durationMs: Date.now() - mraStartMs,
+    });
     if (result.ok && result.attempts > 1) {
       this.onLog(`mra ask succeeded on attempt ${result.attempts}`);
     }

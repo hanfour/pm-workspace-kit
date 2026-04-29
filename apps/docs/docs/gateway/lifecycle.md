@@ -240,6 +240,52 @@ Subcommands (DM, admin only):
 - Process stop/restart
 - Blocklist mutation (until a tier-2 admin model exists)
 
+## 12. Audit (v0.10)
+
+`pmk gateway audit [--days N]` (default 7) prints a condensed view of the knowledge loop's recent activity. Operator-facing — no Slack surface. Run it on the host to answer "is this thing actually working?" without tailing the freeform `[pmk-gw] ...` log line by line.
+
+```text
+pmk gateway audit (last 7 days)
+
+Conversations
+  total turns:                 247
+  per-user breakdown:          U0X 89, U0Y 41, U0Z 38, U_OTHER ×8 = 79
+  per-audience breakdown:      tech 142, biz 79, exec 26
+
+mra-ask
+  invocations:                 31 (12.5% of turns)
+  successes / retries / fails: 28 / 2 / 1
+  median duration:             42s
+  top repos asked:             erp ×24, oss-ui-v2 ×7
+
+escalate
+  triggered:                   8
+  absorbed (atom landed):      6
+  pending (no reply yet):      2
+  median time-to-IT-reply:     1h 23m
+
+knowledge atoms
+  total:                       42 (38 approved, 4 pending)
+  retrieval injections:        61 (0.25 atoms/turn)
+  median atoms-injected/turn:  1.3
+  top contributors:            U_IT1 ×11, U_IT2 ×8, U_IT3 ×5
+
+flags
+  WARN 2 atoms have been pending > 24h (auto-promote stuck — gateway not restarted?)
+  WARN 1 escalate(s) with no IT reply for > 48h — consider rejecting marker
+```
+
+**Where the data comes from.** Window-scoped numbers (turns, mra-ask, escalate triggered/absorbed) read `~/.pmk/gateway/events.log` — a JSONL ledger the gateway appends to at four points (`turn.processed`, `mra-ask.end`, `escalate.triggered`, `escalate.absorbed`). Atom corpus stats walk `~/.pmk/knowledge/` directly (atoms don't expire from the dir, so windowing "total" would mislead). Pending escalation count walks `~/.pmk/gateway/slack/escalations/`.
+
+**Audience is captured at turn time** so changing `audience default` later doesn't silently rewrite the audit's history.
+
+**Flags surface known anti-patterns:**
+
+- Atoms still pending > 24h — auto-promote should have fired on next `loadAtoms()`. Usually means the gateway hasn't been restarted since the atom landed.
+- Escalations marked pending > 48h — IT never replied; consider `/pmk admin atoms reject` if the question is stale, or ping the contact pool again.
+
+**No Slack surface.** Audit is host-only because the output is too wide for Slack and contains operator-level concerns (corpus health, pending markers) that aren't useful to end users. `/pmk admin audit` covers admin-action history; `pmk gateway audit` covers the knowledge loop.
+
 ## Honest offline UX
 
 Orthogonal to the directive flow but part of the gateway lifecycle:
