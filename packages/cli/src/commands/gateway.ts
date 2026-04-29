@@ -26,6 +26,8 @@ import {
   buildAtomsIndex,
 } from "../gateway/atom-index";
 import { appendAdminLog, cliActor } from "../gateway/admin-log";
+import { buildAuditReport } from "../gateway/audit";
+import { formatAuditReport } from "../gateway/audit-format";
 import { spawnSync } from "node:child_process";
 
 export async function gatewayCommand(
@@ -49,14 +51,54 @@ export async function gatewayCommand(
       return atomsCmd(rest);
     case "admin":
       return adminBootstrapCmd(rest);
+    case "audit":
+      return auditCmd(rest);
     default:
       println(
         chalk.yellow(
-          "usage: pmk gateway <init|start|status|stats|audience|escalation|atoms|admin>",
+          "usage: pmk gateway <init|start|status|stats|audience|escalation|atoms|admin|audit>",
         ),
       );
       process.exit(1);
   }
+}
+
+/**
+ * `pmk gateway audit [--days N]` — operator-facing rollup of the
+ * knowledge loop's recent activity. Default window is 7 days.
+ *
+ * The number `--days` cap exists so an operator who types `--days 999`
+ * doesn't accidentally scan years of events for a hosted gateway. 365
+ * is generous; bump if real workloads need it.
+ */
+function auditCmd(rest: string[]): void {
+  const daysIdx = rest.indexOf("--days");
+  let days = 7;
+  if (daysIdx >= 0) {
+    const raw = rest[daysIdx + 1];
+    const parsed = raw === undefined ? NaN : Number.parseInt(raw, 10);
+    if (!Number.isFinite(parsed) || parsed <= 0) {
+      println(
+        chalk.red(
+          `invalid --days '${raw ?? ""}'. Expected a positive integer (e.g. --days 14).`,
+        ),
+      );
+      process.exit(1);
+    }
+    if (parsed > 365) {
+      println(
+        chalk.yellow(
+          `  warning: --days ${parsed} clamped to 365. Open an issue if you need a longer audit window.`,
+        ),
+      );
+      days = 365;
+    } else {
+      days = parsed;
+    }
+  }
+  const report = buildAuditReport({ days });
+  println("");
+  println(formatAuditReport(report));
 }
 
 async function initCmd(): Promise<void> {
