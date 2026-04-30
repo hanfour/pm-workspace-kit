@@ -975,7 +975,12 @@ export class SlackAdapter {
     const progressThrottle = createLastLineThrottle({
       windowMs: 3000,
       onFire: (line) => {
-        const safe = line.replace(/[`*_]/g, "").slice(0, 200);
+        // Strip Slack mrkdwn metacharacters so a stray `<@U123>` /
+        // `<https://...|x>` / `<!channel>` from mra output doesn't
+        // render as an actual mention or link in the placeholder.
+        // ` * _ also get the same treatment to prevent surprise
+        // bold/italic/code formatting from a chatty progress line.
+        const safe = line.replace(/[`*_<>]/g, "").slice(0, 200);
         void this.web.chat
           .update({
             channel: channelId,

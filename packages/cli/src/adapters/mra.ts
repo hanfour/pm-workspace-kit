@@ -372,6 +372,11 @@ function runMraAskOnce(
   opts: RunMraAskOpts,
 ): Promise<MraAskResult> {
   return new Promise<MraAskResult>((resolve) => {
+    // Declared before settle so the catch block below can call settle
+    // without tripping a TDZ ReferenceError when spawn throws
+    // synchronously (e.g. NUL byte in binary path). clearTimeout
+    // tolerates undefined per the Node API.
+    let timeoutHandle: NodeJS.Timeout | undefined;
     let settled = false;
     const settle = (r: MraAskResult): void => {
       if (settled) return;
@@ -402,7 +407,7 @@ function runMraAskOnce(
     let lineBuf = "";
     let timedOut = false;
 
-    const timeoutHandle = setTimeout(() => {
+    timeoutHandle = setTimeout(() => {
       timedOut = true;
       try {
         child.kill("SIGTERM");
@@ -413,6 +418,12 @@ function runMraAskOnce(
 
     child.stdout?.setEncoding("utf8");
     child.stdout?.on("data", (chunk: string) => {
+      // TODO(v0.10.x): cap stdoutBuf at a soft max (e.g. 10 MiB —
+      // matching the old execFile maxBuffer) to prevent runaway mra
+      // outputs from pressuring host memory and turning string
+      // concatenation into O(n²). Most mra runs are KB-scale so this
+      // is observational risk, not a current incident. Same lift
+      // could switch to chunks.push(chunk) + join at close.
       stdoutBuf += chunk;
       lineBuf += chunk;
       let idx: number;

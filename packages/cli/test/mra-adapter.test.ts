@@ -397,6 +397,29 @@ describe("runMraAskWithBinary spawn behaviour (#22)", () => {
     );
   });
 
+  it("survives a synchronous spawn() throw and resolves to a non-ok result (TDZ regression)", async () => {
+    // NUL byte in the path makes Node's spawn() throw synchronously
+    // (rather than emitting an async 'error' event). Earlier versions
+    // of this code referenced timeoutHandle from the catch block
+    // before its declaration, throwing a TDZ ReferenceError instead
+    // of resolving the promise. This test pins the order.
+    const r = await runMraAskWithBinary(
+      "/cant have-nul",
+      {
+        repo: "erp",
+        question: "ignored",
+        cwd: process.cwd(),
+        timeoutMs: 5000,
+      },
+      { maxRetries: 0 },
+    );
+    assert.equal(r.ok, false);
+    assert.ok(
+      (r.reason ?? "").length > 0,
+      "expected a non-empty reason from the synchronous spawn throw",
+    );
+  });
+
   it("retries once when the first attempt looks transient (empty stderr + non-zero exit)", async () => {
     // Stateful fake: first invocation exits 1 with no stderr (which
     // looksTransient classifies as worth retrying), second exits 0.
