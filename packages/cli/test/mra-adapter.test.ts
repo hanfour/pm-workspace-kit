@@ -253,6 +253,69 @@ describe("mraDoctor", () => {
 });
 
 /**
+ * Fall-back behaviour when `cfg.mraWorkspace` is set but stale (#43
+ * review-followup / v0.10.0). The doc-comment on mraDoctor promises:
+ * "Explicit override wins, but only if it actually looks like an mra
+ * workspace — otherwise we fall back to the cwd walk so a stale config
+ * field doesn't silently break a host that has a valid workspace
+ * ancestor." Earlier code returned ok:false instead of falling back;
+ * these tests pin the documented behaviour.
+ */
+describe("mraDoctor stale-workspace fall-back", () => {
+  let tmp: string;
+  let binDir: string;
+  let validWs: string;
+  let stale: string;
+
+  beforeEach(() => {
+    tmp = fs.mkdtempSync(path.join(os.tmpdir(), "pmk-mra-fallback-"));
+    binDir = path.join(tmp, "bin");
+    fs.mkdirSync(binDir);
+    // Fake mra binary so findMraBinary's `which` call returns something.
+    fs.writeFileSync(path.join(binDir, "mra"), "#!/bin/sh\nexit 0\n", {
+      mode: 0o755,
+    });
+    validWs = path.join(tmp, "ws");
+    fs.mkdirSync(path.join(validWs, ".collab"), { recursive: true });
+    fs.writeFileSync(path.join(validWs, ".collab", "repos.json"), "[]");
+    stale = path.join(tmp, "stale-no-marker");
+    fs.mkdirSync(stale);
+    delete process.env.PMK_SKIP_MRA_PROBE;
+    process.env.PATH = `${binDir}:${ORIG.PATH ?? ""}`;
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmp, { recursive: true, force: true });
+    if (ORIG.PMK_SKIP_MRA_PROBE !== undefined)
+      process.env.PMK_SKIP_MRA_PROBE = ORIG.PMK_SKIP_MRA_PROBE;
+    else delete process.env.PMK_SKIP_MRA_PROBE;
+    process.env.PATH = ORIG.PATH;
+  });
+
+  it("falls back to cwd walk when explicit workspace lacks the marker but cwd is inside a valid workspace", () => {
+    const sub = path.join(validWs, "deep", "nested");
+    fs.mkdirSync(sub, { recursive: true });
+    const r = mraDoctor({ workspace: stale, cwd: sub });
+    assert.equal(r.ok, true, `expected ok:true, got reason=${r.reason}`);
+    assert.equal(r.workspace, validWs);
+  });
+
+  it("returns ok:false with a reason when stale workspace AND no cwd workspace ancestor", () => {
+    const orphan = path.join(tmp, "orphan");
+    fs.mkdirSync(orphan);
+    const r = mraDoctor({ workspace: stale, cwd: orphan });
+    assert.equal(r.ok, false);
+    assert.match(r.reason ?? "", /no mra workspace|repos\.json/);
+  });
+
+  it("still honors explicit workspace when it is valid (regression check)", () => {
+    const r = mraDoctor({ workspace: validWs, cwd: tmp });
+    assert.equal(r.ok, true);
+    assert.equal(r.workspace, path.resolve(validWs));
+  });
+});
+
+/**
  * runMraAskWithBinary spawn-behaviour tests (#22 / v0.10).
  *
  * Strategy: ship a tiny POSIX shell wrapper that mimics the mra CLI

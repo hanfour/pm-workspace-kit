@@ -144,25 +144,24 @@ export function mraDoctor(
   // Explicit override wins, but only if it actually looks like an mra
   // workspace — otherwise we fall back to the cwd walk so a stale
   // config field doesn't silently break a host that has a valid
-  // workspace ancestor.
+  // workspace ancestor. The startup pre-flight in gateway/index.ts
+  // already surfaces a "stale mraWorkspace" warning to the operator,
+  // so silent fall-back here is defense-in-depth, not data hiding.
   if (opts.workspace) {
     const explicit = path.resolve(opts.workspace);
     if (existsSync(path.join(explicit, WORKSPACE_MARKER_PRIMARY))) {
       return { ok: true, binaryPath, workspace: explicit };
     }
-    return {
-      ok: false,
-      binaryPath,
-      reason: `configured mraWorkspace '${opts.workspace}' has no .collab/repos.json. Run \`mra init\` there or update gateway.json.`,
-    };
+    // Fall through to cwd walk.
   }
   const workspace = findMraWorkspace(opts.cwd);
   if (!workspace) {
     return {
       ok: false,
       binaryPath,
-      reason:
-        "no mra workspace detected. Set `mraWorkspace` in ~/.pmk/gateway.json (or run `pmk gateway init` again) so pmk knows where your mra repos live.",
+      reason: opts.workspace
+        ? `configured mraWorkspace '${opts.workspace}' has no .collab/repos.json, and cwd has no mra workspace ancestor either. Run \`mra init\` at the configured path or update gateway.json.`
+        : "no mra workspace detected. Set `mraWorkspace` in ~/.pmk/gateway.json (or run `pmk gateway init` again) so pmk knows where your mra repos live.",
     };
   }
   return { ok: true, binaryPath, workspace };
