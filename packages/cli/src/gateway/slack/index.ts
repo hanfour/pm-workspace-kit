@@ -47,6 +47,7 @@ import {
 } from "../../case";
 import { mraDoctor, runMraAsk } from "../../adapters/mra";
 import { appendGatewayEvent } from "../events";
+import { createLastLineThrottle } from "../throttle";
 import { parseMraAsk, stripMraAskBlock } from "../mra-ask";
 import {
   buildIngestSeed,
@@ -958,13 +959,40 @@ export class SlackAdapter {
       });
     }
 
+    const baseProgress = `:mag: 正在用 mra 查 \`${request.repo}\` 的 code…（最多 5 分鐘）`;
     await this.web.chat
       .update({
         channel: channelId,
         ts: placeholderTs,
-        text: `:mag: 正在用 mra 查 \`${request.repo}\` 的 code…（最多 5 分鐘）`,
+        text: baseProgress,
       })
       .catch(() => {});
+
+    // v0.10 (#22): drip-feed mra's stdout into the placeholder so the
+    // user sees movement during the 30–90s round. 3s coalescing
+    // window keeps us well under Slack's chat.update rate limit
+    // (Tier 3, ~50 rpm) even when mra is chatty.
+    const progressThrottle = createLastLineThrottle({
+      windowMs: 3000,
+      onFire: (line) => {
+        // Strip Slack mrkdwn metacharacters so a stray `<@U123>` /
+        // `<https://...|x>` / `<!channel>` from mra output doesn't
+        // render as an actual mention or link in the placeholder.
+        // ` * _ also get the same treatment to prevent surprise
+        // bold/italic/code formatting from a chatty progress line.
+        const safe = line.replace(/[`*_<>]/g, "").slice(0, 200);
+        void this.web.chat
+          .update({
+            channel: channelId,
+            ts: placeholderTs,
+            text: `${baseProgress}\n> ${safe}`,
+          })
+          .catch(() => {
+            /* progress updates are best-effort; the final synthesis
+               update will overwrite anyway */
+          });
+      },
+    });
 
     this.onLog(
       `mra ask repo=${request.repo} q=${truncate(request.question, 120)}`,
@@ -982,8 +1010,10 @@ export class SlackAdapter {
             `mra ask attempt ${attempt} failed without stderr; retrying once`,
           );
         },
+        onProgress: (line) => progressThrottle.push(line),
       },
     );
+    progressThrottle.cancel();
     appendGatewayEvent({
       type: "mra-ask.end",
       actor,

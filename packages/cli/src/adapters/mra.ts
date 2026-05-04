@@ -15,7 +15,7 @@
  *     the proxy for "install looks healthy".
  */
 
-import { execFile, execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -262,6 +262,16 @@ interface RunMraAskOpts {
   maxRetries?: number;
   /** Optional progress callback fired before each retry. */
   onRetry?: (attempt: number, prevResult: MraAskResult) => void;
+  /**
+   * Optional per-line stdout callback (v0.10 / #22). Fired for each
+   * non-empty line as soon as it crosses the newline boundary —
+   * caller is responsible for any throttling. Not fired for stderr.
+   * `\r` is stripped; partial trailing lines (no terminating newline)
+   * are not surfaced via this callback but DO appear in
+   * {@link MraAskResult.stdout}. Errors thrown by the callback are
+   * swallowed so a sink failure can't tear down the subprocess read.
+   */
+  onProgress?: (line: string) => void;
 }
 
 /**
@@ -300,6 +310,24 @@ export async function runMraAsk(
       attempts: 1,
     };
   }
+  return runMraAskWithBinary(binary, args, opts);
+}
+
+/**
+ * Inner half of {@link runMraAsk} that takes an explicit binary path.
+ * Exposed for testing — production callers should use runMraAsk so
+ * the PATH probe and fallback list run the same way for everyone.
+ */
+export async function runMraAskWithBinary(
+  binary: string,
+  args: {
+    repo: string;
+    question: string;
+    cwd: string;
+    timeoutMs?: number;
+  },
+  opts: RunMraAskOpts = {},
+): Promise<MraAskResult> {
   const maxRetries = opts.maxRetries ?? 1;
   // 300s default — bumped from 120s in v0.7.5. Live dogfood (2026-04-28)
   // showed a complex multi-clause CJK question took 160s of mra-internal
@@ -308,7 +336,7 @@ export async function runMraAsk(
   const timeoutMs = args.timeoutMs ?? 300_000;
   let last: MraAskResult | undefined;
   for (let attempt = 1; attempt <= maxRetries + 1; attempt++) {
-    const result = await runMraAskOnce(binary, args, timeoutMs);
+    const result = await runMraAskOnce(binary, args, timeoutMs, opts);
     if (result.ok || !looksTransient(result) || attempt > maxRetries) {
       return { ...result, attempts: attempt };
     }
@@ -319,64 +347,135 @@ export async function runMraAsk(
   return { ...(last as MraAskResult), attempts: maxRetries + 1 };
 }
 
+/**
+ * One subprocess invocation. Switched from `execFile` (buffered) to
+ * `spawn` in v0.10 (#22) so callers can subscribe to a per-line
+ * progress callback without losing the buffered stdout/stderr they
+ * already depended on. Behaviour preservation:
+ *
+ *   - full stdout / stderr concatenated and returned
+ *   - timeout via SIGTERM kill (matches execFile.killSignal default)
+ *   - timeout-vs-error classification via {@link isTimeoutKill}
+ *   - 'error' event resolves as a non-ok result with the error message
+ *
+ * Stdout is line-buffered: we accumulate chunks until we see `\n`,
+ * then deliver complete lines (with `\r` stripped) to onProgress.
+ * The trailing partial line at process exit is part of `result.stdout`
+ * but is not surfaced via onProgress — most mra runs end with a
+ * newline anyway, and a partial-line "progress" update is rarely
+ * meaningful UX.
+ */
 function runMraAskOnce(
   binary: string,
   args: { repo: string; question: string; cwd: string },
   timeoutMs: number,
+  opts: RunMraAskOpts,
 ): Promise<MraAskResult> {
   return new Promise<MraAskResult>((resolve) => {
-    const child = execFile(
-      binary,
-      ["ask", args.repo, args.question],
-      {
+    // Declared before settle so the catch block below can call settle
+    // without tripping a TDZ ReferenceError when spawn throws
+    // synchronously (e.g. NUL byte in binary path). clearTimeout
+    // tolerates undefined per the Node API.
+    let timeoutHandle: NodeJS.Timeout | undefined;
+    let settled = false;
+    const settle = (r: MraAskResult): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeoutHandle);
+      resolve(r);
+    };
+
+    let child: ReturnType<typeof spawn>;
+    try {
+      child = spawn(binary, ["ask", args.repo, args.question], {
         cwd: args.cwd,
-        timeout: timeoutMs,
-        maxBuffer: 10 * 1024 * 1024, // 10 MiB
-        encoding: "utf8",
-      },
-      (err, stdout, stderr) => {
-        if (err) {
-          // execFile's timeout sends SIGTERM (the configured killSignal,
-          // which defaults to SIGTERM). Node populates `err.killed` and
-          // `err.signal` on the resulting error. The earlier
-          // `code === "ETIMEDOUT"` check basically never fired — Node's
-          // signaled-kill path sets `code: null`, so timeouts were
-          // mis-classified as "Command failed" generic errors and
-          // (worse) looksTransient would retry them. Detecting via
-          // `killed`/`signal` is what the docs actually describe.
-          const errAny = err as NodeJS.ErrnoException & {
-            killed?: boolean;
-            signal?: string;
-          };
-          const isTimeout =
-            errAny.killed === true ||
-            errAny.signal === "SIGTERM" ||
-            errAny.code === "ETIMEDOUT";
-          resolve({
-            ok: false,
-            stdout: String(stdout ?? ""),
-            stderr: String(stderr ?? ""),
-            reason: isTimeout
-              ? `mra ask timed out after ${timeoutMs}ms`
-              : err.message,
-            attempts: 1,
-          });
-          return;
-        }
-        resolve({
-          ok: true,
-          stdout: String(stdout ?? ""),
-          stderr: String(stderr ?? ""),
-          attempts: 1,
-        });
-      },
-    );
-    child.on("error", (err) => {
-      resolve({
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+    } catch (err) {
+      settle({
         ok: false,
         stdout: "",
         stderr: "",
+        reason: (err as Error).message,
+        attempts: 1,
+      });
+      return;
+    }
+
+    let stdoutBuf = "";
+    let stderrBuf = "";
+    let lineBuf = "";
+    let timedOut = false;
+
+    timeoutHandle = setTimeout(() => {
+      timedOut = true;
+      try {
+        child.kill("SIGTERM");
+      } catch {
+        /* already gone */
+      }
+    }, timeoutMs);
+
+    child.stdout?.setEncoding("utf8");
+    child.stdout?.on("data", (chunk: string) => {
+      // TODO(v0.10.x): cap stdoutBuf at a soft max (e.g. 10 MiB —
+      // matching the old execFile maxBuffer) to prevent runaway mra
+      // outputs from pressuring host memory and turning string
+      // concatenation into O(n²). Most mra runs are KB-scale so this
+      // is observational risk, not a current incident. Same lift
+      // could switch to chunks.push(chunk) + join at close.
+      stdoutBuf += chunk;
+      lineBuf += chunk;
+      let idx: number;
+      while ((idx = lineBuf.indexOf("\n")) >= 0) {
+        const raw = lineBuf.slice(0, idx);
+        lineBuf = lineBuf.slice(idx + 1);
+        const line = raw.endsWith("\r") ? raw.slice(0, -1) : raw;
+        if (line.length === 0) continue;
+        try {
+          opts.onProgress?.(line);
+        } catch {
+          /* sink failures must not tear down stdout reading */
+        }
+      }
+    });
+
+    child.stderr?.setEncoding("utf8");
+    child.stderr?.on("data", (chunk: string) => {
+      stderrBuf += chunk;
+    });
+
+    child.on("error", (err) => {
+      settle({
+        ok: false,
+        stdout: stdoutBuf,
+        stderr: stderrBuf,
         reason: err.message,
+        attempts: 1,
+      });
+    });
+
+    child.on("close", (code, signal) => {
+      const ok = !timedOut && code === 0;
+      if (ok) {
+        settle({
+          ok: true,
+          stdout: stdoutBuf,
+          stderr: stderrBuf,
+          attempts: 1,
+        });
+        return;
+      }
+      const reason = timedOut
+        ? `mra ask timed out after ${timeoutMs}ms`
+        : `mra ask exited with code=${code ?? "null"}${
+            signal ? ` signal=${signal}` : ""
+          }${stderrBuf.trim() ? `: ${stderrBuf.trim().split("\n").pop()}` : ""}`;
+      settle({
+        ok: false,
+        stdout: stdoutBuf,
+        stderr: stderrBuf,
+        reason,
         attempts: 1,
       });
     });

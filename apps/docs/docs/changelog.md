@@ -16,6 +16,7 @@ Working milestone: [v0.10](https://github.com/hanfour/pm-workspace-kit/milestone
 
 - **`pmk gateway audit [--days N]`** ([#24](https://github.com/hanfour/pm-workspace-kit/issues/24)) — operator-facing rollup of recent knowledge-loop activity: per-user / per-audience turn breakdown, mra-ask success/retry/fail split with median duration, escalate triggered / absorbed / pending counts and median time-to-IT-reply, atom corpus stats with top contributors, plus flags for stuck pending atoms (> 24h) and stale escalations (> 48h). Window defaults to 7 days; `--days` accepts 1–365.
 - **`~/.pmk/gateway/events.log`** — append-only JSONL ledger for the four event types the audit consumes (`turn.processed`, `mra-ask.end`, `escalate.triggered`, `escalate.absorbed`). Mirrors `admin.log` in shape and contracts; tolerant reader skips malformed lines.
+- **Live mra-ask progress in Slack** ([#22](https://github.com/hanfour/pm-workspace-kit/issues/22)) — `runMraAsk` now uses `spawn` instead of `execFile` so each stdout line streams into the placeholder message via a 3-second last-line-wins throttle. The 30–90s mra round shows `[ask] PKB loaded`, `[ask] querying...` etc. tick by instead of a static spinner. `web.chat.update` rate well under Slack Tier 3; trailing fire cancelled on completion so a late progress line can't briefly overwrite the synthesised reply.
 
 ### Notes
 
