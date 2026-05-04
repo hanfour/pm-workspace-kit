@@ -48,6 +48,7 @@ import {
 import { mraDoctor, runMraAsk } from "../../adapters/mra";
 import { appendGatewayEvent } from "../events";
 import { createLastLineThrottle } from "../throttle";
+import { sanitizeProgressLine } from "./progress";
 import { parseMraAsk, stripMraAskBlock } from "../mra-ask";
 import {
   buildIngestSeed,
@@ -975,12 +976,9 @@ export class SlackAdapter {
     const progressThrottle = createLastLineThrottle({
       windowMs: 3000,
       onFire: (line) => {
-        // Strip Slack mrkdwn metacharacters so a stray `<@U123>` /
-        // `<https://...|x>` / `<!channel>` from mra output doesn't
-        // render as an actual mention or link in the placeholder.
-        // ` * _ also get the same treatment to prevent surprise
-        // bold/italic/code formatting from a chatty progress line.
-        const safe = line.replace(/[`*_<>]/g, "").slice(0, 200);
+        // ANSI strip + mrkdwn-meta strip + length cap. See
+        // sanitizeProgressLine for rationale.
+        const safe = sanitizeProgressLine(line);
         void this.web.chat
           .update({
             channel: channelId,
