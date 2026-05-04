@@ -8,9 +8,9 @@ All notable changes to **pm-workspace-kit** are documented here.
 
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Each release also has a longer narrative on [GitHub Releases](https://github.com/hanfour/pm-workspace-kit/releases) with rationale, dogfood notes, and test plans.
 
-## [Unreleased] — v0.10 (gateway observability + Slack UX)
+## [v0.10.0] — 2026-05-04 — gateway observability + Slack UX
 
-Working milestone: [v0.10](https://github.com/hanfour/pm-workspace-kit/milestone/7). Items below land on `feat/v0.10-*` branches and roll up at release time.
+[GitHub release](https://github.com/hanfour/pm-workspace-kit/releases/tag/v0.10.0) · closes [#22](https://github.com/hanfour/pm-workspace-kit/issues/22), [#24](https://github.com/hanfour/pm-workspace-kit/issues/24) · milestone [v0.10](https://github.com/hanfour/pm-workspace-kit/milestone/7)
 
 ### Added
 
@@ -18,10 +18,23 @@ Working milestone: [v0.10](https://github.com/hanfour/pm-workspace-kit/milestone
 - **`~/.pmk/gateway/events.log`** — append-only JSONL ledger for the four event types the audit consumes (`turn.processed`, `mra-ask.end`, `escalate.triggered`, `escalate.absorbed`). Mirrors `admin.log` in shape and contracts; tolerant reader skips malformed lines.
 - **Live mra-ask progress in Slack** ([#22](https://github.com/hanfour/pm-workspace-kit/issues/22)) — `runMraAsk` now uses `spawn` instead of `execFile` so each stdout line streams into the placeholder message via a 3-second last-line-wins throttle. The 30–90s mra round shows `[ask] PKB loaded`, `[ask] querying...` etc. tick by instead of a static spinner. `web.chat.update` rate well under Slack Tier 3; trailing fire cancelled on completion so a late progress line can't briefly overwrite the synthesised reply.
 
+### Fixed
+
+- **ANSI escape codes in progress placeholder** — live-Slack verification on 2026-05-04 caught a defect: `mra` colorizes its `[ask]` / `[pkb]` tags with ANSI SGR sequences (`\x1b[1;37m[ask]\x1b[0m querying: erp`), and the original sanitizer in #43 only stripped Slack mrkdwn meta. Slack rendered the residual `[1;37m` / `[0m` as literal text, making the streaming UX worse than the static spinner v0.10 was meant to replace. Sanitizer now strips ANSI SGR before mrkdwn meta. Extracted as `sanitizeProgressLine` in `src/gateway/slack/progress.ts` for direct unit testing.
+- **`mraDoctor` stale-workspace fall-back** — long-standing comment-vs-code mismatch in `src/adapters/mra.ts`. Comment promised "stale `cfg.mraWorkspace` falls back to cwd walk so a host with a valid workspace ancestor isn't silently broken"; code returned `ok:false` instead. Code now matches the spec, with the error reason mentioning both the stale config and the failed walk so operators see the full picture.
+
 ### Notes
 
 - Audience binding is captured at turn time, so changing `audience default` after the fact does not rewrite the audit's history.
 - Atom corpus stats (`total`, `approved`, `pending`, `topContributors`) are intentionally lifetime, not window-scoped — atoms persist in `~/.pmk/knowledge/` across windows.
+
+### Tests
+
+193 → **247** (+54 across the milestone): `pmk gateway audit` formatter + integration cases (#24), throttle leading/trailing/cancel behaviour (#22), spawn-based `runMraAsk` retry / SIGTERM / progress / partial-line handling (#22), `sanitizeProgressLine` ANSI + mrkdwn + length-cap, `mraDoctor` fall-back semantics.
+
+### Operator note
+
+Zero migration. `events.log` auto-creates on first write; progress streaming activates automatically when an mra-ask round runs. If `cfg.mraWorkspace` was previously set to a now-deleted path, the runtime now silently falls back to a cwd-walk (the gateway startup pre-flight still warns at boot, so misconfiguration isn't hidden — just no longer fatal at request time).
 
 ## [v0.9.1] — 2026-04-28 — `/pmk` real Slack slash-command (no leading-space workaround)
 

@@ -103,9 +103,9 @@ You don't have to take the whole monorepo. Pick the layer that matches your need
 
 Read [Getting Started](https://hanfour.github.io/pm-workspace-kit/docs/getting-started) to set up front-matter on your first PRD; the [Confluence sync guide](https://hanfour.github.io/pm-workspace-kit/docs/guides/confluence-sync) covers the Confluence loop.
 
-## Latest release: v0.9.1 (2026-04-28)
+## Latest release: v0.10.0 (2026-05-04)
 
-The v0.7.x series matured the Slack gateway through real dogfood; v0.8.x built retrieval quality and an in-Slack approval loop on top; v0.9.0 brought the operator surface into Slack; v0.9.1 closed the last UX gap by registering `/pmk` as a real Slack slash-command (no more leading-space workaround).
+The v0.7.x series matured the Slack gateway through real dogfood; v0.8.x built retrieval quality and an in-Slack approval loop on top; v0.9.0 brought the operator surface into Slack; v0.9.1 closed the last UX gap by registering `/pmk` as a real Slack slash-command; v0.10.0 turned both kinds of observability on — `pmk gateway audit` for historical knowledge-loop telemetry, and live mra-ask progress streaming so the 30–90s round shows movement in Slack.
 
 | Release | Highlight |
 |---|---|
@@ -123,8 +123,9 @@ The v0.7.x series matured the Slack gateway through real dogfood; v0.8.x built r
 | [`v0.8.5`](https://github.com/hanfour/pm-workspace-kit/releases/tag/v0.8.5) | **Slack reaction approval** — ✅ / ❌ on the bot's pending notice approves or rejects in-flow (only the original IT contributor) |
 | [`v0.9.0`](https://github.com/hanfour/pm-workspace-kit/releases/tag/v0.9.0) | **`/pmk admin <subcommand>`** — DM-only admin surface for audience / escalation / atoms / admins / audit, with append-only JSONL audit log spanning Slack + CLI origins |
 | [`v0.9.1`](https://github.com/hanfour/pm-workspace-kit/releases/tag/v0.9.1) | **`/pmk` real Slack slash-command** — Socket Mode `slash_commands` envelope handler so Slack autocompletes `/pmk` and the leading-space workaround is no longer needed |
+| [`v0.10.0`](https://github.com/hanfour/pm-workspace-kit/releases/tag/v0.10.0) | **Gateway observability + Slack UX** — `pmk gateway audit [--days N]` rollup of recent knowledge-loop telemetry (per-user turn split, mra-ask duration percentiles, atom corpus stats); spawn-based `runMraAsk` streams `[ask] ...` progress lines into the Slack placeholder via a 3s last-line-wins throttle so the 30–90s round shows movement instead of a static spinner |
 
-The full knowledge loop — *PM asks in Slack → bot tries PKB → escalates to mra-ask → escalates to a human IT contact → absorbs the answer → next person who asks gets the cached answer* — works end-to-end, with retrieval quality improved by BM25 (v0.8.4), in-flow ✅ approval (v0.8.5), Slack-side admin commands (v0.9.0), and a properly-registered `/pmk` slash-command (v0.9.1). Tests: 75 → **193** across the v0.7–v0.9 series. Walk through it phase-by-phase in the [Gateway lifecycle](https://hanfour.github.io/pm-workspace-kit/docs/gateway/lifecycle) deep-dive (now with a Phase 11 covering admin commands), or skim the release-by-release [changelog](https://hanfour.github.io/pm-workspace-kit/docs/changelog).
+The full knowledge loop — *PM asks in Slack → bot tries PKB → escalates to mra-ask → escalates to a human IT contact → absorbs the answer → next person who asks gets the cached answer* — works end-to-end, with retrieval quality improved by BM25 (v0.8.4), in-flow ✅ approval (v0.8.5), Slack-side admin commands (v0.9.0), a properly-registered `/pmk` slash-command (v0.9.1), and now historical + live observability on top of it (v0.10.0). Tests: 75 → **247** across the v0.7–v0.10 series. Walk through it phase-by-phase in the [Gateway lifecycle](https://hanfour.github.io/pm-workspace-kit/docs/gateway/lifecycle) deep-dive (now with a Phase 11 covering admin commands), or skim the release-by-release [changelog](https://hanfour.github.io/pm-workspace-kit/docs/changelog).
 
 ## Design principles
 
