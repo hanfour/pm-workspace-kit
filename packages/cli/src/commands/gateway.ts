@@ -317,6 +317,25 @@ function ensureValidSlackUserId(userId: string): boolean {
   return false;
 }
 
+/**
+ * Slack channel IDs (#23): `C` (public), `G` (private), or `D` (DM)
+ * followed by uppercase alphanum. DM IDs are accepted because the
+ * channel-default mechanism still works there even though
+ * per-channel overrides for DMs are degenerate (per-user already
+ * covers the same ground).
+ */
+const SLACK_CHANNEL_ID_RE = /^[CGD][A-Z0-9]{2,}$/;
+
+function ensureValidSlackChannelId(channelId: string): boolean {
+  if (SLACK_CHANNEL_ID_RE.test(channelId)) return true;
+  println(
+    chalk.red(
+      `invalid Slack channel ID '${channelId}'. Expected format e.g. C0AVD1XD946 — channel name → 'View channel details' → 'Copy channel ID'.`,
+    ),
+  );
+  return false;
+}
+
 function audienceUsage(): void {
   println(
     chalk.yellow(
@@ -324,6 +343,8 @@ function audienceUsage(): void {
         "  pmk gateway audience list\n" +
         "  pmk gateway audience set <userId> <tech|pm|biz|exec>\n" +
         "  pmk gateway audience unset <userId>\n" +
+        "  pmk gateway audience set-channel <channelId> <tech|pm|biz|exec>\n" +
+        "  pmk gateway audience unset-channel <channelId>\n" +
         "  pmk gateway audience default <tech|pm|biz|exec>",
     ),
   );
@@ -337,15 +358,29 @@ function audienceCmd(rest: string[]): void {
     case "list": {
       println(chalk.bold("\npmk gateway audience"));
       println(`  default: ${chalk.cyan(cfg.audience.default)}`);
-      const entries = Object.entries(cfg.audience.users);
-      if (entries.length === 0) {
+      const userEntries = Object.entries(cfg.audience.users);
+      if (userEntries.length === 0) {
         println(chalk.dim("  (no per-user overrides)"));
       } else {
         println(chalk.dim("  per-user overrides:"));
-        for (const [uid, aud] of entries) {
+        for (const [uid, aud] of userEntries) {
           println(`    ${uid.padEnd(14)} → ${aud}`);
         }
       }
+      const channelEntries = Object.entries(cfg.audience.channels);
+      if (channelEntries.length === 0) {
+        println(chalk.dim("  (no per-channel overrides)"));
+      } else {
+        println(chalk.dim("  per-channel overrides:"));
+        for (const [cid, aud] of channelEntries) {
+          println(`    ${cid.padEnd(14)} → ${aud}`);
+        }
+      }
+      println(
+        chalk.dim(
+          "  resolution order at turn time: per-user → per-channel → default",
+        ),
+      );
       return;
     }
     case "set": {
@@ -382,6 +417,42 @@ function audienceCmd(rest: string[]): void {
       delete cfg.audience.users[userId];
       saveGatewayConfig(cfg);
       println(chalk.green(`removed override for ${userId}`));
+      return;
+    }
+    case "set-channel": {
+      const [channelId, audience] = args;
+      if (!channelId || !audience) {
+        audienceUsage();
+        process.exit(1);
+      }
+      if (!ensureValidSlackChannelId(channelId)) process.exit(1);
+      if (!isAudienceKey(audience)) {
+        println(
+          chalk.red(
+            `invalid audience '${audience}'. Allowed: tech / pm / biz / exec.`,
+          ),
+        );
+        process.exit(1);
+      }
+      cfg.audience.channels[channelId] = audience;
+      saveGatewayConfig(cfg);
+      println(chalk.green(`set channel ${channelId} → ${audience}`));
+      return;
+    }
+    case "unset-channel": {
+      const [channelId] = args;
+      if (!channelId) {
+        audienceUsage();
+        process.exit(1);
+      }
+      if (!ensureValidSlackChannelId(channelId)) process.exit(1);
+      if (!(channelId in cfg.audience.channels)) {
+        println(chalk.dim(`(${channelId} had no override; nothing to do)`));
+        return;
+      }
+      delete cfg.audience.channels[channelId];
+      saveGatewayConfig(cfg);
+      println(chalk.green(`removed channel override for ${channelId}`));
       return;
     }
     case "default": {

@@ -121,7 +121,7 @@ describe("gateway config", () => {
       blocklist: ["U-bad"],
       admins: [],
       defaultIngest: "mra:--all",
-      audience: { default: "tech" as const, users: {} },
+      audience: { default: "tech" as const, users: {}, channels: {} },
       escalation: { default: [], repos: {} },
       slack: { appToken: "xapp-foo", botToken: "xoxb-bar" },
     };
@@ -139,7 +139,7 @@ describe("gateway config", () => {
       version: 1,
       blocklist: [],
       admins: [],
-      audience: { default: "tech", users: {} },
+      audience: { default: "tech", users: {}, channels: {} },
       escalation: { default: [], repos: {} },
       slack: { appToken: "xapp-from-file", botToken: "xoxb-from-file" },
     });
@@ -156,7 +156,7 @@ describe("gateway config", () => {
         version: 1,
         blocklist: [],
         admins: [],
-        audience: { default: "tech", users: {} },
+        audience: { default: "tech", users: {}, channels: {} },
         escalation: { default: [], repos: {} },
         slack: { appToken: "wrong", botToken: "xoxb-x" },
       }),
@@ -167,7 +167,7 @@ describe("gateway config", () => {
         version: 1,
         blocklist: [],
         admins: [],
-        audience: { default: "tech", users: {} },
+        audience: { default: "tech", users: {}, channels: {} },
         escalation: { default: [], repos: {} },
         slack: { appToken: "xapp-x", botToken: "wrong" },
       }),
@@ -204,7 +204,7 @@ describe("gateway config", () => {
       blocklist: [],
       admins: [],
       mraWorkspace: "/tmp/some/workspace",
-      audience: { default: "tech", users: {} },
+      audience: { default: "tech", users: {}, channels: {} },
       escalation: { default: [], repos: {} },
       slack: { appToken: "xapp-x", botToken: "xoxb-x" },
     });
@@ -219,7 +219,7 @@ describe("gateway config", () => {
       blocklist: [],
       admins: [],
       mraWorkspace: "/from/file",
-      audience: { default: "tech", users: {} },
+      audience: { default: "tech", users: {}, channels: {} },
       escalation: { default: [], repos: {} },
       slack: { appToken: "xapp-x", botToken: "xoxb-x" },
     });
@@ -951,6 +951,102 @@ describe("audience picker", () => {
     saveGatewayConfig(cfg);
     const reload = loadGatewayConfig();
     assert.equal(pickAudience(reload, "U_PM1"), "pm");
+  });
+
+  // #23: per-channel audience override. Resolution order:
+  //   per-user → per-channel → workspace default
+
+  it("channel override applies when no per-user override is set (#23)", () => {
+    const cfg = loadGatewayConfig();
+    cfg.audience.default = "tech";
+    cfg.audience.channels["CL3ADERSH1P"] = "exec";
+    saveGatewayConfig(cfg);
+    const reload = loadGatewayConfig();
+    assert.equal(
+      pickAudience(reload, "U-anyone", "CL3ADERSH1P"),
+      "exec",
+      "channel default should kick in for users without their own override",
+    );
+  });
+
+  it("per-user override beats per-channel override (#23)", () => {
+    const cfg = loadGatewayConfig();
+    cfg.audience.default = "tech";
+    cfg.audience.channels["CL3ADERSH1P"] = "exec";
+    cfg.audience.users["U-deep-tech"] = "tech";
+    saveGatewayConfig(cfg);
+    const reload = loadGatewayConfig();
+    assert.equal(
+      pickAudience(reload, "U-deep-tech", "CL3ADERSH1P"),
+      "tech",
+      "per-user always wins over per-channel",
+    );
+  });
+
+  it("falls through to workspace default when neither user nor channel matches (#23)", () => {
+    const cfg = loadGatewayConfig();
+    cfg.audience.default = "biz";
+    cfg.audience.channels["CL3ADERSH1P"] = "exec";
+    saveGatewayConfig(cfg);
+    const reload = loadGatewayConfig();
+    assert.equal(
+      pickAudience(reload, "U-anyone", "COTHER123"),
+      "biz",
+      "COTHER123 is not in channels map, fall through to default",
+    );
+  });
+
+  it("empty-string channelId is treated as no channel context (#23)", () => {
+    const cfg = loadGatewayConfig();
+    cfg.audience.default = "tech";
+    // Even if a key happens to exist for the empty string (only
+    // possible via direct file edit, never through the CLI which
+    // validates `[CGD][A-Z0-9]{2,}`), pickAudience must NOT pull from
+    // it — empty string means "no channel context".
+    cfg.audience.channels[""] = "exec";
+    saveGatewayConfig(cfg);
+    const reload = loadGatewayConfig();
+    assert.equal(
+      pickAudience(reload, "U-anyone", ""),
+      "tech",
+      "empty channelId should fall through to default, not match channels['']",
+    );
+  });
+
+  it("undefined channelId still resolves cleanly (DM call sites) (#23)", () => {
+    const cfg = loadGatewayConfig();
+    cfg.audience.default = "pm";
+    cfg.audience.channels["CL3ADERSH1P"] = "exec";
+    cfg.audience.users["U-pm"] = "biz";
+    saveGatewayConfig(cfg);
+    const reload = loadGatewayConfig();
+    // Per-user override applies even without channelId.
+    assert.equal(pickAudience(reload, "U-pm"), "biz");
+    // No user override + no channel context → workspace default.
+    assert.equal(pickAudience(reload, "U-anyone"), "pm");
+  });
+
+  it("loadGatewayConfig back-fills audience.channels for old configs missing the field (#23)", () => {
+    // Simulate an existing v0.10-era config that has audience.users
+    // but no channels — write the JSON directly so we don't go
+    // through the v0.11 saver (which would write channels:{}).
+    const file = path.join(tmpHome, ".pmk", "gateway.json");
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(
+      file,
+      JSON.stringify({
+        version: 1,
+        blocklist: [],
+        admins: [],
+        audience: { default: "tech", users: { "U-x": "exec" } },
+        escalation: { default: [], repos: {} },
+        slack: { appToken: "xapp-x", botToken: "xoxb-x" },
+      }),
+    );
+    const reload = loadGatewayConfig();
+    assert.deepEqual(reload.audience.channels, {});
+    // Existing per-user override survives back-fill.
+    assert.equal(pickAudience(reload, "U-x"), "exec");
   });
 });
 
@@ -1738,7 +1834,7 @@ describe("isAdmin + admins back-fill (#31)", () => {
         {
           version: 1,
           blocklist: [],
-          audience: { default: "tech", users: {} },
+          audience: { default: "tech", users: {}, channels: {} },
           escalation: { default: [], repos: {} },
           slack: { appToken: "xapp-x", botToken: "xoxb-x" },
         },
@@ -1909,6 +2005,62 @@ describe("Slack admin handler (#31)", () => {
     assert.match(r.text, /invalid audience/);
     const reload = loadGatewayConfig();
     assert.equal(reload.audience.users["U0TGT"], undefined);
+  });
+
+  // #23: per-channel audience admin handler.
+
+  it("audience set-channel #channel exec mutates the per-channel default", async () => {
+    const { handleAdminSlash } = await import("../src/gateway/slack/admin");
+    const r = await handleAdminSlash({
+      actor: "U0OWNER",
+      tokens: [
+        "audience",
+        "set-channel",
+        "<#CL3ADERSH1P|leadership>",
+        "exec",
+      ],
+    });
+    assert.match(r.text, /default audience set to `exec`/);
+    assert.match(r.text, /<#CL3ADERSH1P>/);
+    const reload = loadGatewayConfig();
+    assert.equal(reload.audience.channels["CL3ADERSH1P"], "exec");
+  });
+
+  it("audience set-channel accepts a raw channel ID without the <#…> mention wrapper", async () => {
+    const { handleAdminSlash } = await import("../src/gateway/slack/admin");
+    const r = await handleAdminSlash({
+      actor: "U0OWNER",
+      tokens: ["audience", "set-channel", "CRAW12345", "biz"],
+    });
+    assert.match(r.text, /default audience set to `biz`/);
+    const reload = loadGatewayConfig();
+    assert.equal(reload.audience.channels["CRAW12345"], "biz");
+  });
+
+  it("audience set-channel rejects garbage channel tokens", async () => {
+    const { handleAdminSlash } = await import("../src/gateway/slack/admin");
+    const r = await handleAdminSlash({
+      actor: "U0OWNER",
+      tokens: ["audience", "set-channel", "@not-a-channel", "exec"],
+    });
+    assert.match(r.text, /usage:|missing args/);
+    const reload = loadGatewayConfig();
+    // No channel override should have been written.
+    assert.deepEqual(Object.keys(reload.audience.channels), []);
+  });
+
+  it("audience unset-channel removes an existing override", async () => {
+    const { handleAdminSlash } = await import("../src/gateway/slack/admin");
+    const cfg = loadGatewayConfig();
+    cfg.audience.channels["COLD12345"] = "pm";
+    saveGatewayConfig(cfg);
+    const r = await handleAdminSlash({
+      actor: "U0OWNER",
+      tokens: ["audience", "unset-channel", "<#COLD12345>"],
+    });
+    assert.match(r.text, /override removed/);
+    const reload = loadGatewayConfig();
+    assert.equal(reload.audience.channels["COLD12345"], undefined);
   });
 
   it("admins remove blocks last-admin removal", async () => {
