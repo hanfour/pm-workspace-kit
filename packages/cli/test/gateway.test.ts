@@ -311,6 +311,53 @@ describe("heartbeat", () => {
     assert.ok(r2.offlineDurationMs !== undefined);
     r2.stop();
   });
+
+  // #44 review-prep: anticipated reviewer questions.
+
+  it("corrupt marker file is consumed regardless of parse failure (no permanent mute)", async () => {
+    const { gatewayShutdownMarkerPath } = await import(
+      "../src/gateway/config"
+    );
+    // Establish a heartbeat first so lastSeenAt is defined.
+    const r0 = startHeartbeat();
+    r0.stop();
+    // Corrupt the marker — non-numeric, parseInt returns NaN, not finite.
+    const markerPath = gatewayShutdownMarkerPath();
+    fs.writeFileSync(markerPath, "garbage\nnot a timestamp", "utf8");
+    const r1 = startHeartbeat();
+    // markerTs is undefined (parse failed) → treated as crash recovery.
+    assert.equal(r1.gracefulShutdown, false);
+    // But the marker MUST be deleted — leaving a corrupt marker
+    // around would silently mute every future back-online broadcast
+    // until a human cleans up `~/.pmk/gateway/shutdown-marker`.
+    assert.equal(
+      fs.existsSync(markerPath),
+      false,
+      "corrupt marker should be unlinked on read",
+    );
+    r1.stop();
+  });
+
+  it("migration story: first start AFTER upgrading from a v0.10 gateway sees no marker → broadcasts as crash recovery", () => {
+    // Simulate the v0.10 graceful shutdown semantics: prior gateway
+    // ran clearHeartbeat() on shutdown, so the next start (this
+    // build, post-#44) sees no heartbeat AND no marker. That's a
+    // first-ever-boot from this build's perspective — wasOffline=
+    // true, broadcasts back-online once. NOT a regression: the
+    // suppression only kicks in once we've written our own marker
+    // at least once.
+    const r = startHeartbeat();
+    assert.equal(r.wasOffline, true);
+    assert.equal(r.gracefulShutdown, false);
+    assert.equal(r.offlineDurationMs, undefined);
+    r.stop();
+    // Subsequent kill→restart with the new code DOES suppress.
+    markGracefulShutdown();
+    const r2 = startHeartbeat();
+    assert.equal(r2.wasOffline, false);
+    assert.equal(r2.gracefulShutdown, true);
+    r2.stop();
+  });
 });
 
 describe("session-store", () => {
