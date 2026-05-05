@@ -37,7 +37,7 @@ See the [v0.11 migration notes](./gateway/v0.11-migration.md) for a focused oper
 
 ### Tests
 
-247 → **TBD** (final count depends on which review-prep commits land). Major additions:
+248 → **TBD** (final count depends on which review-prep commits land). Major additions:
 - Heartbeat marker decision matrix (5 branches: first boot, marker fresh, marker stale, no-marker fresh heartbeat, no-marker stale heartbeat) + corrupt-marker safety + upgrade-migration story
 - `runWithConcurrency` (4 cases: empty list, peak in-flight respected, single-task rejection isolated, limit > task count)
 - `pickAudience` channel tier (5 cases: channel applies absent user, per-user beats channel, fall-through, undefined channelId, back-fill on old config) + empty-string channelId guard
