@@ -8,6 +8,50 @@ All notable changes to **pm-workspace-kit** are documented here.
 
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Each release also has a longer narrative on [GitHub Releases](https://github.com/hanfour/pm-workspace-kit/releases) with rationale, dogfood notes, and test plans.
 
+## [v0.11.0] — 2026-05-05 — gateway presence + per-channel audience + monthly audit logs
+
+[GitHub release](https://github.com/hanfour/pm-workspace-kit/releases/tag/v0.11.0) · closes [#23](https://github.com/hanfour/pm-workspace-kit/issues/23), [#44](https://github.com/hanfour/pm-workspace-kit/issues/44) · milestone [v0.11](https://github.com/hanfour/pm-workspace-kit/milestone/8)
+
+### Why
+
+Two issue-driven items plus one v0.10.x debt cleanup, sized to ship as one minor release:
+- **#44** — kill→restart cycles broadcast spurious "重新上線" (live-observed during v0.10.0 verification).
+- **#23** — `pickAudience` had no channel tier, forcing per-user overrides for "this channel defaults to exec" cases.
+- **events.log unbounded growth TODO** from v0.10 — bumped in priority because #44 adds presence events on every start/stop.
+
+See the [v0.11 migration notes](./gateway/v0.11-migration.md) for a focused operator-facing summary of the layout + behaviour changes.
+
+### Added
+
+- **Per-channel audience override** ([#23](https://github.com/hanfour/pm-workspace-kit/issues/23)) — new `cfg.audience.channels: Record<channelId, AudienceKey>` tier between per-user and workspace default. CLI: `pmk gateway audience set-channel <channelId> <key>` / `unset-channel`. Slack admin: `/pmk admin audience set-channel #channel <key>` / `unset-channel`. `extractChannelId` helper handles `<#C0X|name>` mention, `<#C0X>` bare mention, and raw `C0X` / `G0X` / `D0X` IDs. Resolution order at turn time: per-user → per-channel → workspace default.
+- **Graceful-shutdown marker** ([#44](https://github.com/hanfour/pm-workspace-kit/issues/44)) — single-use file at `~/.pmk/gateway/shutdown-marker` written on `SIGTERM`/`SIGINT`. The next `startHeartbeat()` reads + consumes it to distinguish "kill -> restart" from a real crash; `wasOffline=false` and the back-online broadcast is suppressed when the offline gap is under 5 minutes.
+- **Presence event types in `events.log`** ([#44](https://github.com/hanfour/pm-workspace-kit/issues/44)) — `gateway.online` and `gateway.offline` join the JSONL stream with monotonic per-process `seq`, human-readable `reason` (`crash-recovery` / `graceful-fast-restart` / `graceful-long-downtime` / `shutdown`), `broadcast` bool, and `offlineDurationMs`. Lets the audit detect rapid restart cycles and the graceful-vs-crash split.
+- **Monthly-partitioned JSONL ledger** (PR #47) — new `packages/cli/src/gateway/monthly-jsonl.ts` shared util powers both `events.log` and `admin.log`. Files are now `~/.pmk/gateway/events-YYYY-MM.log` / `admin-YYYY-MM.log` (UTC month). Legacy single-file ledgers from v0.10 are still read-only-merged so upgrades don't lose history. No eviction — operators can `rm` ancient partitions manually; the reader silently skips missing months.
+
+### Fixed
+
+- **Restart-cycle broadcast spam** ([#44](https://github.com/hanfour/pm-workspace-kit/issues/44)) — heartbeat is no longer deleted on graceful shutdown (it stays for `offlineDurationMs` accounting), and `broadcastBackOnline()` checks the gap before posting. The same change exposes the issue's secondary symptom: `broadcast()`'s O(N) serial fan-out is now `runWithConcurrency(limit=3)`, finishing in seconds instead of 20+ s and isolating per-recipient errors. Live-Slack verified: a 1.3-second graceful restart records `gateway.online ... broadcast:false offlineDurationMs:1332` and the channel sees no spurious "重新上線" message.
+- **`events.log` unbounded growth** (v0.10.x debt) — closed by the monthly partitioning above.
+
+### Tests
+
+248 → **274** (+26 across `@pmk/cli`). Major additions:
+- Heartbeat marker decision matrix (5 branches: first boot, marker fresh, marker stale, no-marker fresh heartbeat, no-marker stale heartbeat) + corrupt-marker safety + upgrade-migration story
+- `runWithConcurrency` (4 cases: empty list, peak in-flight respected, single-task rejection isolated, limit > task count)
+- `pickAudience` channel tier (5 cases: channel applies absent user, per-user beats channel, fall-through, undefined channelId, back-fill on old config) + empty-string channelId guard
+- `/pmk admin audience set-channel` / `unset-channel` end-to-end (mention wrapping, raw ID, garbage rejection, round-trip)
+- Monthly partitioning (current-month write + legacy NOT written, legacy + partition merge order, multi-month aggregation with `sinceMs` cutoff, default 12-month window, legacy mixed-content malformed-line skip, admin-log mirror)
+
+Plus a new **`@pmk/shared`** test surface (was 0 → **24**): shape-based snapshot tests covering `BASE_RULES`, all four audience prompts, `pickGatewayPrompt` round-trip, `AUDIENCE_KEYS`, `PROMPTS` map coverage, and `DEFAULT_CONFIG` shape.
+
+Total across the workspace: 274 → **324** pass, 0 fail.
+
+### Operator note
+
+Zero migration. All schema changes are additive and back-fill-compatible. **First kill→restart after upgrade still broadcasts "重新上線" once** — the v0.10 gateway shut down without writing a marker, so the v0.11 build correctly treats it as a fresh boot. From the second graceful restart onward, suppression works.
+
+For tail-style debugging, switch from `tail -f ~/.pmk/gateway/events.log` to `tail -f ~/.pmk/gateway/events-$(date -u +%Y-%m).log` (note the `-u` for UTC, since partitions roll on UTC month boundaries).
+
 ## [v0.10.1] — 2026-05-05 — workspace version sync + mra stdout cap
 
 [GitHub release](https://github.com/hanfour/pm-workspace-kit/releases/tag/v0.10.1)
