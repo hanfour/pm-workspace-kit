@@ -9,6 +9,7 @@ import {
 import {
   HEARTBEAT_INTERVAL_MS,
   clearHeartbeat,
+  markGracefulShutdown,
   startHeartbeat,
 } from "./heartbeat";
 
@@ -66,6 +67,8 @@ export async function runGateway(opts: GatewayRunOptions = {}): Promise<void> {
     onLog: log,
     wasOffline: hb.wasOffline,
     lastSeenAt: hb.lastSeenAt,
+    offlineDurationMs: hb.offlineDurationMs,
+    gracefulShutdown: hb.gracefulShutdown,
   });
 
   writePidFile();
@@ -76,7 +79,15 @@ export async function runGateway(opts: GatewayRunOptions = {}): Promise<void> {
     shuttingDown = true;
     log(`received ${signal}, shutting down…`);
     hb.stop();
-    clearHeartbeat();
+    // #44: write a single-use graceful-shutdown marker BEFORE
+    // stopping the adapter (which broadcasts offline). If the marker
+    // write fails or shutdown is interrupted we degrade to crash
+    // semantics on next start — cosmetic broadcast spam, no
+    // functional regression. Note: we deliberately do NOT call
+    // clearHeartbeat() here — the next startHeartbeat() needs to see
+    // the prior heartbeat timestamp to compute offlineDurationMs
+    // accurately.
+    markGracefulShutdown();
     try {
       await adapter.stop();
     } catch (err) {

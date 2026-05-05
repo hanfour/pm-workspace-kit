@@ -94,6 +94,15 @@ export function gatewayPidPath(): string {
   return path.join(gatewayDir(), "gateway.pid");
 }
 
+/**
+ * v0.10.x (#44): single-use marker dropped during graceful shutdown
+ * so the next start can distinguish "kill -> restart" from a true
+ * crash. Read-and-deleted on the next `startHeartbeat()`.
+ */
+export function gatewayShutdownMarkerPath(): string {
+  return path.join(gatewayDir(), "shutdown-marker");
+}
+
 function defaultAudience(): AudienceConfig {
   return { default: "tech", users: {} };
 }
