@@ -18,10 +18,9 @@
  * audits can be filtered.
  */
 
-import * as fs from "node:fs";
 import * as os from "node:os";
-import * as path from "node:path";
 import { gatewayDir } from "./config";
+import { appendJsonl, monthlyPath, readJsonl } from "./monthly-jsonl";
 
 export interface AdminLogEntry {
   /** Slack user ID for "slack" origin; "cli:<unix_user>" for "cli". */
@@ -39,8 +38,15 @@ export interface AdminLogEntry {
   reason?: string;
 }
 
+/**
+ * Path to the current month's admin partition. Exposed for tests
+ * that inject synthetic / malformed lines and for operators tailing
+ * the live feed. The returned path moves on UTC month boundaries;
+ * callers needing a specific month should compute it via
+ * `monthlyPath` directly.
+ */
 export function adminLogPath(): string {
-  return path.join(gatewayDir(), "admin.log");
+  return monthlyPath(gatewayDir(), "admin");
 }
 
 /**
@@ -49,17 +55,7 @@ export function adminLogPath(): string {
  * audit-log corruption would be worse than the missing log line.
  */
 export function appendAdminLog(entry: AdminLogEntry): void {
-  try {
-    fs.mkdirSync(gatewayDir(), { recursive: true });
-    const line =
-      JSON.stringify({
-        at: new Date().toISOString(),
-        ...entry,
-      }) + "\n";
-    fs.appendFileSync(adminLogPath(), line, "utf8");
-  } catch {
-    /* non-fatal */
-  }
+  appendJsonl(gatewayDir(), "admin", entry);
 }
 
 /**
@@ -82,23 +78,18 @@ export function cliActor(): string {
  * audit` and the host CLI counterpart.
  */
 export function readAdminLog(limit = 50): AdminLogEntry[] {
-  const file = adminLogPath();
-  if (!fs.existsSync(file)) return [];
-  let text: string;
-  try {
-    text = fs.readFileSync(file, "utf8");
-  } catch {
-    return [];
-  }
-  const lines = text.split("\n").filter((l) => l.length > 0);
-  const tail = lines.slice(-limit);
-  const out: AdminLogEntry[] = [];
-  for (const line of tail) {
-    try {
-      out.push(JSON.parse(line) as AdminLogEntry);
-    } catch {
-      /* skip malformed line */
-    }
-  }
-  return out;
+  const all = readJsonl(gatewayDir(), "admin", isAdminLogEntry, {});
+  if (limit < 0 || all.length <= limit) return all;
+  return all.slice(all.length - limit);
+}
+
+function isAdminLogEntry(v: unknown): v is AdminLogEntry {
+  if (!v || typeof v !== "object") return false;
+  const o = v as Record<string, unknown>;
+  return (
+    typeof o.actor === "string" &&
+    (o.origin === "cli" || o.origin === "slack") &&
+    typeof o.action === "string" &&
+    typeof o.ok === "boolean"
+  );
 }
