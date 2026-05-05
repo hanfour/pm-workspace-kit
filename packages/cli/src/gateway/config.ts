@@ -160,11 +160,13 @@ export function pickAudience(
   userId: string,
   channelId?: string,
 ): AudienceKey {
+  // Truthy check on channelId rather than `!== undefined` so an empty
+  // string accidentally passed through (e.g., a stripped Slack envelope)
+  // doesn't query `cfg.audience.channels[""]` and pull a key the host
+  // never explicitly set.
   return (
     cfg.audience?.users?.[userId] ??
-    (channelId !== undefined
-      ? cfg.audience?.channels?.[channelId]
-      : undefined) ??
+    (channelId ? cfg.audience?.channels?.[channelId] : undefined) ??
     cfg.audience?.default ??
     "tech"
   );
