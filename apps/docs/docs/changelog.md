@@ -8,9 +8,7 @@ All notable changes to **pm-workspace-kit** are documented here.
 
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Each release also has a longer narrative on [GitHub Releases](https://github.com/hanfour/pm-workspace-kit/releases) with rationale, dogfood notes, and test plans.
 
-## [v0.11.0] — TBD — gateway presence + per-channel audience + monthly audit logs (DRAFT)
-
-> **DRAFT** — fill in the date + GitHub release link at tag time. Underlying PRs are merged but not yet released.
+## [v0.11.0] — 2026-05-05 — gateway presence + per-channel audience + monthly audit logs
 
 [GitHub release](https://github.com/hanfour/pm-workspace-kit/releases/tag/v0.11.0) · closes [#23](https://github.com/hanfour/pm-workspace-kit/issues/23), [#44](https://github.com/hanfour/pm-workspace-kit/issues/44) · milestone [v0.11](https://github.com/hanfour/pm-workspace-kit/milestone/8)
 
@@ -37,12 +35,16 @@ See the [v0.11 migration notes](./gateway/v0.11-migration.md) for a focused oper
 
 ### Tests
 
-248 → **TBD** (final count depends on which review-prep commits land). Major additions:
+248 → **274** (+26 across `@pmk/cli`). Major additions:
 - Heartbeat marker decision matrix (5 branches: first boot, marker fresh, marker stale, no-marker fresh heartbeat, no-marker stale heartbeat) + corrupt-marker safety + upgrade-migration story
 - `runWithConcurrency` (4 cases: empty list, peak in-flight respected, single-task rejection isolated, limit > task count)
 - `pickAudience` channel tier (5 cases: channel applies absent user, per-user beats channel, fall-through, undefined channelId, back-fill on old config) + empty-string channelId guard
 - `/pmk admin audience set-channel` / `unset-channel` end-to-end (mention wrapping, raw ID, garbage rejection, round-trip)
 - Monthly partitioning (current-month write + legacy NOT written, legacy + partition merge order, multi-month aggregation with `sinceMs` cutoff, default 12-month window, legacy mixed-content malformed-line skip, admin-log mirror)
+
+Plus a new **`@pmk/shared`** test surface (was 0 → **24**): shape-based snapshot tests covering `BASE_RULES`, all four audience prompts, `pickGatewayPrompt` round-trip, `AUDIENCE_KEYS`, `PROMPTS` map coverage, and `DEFAULT_CONFIG` shape.
+
+Total across the workspace: 274 → **324** pass, 0 fail.
 
 ### Operator note
 
