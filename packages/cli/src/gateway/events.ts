@@ -84,11 +84,34 @@ export interface EscalateAbsorbedEvent {
   atomId?: string;
 }
 
+/**
+ * Gateway presence transitions (#44 / v0.10.x). Emitted on shutdown
+ * and on the first successful Slack reconnect after a start. Lets the
+ * audit detect rapid restart cycles, stacked broadcasts, and the
+ * graceful-vs-crash split.
+ *
+ * `seq` is monotonic per gateway PROCESS (resets on each start). Pair
+ * it with `at` to reconstruct cross-process ordering.
+ *
+ * `broadcast` is `false` when the broadcast was suppressed (e.g.,
+ * graceful restart shorter than the broadcast threshold). `reason`
+ * gives the human-readable why.
+ */
+export interface GatewayPresenceEvent {
+  type: "gateway.online" | "gateway.offline";
+  seq: number;
+  reason: string;
+  broadcast: boolean;
+  /** For `gateway.online`: how long the host appears to have been offline (ms). */
+  offlineDurationMs?: number;
+}
+
 export type GatewayEvent =
   | MraAskEndEvent
   | TurnProcessedEvent
   | EscalateTriggeredEvent
-  | EscalateAbsorbedEvent;
+  | EscalateAbsorbedEvent
+  | GatewayPresenceEvent;
 
 /** What lands on disk: the event plus the ISO timestamp added at append time. */
 export type StoredGatewayEvent = GatewayEvent & { at: string };
@@ -98,6 +121,8 @@ const VALID_TYPES: ReadonlySet<string> = new Set([
   "turn.processed",
   "escalate.triggered",
   "escalate.absorbed",
+  "gateway.online",
+  "gateway.offline",
 ]);
 
 export function gatewayEventsPath(): string {
