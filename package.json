@@ -1,6 +1,6 @@
 {
   "name": "pm-workspace-kit",
-  "version": "0.3.0",
+  "version": "0.10.1",
   "private": true,
   "description": "An opinionated PM/SA workspace kit — Docusaurus docs site, traceability scripts, CLI (pmk), and desktop app. Monorepo.",
   "license": "MIT",
@@ -20,7 +20,8 @@
     "desktop:dev": "npm --workspace apps/desktop run dev",
     "desktop:build": "npm --workspace apps/desktop run build",
     "cli:build": "npm --workspace packages/cli run build",
-    "pmk": "npm --workspace packages/cli run start --"
+    "pmk": "npm --workspace packages/cli run start --",
+    "version:bump": "node scripts/bump-version.mjs"
   },
   "overrides": {
     "serialize-javascript": "^7.0.5",
