@@ -8,6 +8,36 @@ All notable changes to **pm-workspace-kit** are documented here.
 
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Each release also has a longer narrative on [GitHub Releases](https://github.com/hanfour/pm-workspace-kit/releases) with rationale, dogfood notes, and test plans.
 
+## [v0.10.1] — 2026-05-05 — workspace version sync + mra stdout cap
+
+[GitHub release](https://github.com/hanfour/pm-workspace-kit/releases/tag/v0.10.1)
+
+### Why
+
+Two trailing items from the v0.10 milestone close, neither feature-shaped: workspace `package.json` files had drifted to `0.3.0` while git tags marched to `v0.10.0`, and `runMraAsk` accumulated stdout via `+=` with no upper bound — both observational risk on v0.10.0 day, but worth tying off before the v0.11 milestone opens its own surface.
+
+### Added
+
+- **`scripts/bump-version.mjs`** + root npm script `version:bump` — bumps root + every `apps/*` and `packages/*` `package.json` to a given semver in one pass. Used to bring all 7 manifests in sync to `0.10.1`. Lands the tag-vs-manifest sync into the release flow so the next minor close cannot drift again.
+- **Exported `MAX_MRA_STDOUT_BYTES` (10 MiB)** from `packages/cli/src/adapters/mra.ts` — soft cap on captured `mra ask` stdout, matching the old `execFile` `maxBuffer` default.
+
+### Fixed
+
+- **`runMraAsk` stdout accumulator** — switched from `string +=` to `chunks.push() + join` to remove the latent O(n²) string-concat cost on large outputs, and added a soft 10 MiB cap that SIGTERMs the child if exceeded. Defence in depth: live `mra ask` rounds are KB-scale, but a wedged subprocess streaming unbounded output would have pressured host memory in the prior implementation. The overflow reason is also classified as **non-transient**, so the v0.7.3 retry-once policy doesn't burn a second round on a path that just reproduces the same overflow.
+- **`package.json#version` workspace drift** — root and 6 sub-packages now report `0.10.1` instead of the stale `0.3.0` they had carried since v0.4.
+
+### Tests
+
+247 → **248** (+1): `runMraAskWithBinary` overflow case — fake mra writes past the cap, asserts `ok=false`, reason mentions both `stdout exceeded` and the exact `MAX_MRA_STDOUT_BYTES` byte count, and `attempts === 1` (proves overflow is treated as non-transient).
+
+Total across the workspace: 273 → **274** pass, 0 fail.
+
+### Operator note
+
+Zero migration. The cap is generous (10 MiB) and the overflow reason surfaces clearly in `events.log` (`mra-ask.end ok=false`) plus the user-facing failure message. Hosts that previously relied on capturing >10 MiB of `mra ask` stdout (none observed in dogfood) would now see a non-ok result with the explicit cap — but at that scale the prior code path was already O(n²) and would have stalled the gateway.
+
+For the next release, run `npm run version:bump <semver>` before tagging — the bump should be its own commit so the tag points at a tree where every manifest already reads the new version.
+
 ## [v0.10.0] — 2026-05-04 — gateway observability + Slack UX
 
 [GitHub release](https://github.com/hanfour/pm-workspace-kit/releases/tag/v0.10.0) · closes [#22](https://github.com/hanfour/pm-workspace-kit/issues/22), [#24](https://github.com/hanfour/pm-workspace-kit/issues/24) · milestone [v0.10](https://github.com/hanfour/pm-workspace-kit/milestone/7)
