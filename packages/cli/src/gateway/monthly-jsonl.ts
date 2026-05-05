@@ -3,15 +3,31 @@
  * (events.log + admin.log). Replaces the v0.10 single-file scheme
  * which was unbounded.
  *
- * Files: `<baseDir>/<prefix>-YYYY-MM.log` (UTC month). One JSON
- * object per line, the writer adds an `at` ISO timestamp before
- * stringify. Readers tolerate malformed lines so a single bad write
- * doesn't poison the audit.
+ * Files: `<baseDir>/<prefix>-YYYY-MM.log` — UTC month boundary, NOT
+ * the operator's local TZ. Two consequences worth knowing:
+ *
+ *   1. An event written at 2026-04-30T22:00 in UTC+8 (= 2026-05-01
+ *      local) lands in `*-2026-04.log`, not `*-2026-05.log`.
+ *      Operators grepping partition files by local date should
+ *      account for the offset — or use `pmk gateway audit --days N`
+ *      which works in absolute ms windows and doesn't care about
+ *      partition naming.
+ *   2. UTC is used so multi-host or cross-TZ deployments produce
+ *      the same partition file for the same wall-clock event.
+ *
+ * One JSON object per line; the writer adds an `at` ISO timestamp
+ * before stringify. Readers tolerate malformed lines so a single
+ * bad write doesn't poison the audit.
  *
  * Back-compat: legacy unpartitioned `<baseDir>/<prefix>.log` files
  * (the v0.10 scheme) are still **read** but no longer written. The
  * reader merges them in front of the partitioned files so an
  * operator who upgraded mid-month doesn't lose history.
+ *
+ * No eviction. Operators that want to prune old months can `rm`
+ * partition files manually; the reader silently skips missing
+ * months. Practical scale: ~100 events/day ≈ ~100KB/month
+ * uncompressed, so even 10 years is < 12 MB.
  */
 
 import * as fs from "node:fs";
