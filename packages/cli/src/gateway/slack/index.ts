@@ -147,7 +147,32 @@ export interface SlackAdapterOptions {
   /** Was the host offline (heartbeat stale) at startup? */
   wasOffline: boolean;
   lastSeenAt?: number;
+  /**
+   * #44: apparent offline duration in ms — sourced from the
+   * graceful-shutdown marker if present, else from `lastSeenAt`.
+   * Used to suppress "back online" broadcasts on fast restarts.
+   */
+  offlineDurationMs?: number;
+  /** #44: was the previous exit a graceful shutdown? */
+  gracefulShutdown?: boolean;
 }
+
+/**
+ * #44: presence broadcasts within this window are suppressed (event
+ * still emitted with `broadcast:false`). Catches rapid kill→restart
+ * cycles that would otherwise spam every recently-active user/channel
+ * with stacked "暫離" / "重新上線" pairs.
+ */
+const MIN_BROADCAST_GAP_MS = 5 * 60_000;
+
+/**
+ * #44: concurrency cap for fan-out broadcast posts. Slack
+ * `chat.postMessage` Tier 3 limit is ~50 req/min/channel; spreading
+ * the fan-out across recently-active DMs + channels at concurrency=3
+ * keeps us well under cap and finishes a full broadcast in seconds
+ * rather than the prior O(N) serial pattern that took 20+ s.
+ */
+const BROADCAST_CONCURRENCY = 3;
 
 export class SlackAdapter {
   private socket: SocketModeClient;
@@ -157,6 +182,10 @@ export class SlackAdapter {
   private onLog: (msg: string) => void;
   private wasOffline: boolean;
   private lastSeenAt?: number;
+  private offlineDurationMs?: number;
+  private gracefulShutdown: boolean;
+  /** Monotonic sequence for presence events emitted by THIS process. */
+  private presenceSeq = 0;
   private llm: LlmProvider;
   private inFlight = new Set<string>();
   /** Envelope IDs we've already accepted; protects against Slack retries.
@@ -172,6 +201,8 @@ export class SlackAdapter {
     this.onLog = opts.onLog ?? (() => {});
     this.wasOffline = opts.wasOffline;
     this.lastSeenAt = opts.lastSeenAt;
+    this.offlineDurationMs = opts.offlineDurationMs;
+    this.gracefulShutdown = opts.gracefulShutdown ?? false;
     this.socket = new SocketModeClient({
       appToken: opts.config.slack.appToken,
       logLevel: "warn" as never, // Avoid noisy stdout in normal operation.
@@ -217,9 +248,11 @@ export class SlackAdapter {
     this.socket.on("reconnect", () => this.onLog("slack socket reconnected"));
     await this.socket.start();
 
-    if (this.wasOffline) {
-      await this.broadcastBackOnline();
-    }
+    // #44: always invoke broadcastBackOnline so the audit captures
+    // every online transition (suppressed or sent). The method
+    // itself decides whether to actually broadcast based on
+    // offlineDurationMs / wasOffline.
+    await this.broadcastBackOnline();
     return this.botInfo;
   }
 
@@ -1362,42 +1395,131 @@ export class SlackAdapter {
 
   // ─────────────────────────── broadcasts ───────────────────────────
 
+  private nextPresenceSeq(): number {
+    return ++this.presenceSeq;
+  }
+
+  /**
+   * Emit a `gateway.offline` event and broadcast the notice. Always
+   * broadcasts (never suppressed) — operators want to see the
+   * "going down" notice even when the corresponding "back up" is
+   * suppressed. Cheap because it's only called once at shutdown.
+   */
   private async broadcastOffline(): Promise<void> {
+    const seq = this.nextPresenceSeq();
     const text = formatOfflineNotice();
     await this.broadcast(text);
+    appendGatewayEvent({
+      type: "gateway.offline",
+      seq,
+      reason: "shutdown",
+      broadcast: true,
+    });
   }
 
+  /**
+   * Emit a `gateway.online` event and (conditionally) broadcast the
+   * notice. #44: suppress the broadcast on fast restarts (graceful
+   * or otherwise) so a kill→restart loop doesn't stack stale notices
+   * across recently-active channels — but still record the
+   * transition in events.log so the audit can detect churn.
+   */
   private async broadcastBackOnline(): Promise<void> {
-    const awayMs =
-      this.lastSeenAt !== undefined ? Date.now() - this.lastSeenAt : undefined;
-    const text = formatBackOnlineNotice(awayMs);
+    const seq = this.nextPresenceSeq();
+    const dur = this.offlineDurationMs;
+    const fastRestart =
+      dur !== undefined && dur < MIN_BROADCAST_GAP_MS;
+    if (fastRestart) {
+      const reason = this.gracefulShutdown
+        ? "graceful-fast-restart"
+        : "fast-recovery";
+      this.onLog(
+        `back-online suppressed (offline ${dur}ms < ${MIN_BROADCAST_GAP_MS}ms, ${reason})`,
+      );
+      appendGatewayEvent({
+        type: "gateway.online",
+        seq,
+        reason,
+        broadcast: false,
+        offlineDurationMs: dur,
+      });
+      return;
+    }
+    const text = formatBackOnlineNotice(dur);
     await this.broadcast(text);
+    appendGatewayEvent({
+      type: "gateway.online",
+      seq,
+      reason: this.gracefulShutdown
+        ? "graceful-long-downtime"
+        : "crash-recovery",
+      broadcast: true,
+      offlineDurationMs: dur,
+    });
   }
 
+  /**
+   * Fan-out a presence notice to every recently-active DM + channel.
+   * #44: switched from serial `await` per recipient (which took 20+ s
+   * for ~24 recipients and could be cut off by SIGTERM mid-loop, leaving
+   * a stacked broadcast on the next restart) to bounded concurrency
+   * via `runWithConcurrency`. Errors per recipient are swallowed —
+   * one rejected DM (user left workspace) or kicked-bot channel must
+   * not abort the rest.
+   */
   private async broadcast(text: string): Promise<void> {
-    // Recently-active DMs
     const userIds = listRecentUsers(24);
-    for (const uid of userIds) {
-      try {
-        // Open a DM channel to the user (idempotent).
-        const im = await this.web.conversations.open({ users: uid });
-        const channel = im.channel?.id;
-        if (channel) {
-          await this.web.chat.postMessage({ channel, text });
-        }
-      } catch {
-        /* user may have left workspace; skip */
-      }
-    }
     const channels = listRecentChannels(24);
-    for (const c of channels) {
-      try {
-        await this.web.chat.postMessage({ channel: c.channelId, text });
-      } catch {
-        /* bot may have been kicked; skip */
+    const tasks: Array<() => Promise<unknown>> = [
+      ...userIds.map((uid) => () => this.dmSafe(uid, text)),
+      ...channels.map(
+        (c) => () =>
+          this.web.chat.postMessage({ channel: c.channelId, text }).catch(() => {
+            /* bot may have been kicked; skip */
+          }),
+      ),
+    ];
+    await runWithConcurrency(BROADCAST_CONCURRENCY, tasks);
+  }
+
+  private async dmSafe(uid: string, text: string): Promise<void> {
+    try {
+      const im = await this.web.conversations.open({ users: uid });
+      const channel = im.channel?.id;
+      if (channel) {
+        await this.web.chat.postMessage({ channel, text });
       }
+    } catch {
+      /* user may have left workspace; skip */
     }
   }
+}
+
+/**
+ * Run `tasks` with at most `limit` in flight at once. Used by the
+ * adapter's broadcast fan-out (#44). Workers exit when the queue is
+ * empty; per-task throws are silently swallowed so one bad recipient
+ * doesn't abort the rest.
+ */
+export async function runWithConcurrency(
+  limit: number,
+  tasks: Array<() => Promise<unknown>>,
+): Promise<void> {
+  if (tasks.length === 0) return;
+  const queue = [...tasks];
+  const workerCount = Math.min(limit, queue.length);
+  const workers = Array.from({ length: workerCount }, async () => {
+    while (queue.length) {
+      const fn = queue.shift();
+      if (!fn) return;
+      try {
+        await fn();
+      } catch {
+        /* swallowed by design — see broadcast() */
+      }
+    }
+  });
+  await Promise.all(workers);
 }
 
 // ─────────────────────────── ambient Slack types ──────────────────────

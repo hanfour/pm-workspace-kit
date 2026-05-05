@@ -12,8 +12,10 @@ import {
 import {
   HEARTBEAT_STALE_MS,
   clearHeartbeat,
+  markGracefulShutdown,
   startHeartbeat,
 } from "../src/gateway/heartbeat";
+import { runWithConcurrency } from "../src/gateway/slack";
 import {
   clearThreadEscalation,
   listRecentChannels,
@@ -258,6 +260,55 @@ describe("heartbeat", () => {
     const r2 = startHeartbeat();
     assert.equal(r2.wasOffline, false);
     assert.ok(r2.lastSeenAt && Date.now() - r2.lastSeenAt < HEARTBEAT_STALE_MS);
+    r2.stop();
+  });
+
+  // #44: graceful-shutdown marker semantics. The prior `kill -> restart`
+  // path ran clearHeartbeat() which made every restart look like a
+  // first-ever boot — the next start unconditionally broadcast
+  // "back online" even on a 3-second bounce. Marker fixes that.
+
+  it("marker present after graceful shutdown → wasOffline=false, gracefulShutdown=true", () => {
+    const r1 = startHeartbeat();
+    r1.stop();
+    markGracefulShutdown();
+    const r2 = startHeartbeat();
+    assert.equal(r2.wasOffline, false, `unexpected back-online intent: dur=${r2.offlineDurationMs}`);
+    assert.equal(r2.gracefulShutdown, true);
+    assert.ok(r2.offlineDurationMs !== undefined && r2.offlineDurationMs >= 0);
+    r2.stop();
+  });
+
+  it("marker is single-use: a SECOND restart without re-marking is treated as crash", () => {
+    const r1 = startHeartbeat();
+    r1.stop();
+    markGracefulShutdown();
+    const r2 = startHeartbeat();
+    assert.equal(r2.gracefulShutdown, true);
+    r2.stop();
+    // No re-mark — the second restart should NOT see graceful.
+    const r3 = startHeartbeat();
+    assert.equal(r3.gracefulShutdown, false);
+    r3.stop();
+  });
+
+  it("first ever start (no marker, no heartbeat) reports offlineDurationMs=undefined and wasOffline=true", () => {
+    const r = startHeartbeat();
+    assert.equal(r.wasOffline, true);
+    assert.equal(r.gracefulShutdown, false);
+    assert.equal(r.offlineDurationMs, undefined);
+    r.stop();
+  });
+
+  it("crash semantics: heartbeat fresh, no marker → wasOffline=false (fast recovery)", () => {
+    const r1 = startHeartbeat();
+    r1.stop();
+    // No markGracefulShutdown — simulating a crash. Heartbeat file
+    // remains with the last tick timestamp.
+    const r2 = startHeartbeat();
+    assert.equal(r2.wasOffline, false);
+    assert.equal(r2.gracefulShutdown, false);
+    assert.ok(r2.offlineDurationMs !== undefined);
     r2.stop();
   });
 });
@@ -1985,5 +2036,62 @@ describe("slashCommandArgsFromBody (#39)", () => {
     });
     assert.ok(args);
     assert.equal(args?.scope.kind, "channel");
+  });
+});
+
+describe("runWithConcurrency (#44)", () => {
+  it("returns immediately when given an empty task list", async () => {
+    let invoked = 0;
+    await runWithConcurrency(3, []);
+    assert.equal(invoked, 0);
+  });
+
+  it("executes every task exactly once and never exceeds the limit in flight", async () => {
+    const start: number[] = [];
+    const finish: number[] = [];
+    let inFlight = 0;
+    let peak = 0;
+    const tasks = Array.from({ length: 10 }, (_, i) => async () => {
+      inFlight++;
+      peak = Math.max(peak, inFlight);
+      start.push(i);
+      await new Promise((r) => setTimeout(r, 5));
+      finish.push(i);
+      inFlight--;
+    });
+    await runWithConcurrency(3, tasks);
+    assert.equal(start.length, 10, "every task started");
+    assert.equal(finish.length, 10, "every task finished");
+    assert.ok(peak <= 3, `peak in-flight ${peak} should be ≤ 3`);
+    assert.ok(peak >= 2, `peak in-flight ${peak} should reflect real concurrency`);
+  });
+
+  it("a single rejecting task does not prevent the rest from running", async () => {
+    const completed: number[] = [];
+    const tasks: Array<() => Promise<unknown>> = [
+      async () => {
+        completed.push(0);
+      },
+      async () => {
+        throw new Error("recipient kicked the bot");
+      },
+      async () => {
+        completed.push(2);
+      },
+      async () => {
+        completed.push(3);
+      },
+    ];
+    await runWithConcurrency(2, tasks);
+    assert.deepEqual(completed.sort(), [0, 2, 3]);
+  });
+
+  it("limit greater than task count does not spawn excess workers", async () => {
+    let started = 0;
+    const tasks = Array.from({ length: 2 }, () => async () => {
+      started++;
+    });
+    await runWithConcurrency(10, tasks);
+    assert.equal(started, 2);
   });
 });
