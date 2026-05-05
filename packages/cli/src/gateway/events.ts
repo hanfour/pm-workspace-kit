@@ -17,10 +17,9 @@
  * structured logging is out of scope.
  */
 
-import * as fs from "node:fs";
-import * as path from "node:path";
 import type { AudienceKey } from "@pmk/shared";
 import { gatewayDir } from "./config";
+import { appendJsonl, monthlyPath, readJsonl } from "./monthly-jsonl";
 
 // TODO(v0.10.x): events.log grows unbounded. At single-host workloads
 // (~100 events/day) we'd hit ~1MB/year — acceptable for now but the
@@ -125,8 +124,15 @@ const VALID_TYPES: ReadonlySet<string> = new Set([
   "gateway.offline",
 ]);
 
+/**
+ * Path to the current month's events partition. Exposed for tests
+ * that inject synthetic / malformed lines and for operators tailing
+ * the live feed (e.g., `tail -f $(pmk debug events-path)`). The
+ * returned path moves on UTC month boundaries; callers that need a
+ * specific month should compute it themselves via `monthlyPath`.
+ */
 export function gatewayEventsPath(): string {
-  return path.join(gatewayDir(), "events.log");
+  return monthlyPath(gatewayDir(), "events");
 }
 
 /**
@@ -135,17 +141,7 @@ export function gatewayEventsPath(): string {
  * be worse than the missing line. Mirrors {@link appendAdminLog}.
  */
 export function appendGatewayEvent(event: GatewayEvent): void {
-  try {
-    fs.mkdirSync(gatewayDir(), { recursive: true });
-    const line =
-      JSON.stringify({
-        at: new Date().toISOString(),
-        ...event,
-      }) + "\n";
-    fs.appendFileSync(gatewayEventsPath(), line, "utf8");
-  } catch {
-    /* non-fatal */
-  }
+  appendJsonl(gatewayDir(), "events", event);
 }
 
 export interface ReadGatewayEventsOptions {
@@ -163,34 +159,13 @@ export interface ReadGatewayEventsOptions {
 export function readGatewayEvents(
   opts: ReadGatewayEventsOptions = {},
 ): StoredGatewayEvent[] {
-  const file = gatewayEventsPath();
-  if (!fs.existsSync(file)) return [];
-  let text: string;
-  try {
-    text = fs.readFileSync(file, "utf8");
-  } catch {
-    return [];
+  const all = readJsonl(gatewayDir(), "events", isStoredGatewayEvent, {
+    sinceMs: opts.sinceMs,
+  });
+  if (opts.limit !== undefined && opts.limit >= 0 && all.length > opts.limit) {
+    return all.slice(all.length - opts.limit);
   }
-  const out: StoredGatewayEvent[] = [];
-  for (const line of text.split("\n")) {
-    if (line.length === 0) continue;
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(line);
-    } catch {
-      continue;
-    }
-    if (!isStoredGatewayEvent(parsed)) continue;
-    if (opts.sinceMs !== undefined) {
-      const t = Date.parse(parsed.at);
-      if (!Number.isFinite(t) || t < opts.sinceMs) continue;
-    }
-    out.push(parsed);
-  }
-  if (opts.limit !== undefined && opts.limit >= 0 && out.length > opts.limit) {
-    return out.slice(out.length - opts.limit);
-  }
-  return out;
+  return all;
 }
 
 function isStoredGatewayEvent(v: unknown): v is StoredGatewayEvent {

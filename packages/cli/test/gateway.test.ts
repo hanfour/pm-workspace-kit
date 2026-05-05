@@ -1938,6 +1938,46 @@ describe("admin-log (#31)", () => {
     });
     fs.rmSync(blocking, { recursive: true, force: true });
   });
+
+  it("admin.log writes go to a YYYY-MM partition; legacy admin.log is read-only", async () => {
+    const { appendAdminLog, readAdminLog, adminLogPath } = await import(
+      "../src/gateway/admin-log"
+    );
+    const gatewayDir = path.join(tmpHome, ".pmk", "gateway");
+    fs.mkdirSync(gatewayDir, { recursive: true });
+    // Drop a legacy v0.10-era line that pre-dates partitioning.
+    const legacy = path.join(gatewayDir, "admin.log");
+    fs.writeFileSync(
+      legacy,
+      JSON.stringify({
+        at: new Date().toISOString(),
+        actor: "U_LEGACY",
+        origin: "cli",
+        action: "audience.list",
+        ok: true,
+      }) + "\n",
+    );
+    // New write goes to the partition file, not the legacy one.
+    appendAdminLog({
+      actor: "U_NEW",
+      origin: "slack",
+      action: "audience.list",
+      ok: true,
+    });
+    assert.match(
+      path.basename(adminLogPath()),
+      /^admin-\d{4}-\d{2}\.log$/,
+      "current-month partition path",
+    );
+    // Legacy file untouched (still 1 line).
+    const legacyLines = fs.readFileSync(legacy, "utf8").trim().split("\n");
+    assert.equal(legacyLines.length, 1);
+    // Reader merges both — legacy line first (oldest tier), partition second.
+    const all = readAdminLog();
+    assert.equal(all.length, 2);
+    assert.equal(all[0].actor, "U_LEGACY");
+    assert.equal(all[1].actor, "U_NEW");
+  });
 });
 
 describe("Slack admin handler (#31)", () => {

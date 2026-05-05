@@ -203,4 +203,201 @@ describe("gateway events log (#24)", () => {
     );
     fs.rmSync(blocking, { recursive: true, force: true });
   });
+
+  // v0.10.x: monthly partitioning + legacy fallback.
+
+  it("appendGatewayEvent writes to a YYYY-MM partition file, not the legacy events.log", async () => {
+    const { appendGatewayEvent, gatewayEventsPath } = await import(
+      "../src/gateway/events"
+    );
+    appendGatewayEvent({
+      type: "turn.processed",
+      actor: "U_PART",
+      audience: "tech",
+      hadMraAsk: false,
+      atomsInjected: 0,
+    });
+    const partition = gatewayEventsPath();
+    assert.match(
+      path.basename(partition),
+      /^events-\d{4}-\d{2}\.log$/,
+      "current-month partition path should be events-YYYY-MM.log",
+    );
+    assert.ok(fs.existsSync(partition), "partition file should be created");
+    const legacy = path.join(tmpHome, ".pmk", "gateway", "events.log");
+    assert.ok(
+      !fs.existsSync(legacy),
+      "legacy events.log should NOT be written by v0.10.x and beyond",
+    );
+  });
+
+  it("readGatewayEvents merges legacy events.log with the current-month partition", async () => {
+    const { appendGatewayEvent, readGatewayEvents } = await import(
+      "../src/gateway/events"
+    );
+    const gatewayDir = path.join(tmpHome, ".pmk", "gateway");
+    fs.mkdirSync(gatewayDir, { recursive: true });
+    const legacy = path.join(gatewayDir, "events.log");
+    fs.writeFileSync(
+      legacy,
+      JSON.stringify({
+        at: new Date().toISOString(),
+        type: "turn.processed",
+        actor: "U_LEGACY",
+        audience: "tech",
+        hadMraAsk: false,
+        atomsInjected: 0,
+      }) + "\n",
+    );
+    appendGatewayEvent({
+      type: "turn.processed",
+      actor: "U_NEW",
+      audience: "tech",
+      hadMraAsk: false,
+      atomsInjected: 0,
+    });
+    const entries = readGatewayEvents();
+    assert.equal(entries.length, 2);
+    assert.equal(
+      entries[0].type === "turn.processed" && entries[0].actor,
+      "U_LEGACY",
+    );
+    assert.equal(
+      entries[1].type === "turn.processed" && entries[1].actor,
+      "U_NEW",
+    );
+  });
+
+  it("readGatewayEvents reads across multiple month partitions and respects sinceMs", async () => {
+    const { readGatewayEvents } = await import("../src/gateway/events");
+    const { monthlyPath } = await import("../src/gateway/monthly-jsonl");
+    const gatewayDir = path.join(tmpHome, ".pmk", "gateway");
+    fs.mkdirSync(gatewayDir, { recursive: true });
+    const now = new Date();
+    const twoMonthsAgo = new Date(
+      Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 2, 15),
+    );
+    const oneMonthAgo = new Date(
+      Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 1, 15),
+    );
+    const writeAt = (file: string, ts: Date, actor: string) => {
+      fs.writeFileSync(
+        file,
+        JSON.stringify({
+          at: ts.toISOString(),
+          type: "turn.processed",
+          actor,
+          audience: "tech",
+          hadMraAsk: false,
+          atomsInjected: 0,
+        }) + "\n",
+      );
+    };
+    writeAt(monthlyPath(gatewayDir, "events", twoMonthsAgo), twoMonthsAgo, "U_OLD");
+    writeAt(monthlyPath(gatewayDir, "events", oneMonthAgo), oneMonthAgo, "U_RECENT");
+    writeAt(monthlyPath(gatewayDir, "events", now), now, "U_TODAY");
+
+    const all = readGatewayEvents();
+    const actors = all
+      .filter((e) => e.type === "turn.processed")
+      .map((e) => e.type === "turn.processed" && e.actor)
+      .filter(Boolean);
+    assert.deepEqual(actors, ["U_OLD", "U_RECENT", "U_TODAY"]);
+
+    const cutoff = new Date(
+      Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 1, 1),
+    ).getTime();
+    const recent = readGatewayEvents({ sinceMs: cutoff });
+    const recentActors = recent
+      .filter((e) => e.type === "turn.processed")
+      .map((e) => e.type === "turn.processed" && e.actor)
+      .filter(Boolean);
+    assert.deepEqual(recentActors, ["U_RECENT", "U_TODAY"]);
+  });
+
+  // Review-prep for PR #47.
+
+  it("default no-sinceMs read covers ~12 months back; older partitions are skipped", async () => {
+    const { readJsonl, monthlyPath } = await import(
+      "../src/gateway/monthly-jsonl"
+    );
+    const gatewayDir = path.join(tmpHome, ".pmk", "gateway");
+    fs.mkdirSync(gatewayDir, { recursive: true });
+    const now = new Date();
+    const longAgo = new Date(
+      Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 13, 15),
+    );
+    const recently = new Date(
+      Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 1, 15),
+    );
+    const writeAt = (file: string, ts: Date, marker: string) => {
+      fs.writeFileSync(
+        file,
+        JSON.stringify({ at: ts.toISOString(), kind: "test", marker }) + "\n",
+      );
+    };
+    writeAt(monthlyPath(gatewayDir, "events", longAgo), longAgo, "TOO_OLD");
+    writeAt(monthlyPath(gatewayDir, "events", recently), recently, "IN_WINDOW");
+
+    const isTestEntry = (v: unknown): v is { kind: string; marker: string } => {
+      const o = v as Record<string, unknown>;
+      return (
+        !!o &&
+        typeof o === "object" &&
+        o.kind === "test" &&
+        typeof o.marker === "string"
+      );
+    };
+    const got = readJsonl(gatewayDir, "events", isTestEntry);
+    const markers = got.map((e) => e.marker);
+    assert.ok(
+      markers.includes("IN_WINDOW"),
+      "in-window partition should be read",
+    );
+    assert.ok(
+      !markers.includes("TOO_OLD"),
+      "13-month-old partition should be skipped under the 12-month default",
+    );
+
+    const everything = readJsonl(gatewayDir, "events", isTestEntry, {
+      maxMonthsBack: 24,
+    });
+    const allMarkers = everything.map((e) => e.marker);
+    assert.ok(allMarkers.includes("TOO_OLD"));
+    assert.ok(allMarkers.includes("IN_WINDOW"));
+  });
+
+  it("legacy events.log with mixed valid + malformed lines: malformed are skipped, valid still parse", async () => {
+    const { readGatewayEvents } = await import("../src/gateway/events");
+    const gatewayDir = path.join(tmpHome, ".pmk", "gateway");
+    fs.mkdirSync(gatewayDir, { recursive: true });
+    const legacy = path.join(gatewayDir, "events.log");
+    const valid = JSON.stringify({
+      at: new Date().toISOString(),
+      type: "turn.processed",
+      actor: "U_VALID_LEGACY",
+      audience: "tech",
+      hadMraAsk: false,
+      atomsInjected: 0,
+    });
+    fs.writeFileSync(
+      legacy,
+      [
+        valid,
+        "this is not json — a partial write from a crashed process",
+        '{"truncated":',
+        valid.replace("U_VALID_LEGACY", "U_VALID_2"),
+      ].join("\n") + "\n",
+    );
+    const entries = readGatewayEvents();
+    assert.equal(entries.length, 2);
+    assert.equal(
+      entries[0].type === "turn.processed" && entries[0].actor,
+      "U_VALID_LEGACY",
+    );
+    assert.equal(
+      entries[1].type === "turn.processed" && entries[1].actor,
+      "U_VALID_2",
+    );
+  });
 });
