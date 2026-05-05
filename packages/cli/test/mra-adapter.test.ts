@@ -8,6 +8,7 @@ import {
   findMraWorkspace,
   listMraWorkspaceReposWithPkb,
   loadPkbBase,
+  MAX_MRA_STDOUT_BYTES,
   mraDoctor,
   PKB_BASE_DOCS,
   PKB_DIR_RELATIVE,
@@ -508,5 +509,40 @@ describe("runMraAskWithBinary spawn behaviour (#22)", () => {
     assert.equal(r.ok, true, `expected eventual success: ${r.reason ?? ""}`);
     assert.equal(r.attempts, 2);
     assert.match(r.stdout, /ok on attempt 2/);
+  });
+
+  it("SIGTERMs the child and reports stdout-cap reason when stdout exceeds MAX_MRA_STDOUT_BYTES", async () => {
+    // Write 1 MiB at a time until past the cap, then keep the process
+    // alive with setInterval so the SIGTERM-from-overflow path is the
+    // only way out (mirrors the prod hazard: a wedged mra streaming
+    // unbounded output). maxRetries:1 also confirms looksTransient
+    // treats the overflow reason as non-transient (no retry happens).
+    const r = await runMraAskWithBinary(
+      wrapperPath,
+      {
+        repo: "erp",
+        question: `
+          const buf = "x".repeat(1024 * 1024);
+          const target = ${MAX_MRA_STDOUT_BYTES} + 2 * 1024 * 1024;
+          let written = 0;
+          while (written < target) {
+            process.stdout.write(buf);
+            written += buf.length;
+          }
+          setInterval(() => {}, 60000);
+        `,
+        cwd: process.cwd(),
+        timeoutMs: 10_000,
+      },
+      { maxRetries: 1 },
+    );
+    assert.equal(r.ok, false);
+    assert.match(r.reason ?? "", /stdout exceeded/);
+    assert.match(r.reason ?? "", new RegExp(String(MAX_MRA_STDOUT_BYTES)));
+    assert.equal(
+      r.attempts,
+      1,
+      "overflow must not be classified as transient (no retry)",
+    );
   });
 });

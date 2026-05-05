@@ -229,6 +229,16 @@ export function buildExploreArgv(repo: string): string[] {
   return [repo, "--with-deps"];
 }
 
+/**
+ * Soft cap on captured mra stdout. Matches the old execFile maxBuffer
+ * default (10 MiB). When exceeded, the child is SIGTERM'd and the
+ * result returns ok=false with a reason mentioning the cap. Defence
+ * in depth: mra runs are KB-scale in practice, but switching to
+ * chunks + cap removes both the O(n²) string-concat risk and the
+ * unbounded-memory risk in one lift.
+ */
+export const MAX_MRA_STDOUT_BYTES = 10 * 1024 * 1024;
+
 export interface MraAskResult {
   ok: boolean;
   stdout: string;
@@ -252,6 +262,7 @@ function looksTransient(result: MraAskResult): boolean {
   if (!result.reason) return false;
   if (result.reason.includes("not found on PATH")) return false;
   if (result.reason.includes("timed out")) return false;
+  if (result.reason.includes("stdout exceeded")) return false;
   if (result.stderr.trim().length > 0) return false;
   return true;
 }
@@ -401,10 +412,14 @@ function runMraAskOnce(
       return;
     }
 
-    let stdoutBuf = "";
-    let stderrBuf = "";
+    // Chunks instead of string += to avoid O(n²) concat on large
+    // outputs and to keep accumulation O(1) per data event.
+    const stdoutChunks: string[] = [];
+    const stderrChunks: string[] = [];
+    let stdoutBytes = 0;
     let lineBuf = "";
     let timedOut = false;
+    let stdoutOverflowed = false;
 
     timeoutHandle = setTimeout(() => {
       timedOut = true;
@@ -417,13 +432,22 @@ function runMraAskOnce(
 
     child.stdout?.setEncoding("utf8");
     child.stdout?.on("data", (chunk: string) => {
-      // TODO(v0.10.x): cap stdoutBuf at a soft max (e.g. 10 MiB —
-      // matching the old execFile maxBuffer) to prevent runaway mra
-      // outputs from pressuring host memory and turning string
-      // concatenation into O(n²). Most mra runs are KB-scale so this
-      // is observational risk, not a current incident. Same lift
-      // could switch to chunks.push(chunk) + join at close.
-      stdoutBuf += chunk;
+      if (!stdoutOverflowed) {
+        stdoutChunks.push(chunk);
+        stdoutBytes += Buffer.byteLength(chunk, "utf8");
+        if (stdoutBytes > MAX_MRA_STDOUT_BYTES) {
+          stdoutOverflowed = true;
+          try {
+            child.kill("SIGTERM");
+          } catch {
+            /* already gone */
+          }
+        }
+      }
+      // Progress streaming continues regardless: by the time we set
+      // the flag we already kicked SIGTERM, but the child may still
+      // emit a few more lines before it actually dies. Surface those
+      // to the caller — only the accumulator is capped.
       lineBuf += chunk;
       let idx: number;
       while ((idx = lineBuf.indexOf("\n")) >= 0) {
@@ -441,42 +465,39 @@ function runMraAskOnce(
 
     child.stderr?.setEncoding("utf8");
     child.stderr?.on("data", (chunk: string) => {
-      stderrBuf += chunk;
+      stderrChunks.push(chunk);
     });
 
     child.on("error", (err) => {
       settle({
         ok: false,
-        stdout: stdoutBuf,
-        stderr: stderrBuf,
+        stdout: stdoutChunks.join(""),
+        stderr: stderrChunks.join(""),
         reason: err.message,
         attempts: 1,
       });
     });
 
     child.on("close", (code, signal) => {
-      const ok = !timedOut && code === 0;
+      const stdout = stdoutChunks.join("");
+      const stderr = stderrChunks.join("");
+      const ok = !timedOut && !stdoutOverflowed && code === 0;
       if (ok) {
-        settle({
-          ok: true,
-          stdout: stdoutBuf,
-          stderr: stderrBuf,
-          attempts: 1,
-        });
+        settle({ ok: true, stdout, stderr, attempts: 1 });
         return;
       }
-      const reason = timedOut
-        ? `mra ask timed out after ${timeoutMs}ms`
-        : `mra ask exited with code=${code ?? "null"}${
-            signal ? ` signal=${signal}` : ""
-          }${stderrBuf.trim() ? `: ${stderrBuf.trim().split("\n").pop()}` : ""}`;
-      settle({
-        ok: false,
-        stdout: stdoutBuf,
-        stderr: stderrBuf,
-        reason,
-        attempts: 1,
-      });
+      let reason: string;
+      if (stdoutOverflowed) {
+        reason = `mra ask stdout exceeded ${MAX_MRA_STDOUT_BYTES} bytes`;
+      } else if (timedOut) {
+        reason = `mra ask timed out after ${timeoutMs}ms`;
+      } else {
+        const lastStderrLine = stderr.trim().split("\n").pop();
+        reason = `mra ask exited with code=${code ?? "null"}${
+          signal ? ` signal=${signal}` : ""
+        }${stderr.trim() ? `: ${lastStderrLine}` : ""}`;
+      }
+      settle({ ok: false, stdout, stderr, reason, attempts: 1 });
     });
   });
 }
