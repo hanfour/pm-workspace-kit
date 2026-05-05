@@ -25,14 +25,22 @@ export interface SlackConfig {
 }
 
 /**
- * Per-user audience overrides. Audience picks which gateway-DM prompt
- * the model uses for this user — tech (default; PM/SA/eng), biz
- * (sales / ops / non-tech PM), or exec (decision-makers).
+ * Audience overrides. Audience picks which gateway-DM prompt the
+ * model uses for a turn — tech (default; PM/SA/eng), pm
+ * (product-flavored), biz (sales / ops / non-tech), or exec
+ * (decision-makers).
+ *
+ * Resolution order at turn time (#23): per-user override → per-channel
+ * override → workspace default. Per-user always wins; channel default
+ * lets a host say "everyone in #leadership defaults to exec" without
+ * setting 12 individual user overrides.
  */
 export interface AudienceConfig {
   default: AudienceKey;
   /** Slack user ID → audience override. */
   users: Record<string, AudienceKey>;
+  /** Slack channel ID → audience default for the channel (#23). */
+  channels: Record<string, AudienceKey>;
 }
 
 /**
@@ -95,7 +103,7 @@ export function gatewayPidPath(): string {
 }
 
 function defaultAudience(): AudienceConfig {
-  return { default: "tech", users: {} };
+  return { default: "tech", users: {}, channels: {} };
 }
 
 function defaultEscalation(): EscalationConfig {
@@ -123,6 +131,7 @@ export function loadGatewayConfig(): GatewayConfig {
   // Back-fill fields added in later builds so old configs still load.
   if (!raw.audience) raw.audience = defaultAudience();
   if (!raw.audience.users) raw.audience.users = {};
+  if (!raw.audience.channels) raw.audience.channels = {};
   if (!raw.escalation) raw.escalation = defaultEscalation();
   if (!raw.escalation.repos) raw.escalation.repos = {};
   if (!raw.escalation.default) raw.escalation.default = [];
@@ -135,11 +144,30 @@ export function loadGatewayConfig(): GatewayConfig {
 }
 
 /**
- * Pick the audience for a specific user. Falls back to the default
- * audience when no per-user override is set.
+ * Pick the audience for a turn (#23):
+ *   1. per-user override (cfg.audience.users[userId])
+ *   2. per-channel override (cfg.audience.channels[channelId])
+ *   3. workspace default (cfg.audience.default)
+ *   4. hard fallback ("tech") if nothing is configured
+ *
+ * `channelId` is optional so DM call sites that don't have a real
+ * channel context (e.g., user-DM where channelId is the DM channel's
+ * `D...` ID — equivalent to the user) can still call this function;
+ * unmatched channelIds simply fall through to step 3.
  */
-export function pickAudience(cfg: GatewayConfig, userId: string): AudienceKey {
-  return cfg.audience?.users?.[userId] ?? cfg.audience?.default ?? "tech";
+export function pickAudience(
+  cfg: GatewayConfig,
+  userId: string,
+  channelId?: string,
+): AudienceKey {
+  return (
+    cfg.audience?.users?.[userId] ??
+    (channelId !== undefined
+      ? cfg.audience?.channels?.[channelId]
+      : undefined) ??
+    cfg.audience?.default ??
+    "tech"
+  );
 }
 
 /**

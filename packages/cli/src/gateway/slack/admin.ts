@@ -70,6 +70,19 @@ export function extractUserId(token: string): string | undefined {
 
 const SLACK_USER_ID_RE = /^[UW][A-Z0-9]{2,}$/;
 
+/**
+ * Slack channel IDs (#23): `C` (public), `G` (private), or `D` (DM).
+ * Slack delivers channel references in slash-command text as
+ * `<#C0XYZ|name>` or `<#C0XYZ>`; admins can also paste the raw ID.
+ */
+export function extractChannelId(token: string): string | undefined {
+  if (!token) return undefined;
+  const mention = /^<#([CGD][A-Z0-9]+)(?:\|[^>]*)?>$/.exec(token);
+  if (mention) return mention[1];
+  if (/^[CGD][A-Z0-9]{2,}$/.test(token)) return token;
+  return undefined;
+}
+
 function logAdmin(
   actor: string,
   action: string,
@@ -116,6 +129,7 @@ function helpText(): string {
     "*pmk admin commands* (DM-only, admin-restricted)",
     "• `/pmk admin status` — gateway status",
     "• `/pmk admin audience set @user <tech|pm|biz|exec>`",
+    "• `/pmk admin audience set-channel #channel <tech|pm|biz|exec>` (#23)",
     "• `/pmk admin audience default <tech|pm|biz|exec>`",
     "• `/pmk admin escalation add <repo|default> @user`",
     "• `/pmk admin escalation remove <repo|default> @user`",
@@ -205,23 +219,66 @@ function adminAudience(
       logAdmin(actor, "audience.default", true, key);
       return { text: `:white_check_mark: default audience set to \`${key}\`` };
     }
+    case "set-channel": {
+      const [channelToken, key] = args;
+      const channelId = extractChannelId(channelToken);
+      if (!channelId || !key) {
+        logAdmin(actor, "audience.set-channel", false, undefined, "missing args");
+        return { text: ":x: usage: `/pmk admin audience set-channel #channel <tech|pm|biz|exec>`" };
+      }
+      if (!isAudienceKey(key)) {
+        logAdmin(actor, "audience.set-channel", false, `${channelId} ${key}`, "invalid audience");
+        return { text: `:x: invalid audience \`${key}\` — must be tech, pm, biz, or exec` };
+      }
+      cfg.audience.channels[channelId] = key;
+      saveGatewayConfig(cfg);
+      logAdmin(actor, "audience.set-channel", true, `${channelId} ${key}`);
+      return { text: `:white_check_mark: <#${channelId}> default audience set to \`${key}\`` };
+    }
+    case "unset-channel": {
+      const channelId = extractChannelId(args[0]);
+      if (!channelId) {
+        logAdmin(actor, "audience.unset-channel", false, undefined, "missing args");
+        return { text: ":x: usage: `/pmk admin audience unset-channel #channel`" };
+      }
+      if (!(channelId in cfg.audience.channels)) {
+        logAdmin(actor, "audience.unset-channel", true, channelId, "no override");
+        return { text: `(<#${channelId}> has no override; nothing to do)` };
+      }
+      delete cfg.audience.channels[channelId];
+      saveGatewayConfig(cfg);
+      logAdmin(actor, "audience.unset-channel", true, channelId);
+      return { text: `:white_check_mark: <#${channelId}> override removed (falls back to workspace default \`${cfg.audience.default}\`)` };
+    }
     case "list":
     case undefined: {
       const lines: string[] = ["*audience config*"];
       lines.push(`• default: \`${cfg.audience.default}\``);
-      const entries = Object.entries(cfg.audience.users);
-      if (entries.length === 0) {
+      const userEntries = Object.entries(cfg.audience.users);
+      if (userEntries.length === 0) {
         lines.push("• per-user overrides: _(none)_");
       } else {
         lines.push("• per-user overrides:");
-        for (const [uid, aud] of entries) {
+        for (const [uid, aud] of userEntries) {
           lines.push(`  - <@${uid}> → \`${aud}\``);
         }
       }
+      const channelEntries = Object.entries(cfg.audience.channels);
+      if (channelEntries.length === 0) {
+        lines.push("• per-channel overrides: _(none)_");
+      } else {
+        lines.push("• per-channel overrides:");
+        for (const [cid, aud] of channelEntries) {
+          lines.push(`  - <#${cid}> → \`${aud}\``);
+        }
+      }
+      lines.push(
+        "• resolution order at turn time: per-user → per-channel → default",
+      );
       return { text: lines.join("\n") };
     }
     default:
-      return { text: ":x: usage: `/pmk admin audience set|unset|default|list`" };
+      return { text: ":x: usage: `/pmk admin audience set|unset|set-channel|unset-channel|default|list`" };
   }
 }
 
