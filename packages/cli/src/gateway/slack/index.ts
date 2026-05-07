@@ -55,7 +55,9 @@ import {
   buildIngestSeed,
   buildMraFailureMessage,
   buildMraSuccessMessage,
+  capMessageContent,
   pruneSessionIfNeeded,
+  SEED_CAP,
   truncate,
 } from "../messaging";
 import { parseEscalate, stripEscalateBlock } from "../escalate";
@@ -487,13 +489,28 @@ export class SlackAdapter {
     // config.defaultIngest (e.g. mra:--all). Without this the model
     // truthfully says it has no idea about the user's codebase even
     // though we configured the ingest spec at gateway init.
+    //
+    // v0.11.1: cap the seed at SEED_CAP chars so an `mra:--all` against a
+    // large multi-repo workspace can't single-handedly exhaust the
+    // model's input window. Emits a `message.capped` event when capping
+    // fires so operators can see how often the cap is biting.
     if (session.messages.length === 0 && this.config.defaultIngest) {
-      const seed = buildIngestSeed(
+      const seedRaw = buildIngestSeed(
         this.config.defaultIngest,
         this.config.mraWorkspace,
       );
-      if (seed) {
-        session.messages.push({ role: "user", content: seed });
+      if (seedRaw) {
+        const cap = capMessageContent(seedRaw, SEED_CAP);
+        if (cap.capped) {
+          appendGatewayEvent({
+            type: "message.capped",
+            actor: userId,
+            kind: "seed",
+            originalChars: cap.originalChars,
+            cappedChars: cap.content.length,
+          });
+        }
+        session.messages.push({ role: "user", content: cap.content });
         session.messages.push({
           role: "assistant",
           content: "了解，已載入 workspace PKB context。請繼續。",
