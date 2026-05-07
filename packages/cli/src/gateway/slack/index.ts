@@ -8,6 +8,7 @@ import {
   pickEscalationPool,
 } from "../config";
 import { handleAdminSlash } from "./admin";
+import { chatWithContextRetry } from "./context-retry";
 import {
   formatBackOnlineNotice,
   formatOfflineNotice,
@@ -548,15 +549,6 @@ export class SlackAdapter {
       );
     }
 
-    const llmMessages: ChatMessage[] = [
-      ...retrievalPrefix,
-      ...session.messages,
-      { role: "user", content: text },
-    ];
-
-    session.messages.push({ role: "user", content: text });
-    session.turns += 1;
-
     const placeholder = await this.web.chat.postMessage({
       channel: channelId,
       thread_ts: threadTs,
@@ -566,19 +558,45 @@ export class SlackAdapter {
     const audience = pickAudience(this.config, userId, channelId);
     const systemPrompt = pickGatewayPrompt(audience);
 
-    let full = "";
-    try {
-      full = await this.llm.chat(systemPrompt, llmMessages, {
-        onToken: () => {},
-      });
-    } catch (err) {
+    // T11: wrap llm.chat in the context-too-long retry helper. The
+    // buildMessages closure includes the new user turn at the tail so
+    // the LLM sees it on both attempts; we deliberately do NOT push it
+    // onto session.messages until AFTER the retry succeeds, so a failed
+    // turn doesn't pollute persisted history (and so forcePruneToMinimum
+    // operates on a coherent paired-history shape).
+    const retryResult = await chatWithContextRetry({
+      llm: this.llm,
+      systemPrompt,
+      buildMessages: () => [
+        ...retrievalPrefix,
+        ...session.messages,
+        { role: "user", content: text },
+      ],
+      session,
+      actor: userId,
+      retrievalAtoms: retrieved.length,
+      phase: "first-call",
+    });
+
+    if (!retryResult.ok) {
+      const errText =
+        retryResult.kind === "context"
+          ? ":x: 對話太長，請開新 thread 重新提問"
+          : `:warning: ${(retryResult.error as Error).message}`;
       await this.web.chat.update({
         channel: channelId,
         ts: String(placeholder.ts),
-        text: `:warning: ${(err as Error).message}`,
+        text: errText,
       });
       return;
     }
+
+    // Retry succeeded — NOW commit the new user turn to session history.
+    session.messages.push({ role: "user", content: text });
+    session.turns += 1;
+
+    let full = retryResult.full;
+    const scissorsPrefix = retryResult.scissorsPrefix;
 
     // If the model asked us to delegate a deep code-search round to
     // mra, run it and feed the result back for synthesis.
@@ -630,7 +648,7 @@ export class SlackAdapter {
     await this.web.chat.update({
       channel: channelId,
       ts: String(placeholder.ts),
-      text: truncateForSlack(markdownToMrkdwn(visible)),
+      text: scissorsPrefix + truncateForSlack(markdownToMrkdwn(visible)),
     });
   }
 
