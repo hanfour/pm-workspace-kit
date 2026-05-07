@@ -229,6 +229,13 @@ export interface PruneResult {
   tokensAfter: number;
 }
 
+export interface PruneOpts {
+  /** Messages sent on next call but not in session.messages (e.g. retrievalPrefix). */
+  extra?: ChatMessage[];
+  /** New user turn that will be appended to the call payload. */
+  newUser?: string;
+}
+
 /**
  * If a session is approaching context-window saturation, drop the
  * oldest non-seed turns to bring it back under cap. Always preserves:
@@ -245,7 +252,17 @@ export interface PruneResult {
  * for the caller to log. Caller is responsible for calling
  * `saveSession()` afterward so the pruned state hits disk.
  */
-export function pruneSessionIfNeeded(session: SessionLike): PruneResult {
+export function pruneSessionIfNeeded(
+  session: SessionLike,
+  opts: PruneOpts = {},
+): PruneResult {
+  const extras: ChatMessage[] = [
+    ...(opts.extra ?? []),
+    ...(opts.newUser ? [{ role: "user" as const, content: opts.newUser }] : []),
+  ];
+  // Recompute INCLUDING extras so we don't undercount the next call.
+  session.approxTokens = approxTokensFor(session.messages, extras);
+
   if (session.approxTokens <= MAX_SESSION_TOKENS) {
     return {
       pruned: false,
@@ -302,7 +319,7 @@ export function pruneSessionIfNeeded(session: SessionLike): PruneResult {
   };
 
   session.messages = [...seedSlice, marker, ...recent];
-  session.approxTokens = approxTokensFor(session.messages);
+  session.approxTokens = approxTokensFor(session.messages, extras);
   return {
     pruned: true,
     droppedPairs,

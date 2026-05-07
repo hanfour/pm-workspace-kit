@@ -6,6 +6,7 @@ import {
   MAX_SESSION_TOKENS,
   SEED_CAP,
   MRA_RESULT_CAP,
+  pruneSessionIfNeeded,
 } from "../src/gateway/messaging";
 
 describe("capMessageContent", () => {
@@ -55,5 +56,33 @@ describe("approxTokensFor", () => {
     const a = approxTokensFor([{ role: "user", content: "ab" }]);
     const b = approxTokensFor([{ role: "user", content: "ab" }], []);
     assert.equal(a, b);
+  });
+});
+
+describe("pruneSessionIfNeeded with opts", () => {
+  it("recomputes approxTokens including extra+newUser", () => {
+    const session = {
+      messages: [
+        { role: "user" as const, content: "Q" },
+        { role: "assistant" as const, content: "A" },
+      ],
+      approxTokens: 0,
+    };
+    pruneSessionIfNeeded(session, {
+      extra: [{ role: "user", content: "x".repeat(7000) }],
+      newUser: "y".repeat(7000),
+    });
+    assert.ok(session.approxTokens > 3000);
+  });
+  it("backward-compatible: omitted opts behaves like before", () => {
+    const session = {
+      messages: [
+        { role: "user" as const, content: "hi" },
+        { role: "assistant" as const, content: "ok" },
+      ],
+      approxTokens: 0,
+    };
+    const r = pruneSessionIfNeeded(session);
+    assert.equal(r.pruned, false);
   });
 });
