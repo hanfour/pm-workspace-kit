@@ -3,6 +3,28 @@ import type { ChatMessage, PmkConfig } from "@pmk/shared";
 import type { ChatOptions, LlmProvider } from "./provider";
 
 /**
+ * Typed error wrapper for context-window-exhaustion failures coming out
+ * of the underlying SDK. The gateway-level retry path uses this to
+ * trigger a forced prune without relying on string-matching at a
+ * distance.
+ */
+export class PmkContextTooLongError extends Error {
+  readonly cause: unknown;
+  constructor(cause: unknown) {
+    super("PmkContextTooLongError");
+    this.name = "PmkContextTooLongError";
+    this.cause = cause;
+  }
+}
+
+const CONTEXT_TOO_LONG_RE = /msg_too_long|prompt is too long|context.+exceed/i;
+
+export function isContextTooLongError(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  return CONTEXT_TOO_LONG_RE.test(err.message);
+}
+
+/**
  * Delegates to the local `claude` CLI via the Claude Agent SDK, so we
  * inherit whatever auth the user already has (OAuth, subscription, API
  * key, Bedrock, Vertex) without requiring a separate ANTHROPIC_API_KEY.
@@ -29,57 +51,62 @@ export class ClaudeAgentSdkProvider implements LlmProvider {
     messages: ChatMessage[],
     opts: ChatOptions = {},
   ): Promise<string> {
-    const prompt = serialiseHistory(messages);
+    try {
+      const prompt = serialiseHistory(messages);
 
-    // Pass our own systemPrompt as a string — this replaces Claude
-    // Code's `claude_code` preset entirely, so the model should not
-    // think of itself as an agent with tools. `allowedTools: []` is
-    // belt-and-braces: even if a tool sneaks in, it can't execute.
-    //
-    // Note: we previously scoped the main thread to a custom
-    // AgentDefinition to suppress user-skill bleed (e.g. superpowers),
-    // but that *reinforced* agent/tool framing in the model's mind —
-    // responses started announcing "Skill tool → requirement-intake"
-    // instead of just answering. Removing the agent wrapper and
-    // relying on the systemPrompt + prompt discipline produces cleaner
-    // chat turns, at the cost of occasionally seeing a superpowers
-    // banner in the opener. Acceptable trade.
-    const q = query({
-      prompt,
-      options: {
-        model: this.config.model,
-        systemPrompt,
-        includePartialMessages: true,
-        allowedTools: [],
-        permissionMode: "default",
-        ...(this.executablePath
-          ? { pathToClaudeCodeExecutable: this.executablePath }
-          : {}),
-      },
-    });
+      // Pass our own systemPrompt as a string — this replaces Claude
+      // Code's `claude_code` preset entirely, so the model should not
+      // think of itself as an agent with tools. `allowedTools: []` is
+      // belt-and-braces: even if a tool sneaks in, it can't execute.
+      //
+      // Note: we previously scoped the main thread to a custom
+      // AgentDefinition to suppress user-skill bleed (e.g. superpowers),
+      // but that *reinforced* agent/tool framing in the model's mind —
+      // responses started announcing "Skill tool → requirement-intake"
+      // instead of just answering. Removing the agent wrapper and
+      // relying on the systemPrompt + prompt discipline produces cleaner
+      // chat turns, at the cost of occasionally seeing a superpowers
+      // banner in the opener. Acceptable trade.
+      const q = query({
+        prompt,
+        options: {
+          model: this.config.model,
+          systemPrompt,
+          includePartialMessages: true,
+          allowedTools: [],
+          permissionMode: "default",
+          ...(this.executablePath
+            ? { pathToClaudeCodeExecutable: this.executablePath }
+            : {}),
+        },
+      });
 
-    let full = "";
-    for await (const msg of q) {
-      if (msg.type === "stream_event") {
-        const event = msg.event;
-        if (
-          event.type === "content_block_delta" &&
-          event.delta.type === "text_delta"
-        ) {
-          const chunk = event.delta.text;
-          full += chunk;
-          opts.onToken?.(chunk);
+      let full = "";
+      for await (const msg of q) {
+        if (msg.type === "stream_event") {
+          const event = msg.event;
+          if (
+            event.type === "content_block_delta" &&
+            event.delta.type === "text_delta"
+          ) {
+            const chunk = event.delta.text;
+            full += chunk;
+            opts.onToken?.(chunk);
+          }
+        } else if (msg.type === "result") {
+          if (msg.subtype !== "success") {
+            throw new Error(
+              `[pmk] claude-agent returned non-success: ${msg.subtype}`,
+            );
+          }
+          break;
         }
-      } else if (msg.type === "result") {
-        if (msg.subtype !== "success") {
-          throw new Error(
-            `[pmk] claude-agent returned non-success: ${msg.subtype}`,
-          );
-        }
-        break;
       }
+      return full;
+    } catch (err) {
+      if (isContextTooLongError(err)) throw new PmkContextTooLongError(err);
+      throw err;
     }
-    return full;
   }
 }
 
