@@ -367,6 +367,36 @@ describe("gateway events log (#24)", () => {
     assert.ok(allMarkers.includes("IN_WINDOW"));
   });
 
+  it("round-trips context.exceeded / context.force-pruned / message.capped", async () => {
+    const { appendGatewayEvent, readGatewayEvents } =
+      await import("../src/gateway/events");
+    appendGatewayEvent({
+      type: "context.exceeded",
+      actor: "Uabc",
+      sessionTokensBefore: 31578,
+      retrievalAtoms: 1,
+      phase: "first-call",
+    });
+    appendGatewayEvent({
+      type: "context.force-pruned",
+      actor: "Uabc",
+      droppedPairs: 4,
+      tokensAfter: 1200,
+    });
+    appendGatewayEvent({
+      type: "message.capped",
+      actor: "Uabc",
+      kind: "seed",
+      originalChars: 88292,
+      cappedChars: 12000,
+    });
+    const events = readGatewayEvents({});
+    const types = events.map((e) => e.type);
+    assert.ok(types.includes("context.exceeded"));
+    assert.ok(types.includes("context.force-pruned"));
+    assert.ok(types.includes("message.capped"));
+  });
+
   it("legacy events.log with mixed valid + malformed lines: malformed are skipped, valid still parse", async () => {
     const { readGatewayEvents } = await import("../src/gateway/events");
     const gatewayDir = path.join(tmpHome, ".pmk", "gateway");

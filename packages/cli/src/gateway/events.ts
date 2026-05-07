@@ -105,12 +105,62 @@ export interface GatewayPresenceEvent {
   offlineDurationMs?: number;
 }
 
+/**
+ * Emitted when the model returns a `prompt is too long` 400 at one of
+ * the two budget walls — the first call (seed + history + retrieval)
+ * or the synthesise call (mra-result fold-in). `sessionTokensBefore`
+ * is the gateway's pre-call estimate so audits can correlate against
+ * the model's effective limit and tune the safety margin.
+ * `retrievalAtoms` is captured separately because retrieval payload is
+ * the most common blow-up vector and must be visible without
+ * re-deriving it from elsewhere.
+ */
+export interface ContextExceededEvent {
+  type: "context.exceeded";
+  actor: string;
+  sessionTokensBefore: number;
+  retrievalAtoms: number;
+  phase: "first-call" | "synthesise";
+}
+
+/**
+ * Emitted when the retry-after-context-exceeded path force-prunes the
+ * session below the normal keep-N to make headroom. `droppedPairs`
+ * counts user/assistant pairs evicted; `tokensAfter` is the post-prune
+ * estimate — together they reveal whether the wall is repeatedly hit
+ * on already-small histories (a sign the seed/retrieval cap is the
+ * real culprit, not the rolling history).
+ */
+export interface ContextForcePrunedEvent {
+  type: "context.force-pruned";
+  actor: string;
+  droppedPairs: number;
+  tokensAfter: number;
+}
+
+/**
+ * Emitted when seed input or mra-result payload is hard-capped before
+ * being sent to the model. `originalChars`/`cappedChars` make the
+ * truncation ratio inspectable so operators can see when the cap is
+ * trimming meaningful content vs trailing noise.
+ */
+export interface MessageCappedEvent {
+  type: "message.capped";
+  actor: string;
+  kind: "seed" | "mra-result";
+  originalChars: number;
+  cappedChars: number;
+}
+
 export type GatewayEvent =
   | MraAskEndEvent
   | TurnProcessedEvent
   | EscalateTriggeredEvent
   | EscalateAbsorbedEvent
-  | GatewayPresenceEvent;
+  | GatewayPresenceEvent
+  | ContextExceededEvent
+  | ContextForcePrunedEvent
+  | MessageCappedEvent;
 
 /** What lands on disk: the event plus the ISO timestamp added at append time. */
 export type StoredGatewayEvent = GatewayEvent & { at: string };
@@ -122,6 +172,9 @@ const VALID_TYPES: ReadonlySet<string> = new Set([
   "escalate.absorbed",
   "gateway.online",
   "gateway.offline",
+  "context.exceeded",
+  "context.force-pruned",
+  "message.capped",
 ]);
 
 /**
