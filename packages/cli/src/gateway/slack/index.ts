@@ -56,6 +56,7 @@ import {
   buildMraFailureMessage,
   buildMraSuccessMessage,
   capMessageContent,
+  MRA_RESULT_CAP,
   pruneSessionIfNeeded,
   SEED_CAP,
   truncate,
@@ -993,6 +994,7 @@ export class SlackAdapter {
         firstResponse,
         request,
         systemPrompt,
+        actor,
         result: {
           ok: false,
           stdout: "",
@@ -1089,6 +1091,7 @@ export class SlackAdapter {
       request,
       result,
       systemPrompt,
+      actor,
     });
   }
 
@@ -1105,6 +1108,7 @@ export class SlackAdapter {
     request: { repo: string; question: string };
     result: { ok: boolean; stdout: string; stderr: string; reason?: string };
     systemPrompt: string;
+    actor: string;
   }): Promise<string> {
     const {
       session,
@@ -1113,11 +1117,26 @@ export class SlackAdapter {
       request,
       result,
       systemPrompt,
+      actor,
     } = args;
     session.messages.push({ role: "assistant", content: firstResponse });
-    const mraMessage = result.ok
-      ? buildMraSuccessMessage(request.repo, result.stdout)
-      : buildMraFailureMessage(request.repo, result);
+
+    let mraMessage: string;
+    if (result.ok) {
+      const cap = capMessageContent(result.stdout, MRA_RESULT_CAP);
+      if (cap.capped) {
+        appendGatewayEvent({
+          type: "message.capped",
+          actor,
+          kind: "mra-result",
+          originalChars: cap.originalChars,
+          cappedChars: cap.content.length,
+        });
+      }
+      mraMessage = buildMraSuccessMessage(request.repo, cap.content);
+    } else {
+      mraMessage = buildMraFailureMessage(request.repo, result);
+    }
     session.messages.push({ role: "user", content: mraMessage });
 
     // Retrieval atoms come back here too — synthesis benefits from

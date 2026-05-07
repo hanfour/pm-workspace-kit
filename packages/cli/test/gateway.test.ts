@@ -588,11 +588,15 @@ describe("messaging helpers", () => {
     assert.match(m, /app\/models\/x\.rb/);
   });
 
-  it("buildMraSuccessMessage truncates very long stdout", () => {
+  it("buildMraSuccessMessage no longer truncates internally (caller caps via MRA_RESULT_CAP)", () => {
+    // T9: hardcoded 24_000 cap removed from buildMraSuccessMessage; the
+    // call site in synthesiseAfterMra now applies capMessageContent
+    // with MRA_RESULT_CAP before passing stdout in. The builder itself
+    // is now passthrough — verify it preserves the full payload.
     const big = "x".repeat(40_000);
     const m = buildMraSuccessMessage("erp", big);
-    assert.ok(m.length < 30_000);
-    assert.match(m, /truncated/);
+    assert.ok(m.length >= 40_000);
+    assert.ok(!m.includes("truncated"));
   });
 
   it("buildMraFailureMessage uses 'unknown' when reason missing", () => {

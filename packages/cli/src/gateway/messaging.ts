@@ -141,7 +141,7 @@ export function buildMraSuccessMessage(repo: string, stdout: string): string {
     `這是 \`mra ask ${repo}\` 的回傳結果（請依此 synthesise 最終答案；若這份結果不足，可再 emit 一次 mra-ask，但仍以 PKB + 這份結果優先）：`,
     "",
     "```mra-result",
-    truncate(stdout.trim(), 24_000),
+    stdout.trim(),
     "```",
   ].join("\n");
 }
@@ -179,10 +179,9 @@ export const SEED_CAP = parsePositiveIntEnv("PMK_SEED_CAP", 12_000);
 
 /**
  * Maximum chars for `mra-ask` stdout pushed into session history.
- * Wired into `buildMraSuccessMessage` by a follow-up task (T9 of the
- * v0.11.1 hardening plan); until then the function still uses its
- * pre-existing hard-coded 24_000. Setting `PMK_MRA_RESULT_CAP` only
- * takes effect once that wiring lands.
+ * Applied at the call site in `synthesiseAfterMra` (slack/index.ts)
+ * before passing to `buildMraSuccessMessage`. Override with
+ * `PMK_MRA_RESULT_CAP=…` per host.
  */
 export const MRA_RESULT_CAP = parsePositiveIntEnv(
   "PMK_MRA_RESULT_CAP",
