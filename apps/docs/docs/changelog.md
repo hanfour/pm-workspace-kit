@@ -8,6 +8,42 @@ All notable changes to **pm-workspace-kit** are documented here.
 
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Each release also has a longer narrative on [GitHub Releases](https://github.com/hanfour/pm-workspace-kit/releases) with rationale, dogfood notes, and test plans.
 
+## [v0.11.1] — 2026-05-07 — gateway `msg_too_long` hardening
+
+### Why
+
+A live Slack thread on 2026-05-07 returned `pmk 內部錯誤：An API error occurred: msg_too_long` after several `mra-ask` rounds. Root-cause analysis surfaced four issues and v0.11.1 layers defenses against all of them so the failure mode does not reach production users again. See [`apps/docs/docs/plans/2026-05-07-gateway-msg-too-long-hardening.md`](./plans/2026-05-07-gateway-msg-too-long-hardening.md) for the full design spec, and `2026-05-07-gateway-msg-too-long-hardening-implementation.md` for the per-task TDD plan.
+
+### Fixed
+
+- **`msg_too_long` no longer reaches end users.** Three layered defenses:
+  - (a) `pruneSessionIfNeeded` now runs **before** the LLM call (was after — closed a fail-loop introduced in v0.8.1 where a session over budget could never recover because prune only fired after a successful call).
+  - (b) The PKB seed and `mra-ask` results are capped at write-time so a single bloated message cannot single-handedly exhaust the input window.
+  - (c) Any residual `msg_too_long` triggers a typed `PmkContextTooLongError`, an automatic `forcePruneToMinimum`, and a retry. The reply is prefixed with `:scissors: 對話過長，已自動裁掉 N 輪舊訊息` so users know context was trimmed. Hard failure (both calls reject) shows `:x: 對話太長，請開新 thread 重新提問` instead of the raw API error.
+
+### Changed
+
+- `PMK_MAX_SESSION_TOKENS` default lowered 60_000 → 25_000 to leave headroom for system prompt, retrieval prefix, the SDK-inherited host context (`claude-agent-sdk` spawns the local `claude` CLI, which inherits `~/.claude/` skills/hooks/MCP descriptions), the new turn, and the model's reply.
+
+### Added
+
+- New env vars `PMK_SEED_CAP` (default 12_000 chars) and `PMK_MRA_RESULT_CAP` (default 16_000 chars) for per-host tuning. The previously-hardcoded 24_000-char `mra-ask` truncation in `buildMraSuccessMessage` is replaced by `PMK_MRA_RESULT_CAP`.
+- New event types in `events-YYYY-MM.log`: `context.exceeded` (with `phase: "first-call" | "synthesise"`), `context.force-pruned`, `message.capped` (with `kind: "seed" | "mra-result"`).
+- `pmk gateway audit` gains a `Context safety` section rolling up the new events. Tighten the `*_CAP` env vars if `context.exceeded` appears in your weekly audit.
+- Helper `chatWithContextRetry` extracted to `packages/cli/src/gateway/slack/context-retry.ts` so the retry+force-prune+events pattern is unit-testable in isolation (no `SlackGateway` integration harness needed) and reused at both LLM call sites (`runFreeChatTurn` first-call, `synthesiseAfterMra` mra-ask round).
+
+### Tests
+
+`@pmk/cli` 274 → **304** (+30): unit coverage for `capMessageContent`, `forcePruneToMinimum`, `pruneSessionIfNeeded` extras-aware budgeting, `approxTokensFor` with `extra` param, `PmkContextTooLongError` detection, the six-discriminant `chatWithContextRetry` (happy / non-context error / context-then-success-with-scissors / context-then-fail / `dropped=0` degenerate / `phase=synthesise` audit), audit `contextSafety` rollup, formatter `Context safety` section non-zero + zero-count rendering, and the three new event-type round-trip in `gateway-events.test.ts`.
+
+The seed-cap and mra-result-cap wiring sites in `slack/index.ts` and the `runFreeChatTurn` retry-prefix wiring rely on the constituent helpers' unit tests + manual verification (no `SlackGateway` integration harness in this release; tracked as a follow-up).
+
+### Forward-looking
+
+v0.12 is planned to switch the gateway provider from `claude-agent-sdk` to `anthropic-api`, removing the SDK-inherited host-context as a budget unknown. The cap mechanism from v0.11.1 stays; only the budgets relax toward the model's true context window. See the v0.12 stub at the end of the v0.11.1 design spec.
+
+---
+
 ## [v0.11.0] — 2026-05-05 — gateway presence + per-channel audience + monthly audit logs
 
 [GitHub release](https://github.com/hanfour/pm-workspace-kit/releases/tag/v0.11.0) · closes [#23](https://github.com/hanfour/pm-workspace-kit/issues/23), [#44](https://github.com/hanfour/pm-workspace-kit/issues/44) · milestone [v0.11](https://github.com/hanfour/pm-workspace-kit/milestone/8)
