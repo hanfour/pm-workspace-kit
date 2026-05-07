@@ -167,6 +167,53 @@ describe("chatWithContextRetry (T11)", () => {
     }
   });
 
+  it("phase=synthesise: emits context.exceeded with phase='synthesise' (T12)", async () => {
+    const { chatWithContextRetry } = await import(
+      "../src/gateway/slack/context-retry"
+    );
+    const { PmkContextTooLongError } = await import(
+      "../src/llm/claude-agent"
+    );
+    const { readGatewayEvents } = await import("../src/gateway/events");
+    let calls = 0;
+    const llm = {
+      chat: async () => {
+        calls++;
+        if (calls === 1)
+          throw new PmkContextTooLongError(new Error("msg_too_long"));
+        return "synth ok";
+      },
+    };
+    const SEED = "我先把 workspace 的 PKB context 給你 …";
+    const session = {
+      messages: [
+        { role: "user" as const, content: SEED },
+        { role: "assistant" as const, content: "ok" },
+        { role: "user" as const, content: "Q1" },
+        { role: "assistant" as const, content: "A1" },
+        { role: "user" as const, content: "Q2" },
+        { role: "assistant" as const, content: "A2" },
+      ],
+      approxTokens: 8_000,
+    };
+    const r = await chatWithContextRetry({
+      llm,
+      systemPrompt: "sys",
+      buildMessages: () => session.messages,
+      session,
+      actor: "Uabc",
+      retrievalAtoms: 1,
+      phase: "synthesise",
+    });
+    assert.equal(r.ok, true);
+    const events = readGatewayEvents({});
+    const exc = events.find((e) => e.type === "context.exceeded");
+    assert.ok(exc, "expected context.exceeded event");
+    if (exc && exc.type === "context.exceeded") {
+      assert.equal(exc.phase, "synthesise");
+    }
+  });
+
   it("dropped=0 (degenerate session): scissorsPrefix is empty even on retry success", async () => {
     const { chatWithContextRetry } = await import(
       "../src/gateway/slack/context-retry"

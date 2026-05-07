@@ -34,6 +34,7 @@ import {
 import type { ChatMessage } from "@pmk/shared";
 import { pickGatewayPrompt } from "@pmk/shared";
 import { resolveProvider, type LlmProvider } from "../../llm";
+import { PmkContextTooLongError } from "../../llm/claude-agent";
 import { loadConfig as loadCliConfig } from "../../config";
 import { PROMPT_CASE } from "../../prompts";
 import {
@@ -596,22 +597,43 @@ export class SlackAdapter {
     session.turns += 1;
 
     let full = retryResult.full;
-    const scissorsPrefix = retryResult.scissorsPrefix;
+    let scissorsPrefix = retryResult.scissorsPrefix;
 
     // If the model asked us to delegate a deep code-search round to
     // mra, run it and feed the result back for synthesis.
     const askReq = parseMraAsk(full);
     if (askReq) {
-      full = await this.handleMraAskRound({
-        channelId,
-        placeholderTs: String(placeholder.ts),
-        session,
-        retrievalPrefix,
-        firstResponse: full,
-        request: askReq,
-        systemPrompt,
-        actor: userId,
-      });
+      try {
+        const mraResult = await this.handleMraAskRound({
+          channelId,
+          placeholderTs: String(placeholder.ts),
+          session,
+          retrievalPrefix,
+          retrievalAtoms: retrieved.length,
+          firstResponse: full,
+          request: askReq,
+          systemPrompt,
+          actor: userId,
+        });
+        full = mraResult.full;
+        // T12: if the synthesise round ALSO needed force-prune, the
+        // post-prune scissors notice more accurately reflects the final
+        // session state than the first-call notice. Two notices stacked
+        // would just confuse the user, so the latter wins.
+        if (mraResult.scissorsPrefix) {
+          scissorsPrefix = mraResult.scissorsPrefix;
+        }
+      } catch (err) {
+        if (err instanceof PmkContextTooLongError) {
+          await this.web.chat.update({
+            channel: channelId,
+            ts: String(placeholder.ts),
+            text: ":x: 對話太長，請開新 thread 重新提問",
+          });
+          return;
+        }
+        throw err;
+      }
     }
 
     // If the model asked to escalate to a human IT/domain expert, fan
@@ -988,18 +1010,23 @@ export class SlackAdapter {
     /** Retrieval atoms injected into the first LLM call; passed
      * through so the synthesis round still sees them. */
     retrievalPrefix: ChatMessage[];
+    /** Atom count corresponding to retrievalPrefix; threaded through
+     * to synthesiseAfterMra → chatWithContextRetry so the
+     * `context.exceeded` audit event records it accurately. */
+    retrievalAtoms: number;
     firstResponse: string;
     request: { repo: string; question: string };
     systemPrompt: string;
     /** Slack user ID that triggered this round — recorded in the
      * audit event so per-user mra-ask cost is attributable. */
     actor: string;
-  }): Promise<string> {
+  }): Promise<{ full: string; scissorsPrefix: string }> {
     const {
       channelId,
       placeholderTs,
       session,
       retrievalPrefix,
+      retrievalAtoms,
       firstResponse,
       request,
       systemPrompt,
@@ -1014,6 +1041,7 @@ export class SlackAdapter {
       return await this.synthesiseAfterMra({
         session,
         retrievalPrefix,
+        retrievalAtoms,
         firstResponse,
         request,
         systemPrompt,
@@ -1110,6 +1138,7 @@ export class SlackAdapter {
     return await this.synthesiseAfterMra({
       session,
       retrievalPrefix,
+      retrievalAtoms,
       firstResponse,
       request,
       result,
@@ -1123,19 +1152,27 @@ export class SlackAdapter {
    * user message into the session, then re-call the LLM. The mra
    * result message is later kept in session history so follow-up
    * turns can reference it.
+   *
+   * T12: wrapped in `chatWithContextRetry` (phase="synthesise") so a
+   * post-mra-ask blow-up triggers the same force-prune-and-scissors
+   * recovery path as the first-call site. Throws `PmkContextTooLongError`
+   * when even the post-prune retry can't fit, letting the caller decide
+   * how to surface the failure to Slack (see runFreeChatTurn).
    */
   private async synthesiseAfterMra(args: {
     session: FreeChatSession;
     retrievalPrefix: ChatMessage[];
+    retrievalAtoms: number;
     firstResponse: string;
     request: { repo: string; question: string };
     result: { ok: boolean; stdout: string; stderr: string; reason?: string };
     systemPrompt: string;
     actor: string;
-  }): Promise<string> {
+  }): Promise<{ full: string; scissorsPrefix: string }> {
     const {
       session,
       retrievalPrefix,
+      retrievalAtoms,
       firstResponse,
       request,
       result,
@@ -1164,11 +1201,28 @@ export class SlackAdapter {
 
     // Retrieval atoms come back here too — synthesis benefits from
     // both the retrieved knowledge AND the fresh mra-result.
-    return await this.llm.chat(
+    const retryResult = await chatWithContextRetry({
+      llm: this.llm,
       systemPrompt,
-      [...retrievalPrefix, ...session.messages],
-      { onToken: () => {} },
-    );
+      buildMessages: () => [...retrievalPrefix, ...session.messages],
+      session,
+      actor,
+      retrievalAtoms,
+      phase: "synthesise",
+      chatOptions: { onToken: () => {} },
+    });
+
+    if (!retryResult.ok) {
+      // Bubble up so the caller (runFreeChatTurn) can post the friendly
+      // ":x: 對話太長…" message. Other (non-context) errors are
+      // re-thrown as-is and caught by the outer Slack handler.
+      if (retryResult.kind === "context") {
+        throw new PmkContextTooLongError(retryResult.secondError);
+      }
+      throw retryResult.error;
+    }
+
+    return { full: retryResult.full, scissorsPrefix: retryResult.scissorsPrefix };
   }
 
   // ────────────────────────── channel logic ──────────────────────────
