@@ -102,10 +102,17 @@ export async function chatWithContextRetry(
 
     try {
       const full = await llm.chat(systemPrompt, buildMessages(), opts);
+      // Suppress the scissors marker when forcePrune had nothing to
+      // drop (degenerate case: very short session that still triggered
+      // msg_too_long, e.g. one giant message). Saying "已裁掉 0 輪"
+      // would be misleading.
       return {
         ok: true,
         full,
-        scissorsPrefix: `:scissors: 對話過長，已自動裁掉 ${dropped} 輪舊訊息\n\n`,
+        scissorsPrefix:
+          dropped > 0
+            ? `:scissors: 對話過長，已自動裁掉 ${dropped} 輪舊訊息\n\n`
+            : "",
       };
     } catch (err2) {
       return {

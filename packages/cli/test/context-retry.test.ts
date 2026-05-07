@@ -166,4 +166,45 @@ describe("chatWithContextRetry (T11)", () => {
       assert.fail("expected kind=context");
     }
   });
+
+  it("dropped=0 (degenerate session): scissorsPrefix is empty even on retry success", async () => {
+    const { chatWithContextRetry } = await import(
+      "../src/gateway/slack/context-retry"
+    );
+    const { PmkContextTooLongError } = await import(
+      "../src/llm/claude-agent"
+    );
+    let calls = 0;
+    const llm = {
+      chat: async () => {
+        calls++;
+        if (calls === 1) throw new PmkContextTooLongError(new Error("msg_too_long"));
+        return "after retry";
+      },
+    };
+    // Session too short for forcePruneToMinimum to drop anything
+    // (only one user/assistant pair, no seed) — should still retry
+    // but suppress the misleading "已裁掉 0 輪" marker.
+    const session = {
+      messages: [
+        { role: "user" as const, content: "Q" },
+        { role: "assistant" as const, content: "A" },
+      ],
+      approxTokens: 1_000,
+    };
+    const r = await chatWithContextRetry({
+      llm,
+      systemPrompt: "sys",
+      buildMessages: () => session.messages,
+      session,
+      actor: "Uabc",
+      retrievalAtoms: 0,
+      phase: "first-call",
+    });
+    assert.equal(r.ok, true);
+    if (r.ok) {
+      assert.equal(r.full, "after retry");
+      assert.equal(r.scissorsPrefix, "");
+    }
+  });
 });
