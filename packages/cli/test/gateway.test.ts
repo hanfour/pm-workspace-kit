@@ -682,7 +682,9 @@ describe("pruneSessionIfNeeded (#18)", () => {
   });
 
   it("prunes oldest pairs when over cap, preserves PKB seed + last K pairs", () => {
-    // 60 pairs × 4 000 chars each ≈ 137k tokens — well over the 60k cap.
+    // 60 pairs × 4 000 chars each ≈ 137k tokens — well over the cap
+    // (which was 60k pre-v0.11.1, 25k from v0.11.1 onward; either way
+    // this fixture exceeds it).
     const session = makeSession({
       pairs: 60,
       contentSize: 4_000,
