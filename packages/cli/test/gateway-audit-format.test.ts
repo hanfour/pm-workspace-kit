@@ -36,6 +36,11 @@ function emptyReport(overrides: Partial<AuditReport> = {}): AuditReport {
       medianAtomsInjectedPerTurn: undefined,
       topContributors: [],
     },
+    contextSafety: {
+      contextExceeded: { total: 0, firstCall: 0, synthesise: 0 },
+      contextForcePruned: 0,
+      messageCapped: { total: 0, seed: 0, mraResult: 0 },
+    },
     flags: [],
     ...overrides,
   };

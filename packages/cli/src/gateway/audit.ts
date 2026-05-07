@@ -62,6 +62,16 @@ export interface AuditReport {
     /** Lifetime, by source.contributorUserId. */
     topContributors: Array<{ userId: string; count: number }>;
   };
+  /**
+   * v0.11.1: rollup of context-safety events written by the gateway
+   * when budget caps and the msg_too_long retry path fire. Operators
+   * use these counts to decide whether to tighten PMK_*_CAP env vars.
+   */
+  contextSafety: {
+    contextExceeded: { total: number; firstCall: number; synthesise: number };
+    contextForcePruned: number;
+    messageCapped: { total: number; seed: number; mraResult: number };
+  };
   flags: string[];
 }
 
@@ -109,6 +119,14 @@ export function buildAuditReport(
   const triggeredAt = new Map<string, number[]>();
   const replyDurations: number[] = [];
 
+  let ctxExc = 0,
+    ctxExcFirst = 0,
+    ctxExcSynth = 0;
+  let ctxForcePruned = 0;
+  let msgCap = 0,
+    msgCapSeed = 0,
+    msgCapMra = 0;
+
   for (const e of events) {
     switch (e.type) {
       case "turn.processed":
@@ -149,6 +167,19 @@ export function buildAuditReport(
         }
         break;
       }
+      case "context.exceeded":
+        ctxExc++;
+        if (e.phase === "first-call") ctxExcFirst++;
+        else if (e.phase === "synthesise") ctxExcSynth++;
+        break;
+      case "context.force-pruned":
+        ctxForcePruned++;
+        break;
+      case "message.capped":
+        msgCap++;
+        if (e.kind === "seed") msgCapSeed++;
+        else if (e.kind === "mra-result") msgCapMra++;
+        break;
     }
   }
 
@@ -211,6 +242,19 @@ export function buildAuditReport(
       retrievalInjections,
       medianAtomsInjectedPerTurn: median(injectedSamples),
       topContributors: rank(contributors, "userId", "count"),
+    },
+    contextSafety: {
+      contextExceeded: {
+        total: ctxExc,
+        firstCall: ctxExcFirst,
+        synthesise: ctxExcSynth,
+      },
+      contextForcePruned: ctxForcePruned,
+      messageCapped: {
+        total: msgCap,
+        seed: msgCapSeed,
+        mraResult: msgCapMra,
+      },
     },
     flags,
   };
