@@ -287,8 +287,10 @@ export function pruneSessionIfNeeded(
     msgs.length - seedEnd - 1 <= KEEP_RECENT_TURNS * 2
   ) {
     // We've already pruned and not enough new turns have accumulated
-    // to need another pass. Recompute tokens just in case.
-    session.approxTokens = approxTokensFor(msgs);
+    // to need another pass. Recompute tokens just in case — include
+    // extras so the post-call invariant is consistent across all
+    // return paths (downstream callers see a single, comparable value).
+    session.approxTokens = approxTokensFor(msgs, extras);
     return {
       pruned: false,
       droppedPairs: 0,
