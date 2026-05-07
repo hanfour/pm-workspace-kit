@@ -533,6 +533,21 @@ export class SlackAdapter {
           },
         ]
       : [];
+
+    // v0.11.1: prune BEFORE the LLM call so a bloated session can be
+    // trimmed on its way in, not after it has already triggered
+    // msg_too_long. Includes retrievalPrefix and the new user turn in
+    // the budget check so the prune reflects what we'll actually send.
+    const pruneReport = pruneSessionIfNeeded(session, {
+      extra: retrievalPrefix,
+      newUser: text,
+    });
+    if (pruneReport.pruned) {
+      this.onLog(
+        `pruned session: dropped ${pruneReport.droppedPairs} turn-pair(s); now ${pruneReport.tokensAfter} approx tokens`,
+      );
+    }
+
     const llmMessages: ChatMessage[] = [
       ...retrievalPrefix,
       ...session.messages,
@@ -602,16 +617,6 @@ export class SlackAdapter {
     session.messages.push({ role: "assistant", content: visible });
     session.approxTokens = approxTokensFor(session.messages);
 
-    // v0.8.1: trim long histories before persisting. Idempotent — only
-    // fires when over MAX_SESSION_TOKENS; preserves PKB seed + last
-    // KEEP_RECENT_TURNS pairs; inserts a "(此處省略...)" marker for
-    // the model to see there was earlier history.
-    const pruneReport = pruneSessionIfNeeded(session);
-    if (pruneReport.pruned) {
-      this.onLog(
-        `pruned session: dropped ${pruneReport.droppedPairs} turn-pair(s); now ${pruneReport.tokensAfter} approx tokens`,
-      );
-    }
     saveSession(session);
 
     appendGatewayEvent({
