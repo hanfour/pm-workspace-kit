@@ -51,6 +51,7 @@ import { createLastLineThrottle } from "../throttle";
 import { sanitizeProgressLine } from "./progress";
 import { parseMraAsk, stripMraAskBlock } from "../mra-ask";
 import {
+  approxTokensFor,
   buildIngestSeed,
   buildMraFailureMessage,
   buildMraSuccessMessage,
@@ -126,14 +127,6 @@ export function slashCommandArgsFromBody(
  * noisy workspaces while keeping memory bounded for long-running hosts.
  */
 const SEEN_ENVELOPES_MAX = 2000;
-
-/** Approximate token cost from a list of messages. ~3.5 chars/token,
- * matching the existing per-turn heuristic. */
-function approxTokensFor(messages: ChatMessage[]): number {
-  let total = 0;
-  for (const m of messages) total += m.content.length;
-  return Math.ceil(total / 3.5);
-}
 
 export interface SlackBotInfo {
   botUserId: string;

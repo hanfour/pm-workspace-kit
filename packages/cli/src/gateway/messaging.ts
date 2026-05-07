@@ -206,13 +206,18 @@ interface SessionLike {
 const PKB_SEED_PREFIX = "我先把 workspace 的 PKB context 給你";
 
 /**
- * Estimate token count for a message-array using the same ~3.5
- * chars-per-token heuristic the rest of the gateway uses (matches
- * `approxTokensFor` in slack/index.ts).
+ * Estimate token count for a primary message-array, optionally adding
+ * the cost of an `extra` array (e.g. `retrievalPrefix` content that is
+ * sent to the model on the next call but not stored in
+ * `session.messages`). Uses the same ~3.5 chars-per-token heuristic.
  */
-function approxTokensFor(messages: ChatMessage[]): number {
+export function approxTokensFor(
+  messages: ChatMessage[],
+  extra: ChatMessage[] = [],
+): number {
   let total = 0;
   for (const m of messages) total += m.content.length;
+  for (const m of extra) total += m.content.length;
   return Math.ceil(total / 3.5);
 }
 

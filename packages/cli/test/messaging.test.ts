@@ -1,6 +1,7 @@
 import { describe, it } from "node:test";
 import * as assert from "node:assert/strict";
 import {
+  approxTokensFor,
   capMessageContent,
   MAX_SESSION_TOKENS,
   SEED_CAP,
@@ -36,5 +37,23 @@ describe("messaging cap defaults", () => {
   });
   it("MRA_RESULT_CAP default is 16_000", () => {
     assert.equal(MRA_RESULT_CAP, 16_000);
+  });
+});
+
+describe("approxTokensFor", () => {
+  it("sums primary message content / 3.5", () => {
+    assert.equal(approxTokensFor([{ role: "user", content: "x".repeat(35) }]), 10);
+  });
+  it("includes extra in total", () => {
+    const got = approxTokensFor(
+      [{ role: "user", content: "x".repeat(35) }],
+      [{ role: "user", content: "y".repeat(35) }],
+    );
+    assert.equal(got, 20);
+  });
+  it("backward-compatible: omitted extra ≡ []", () => {
+    const a = approxTokensFor([{ role: "user", content: "ab" }]);
+    const b = approxTokensFor([{ role: "user", content: "ab" }], []);
+    assert.equal(a, b);
   });
 });
