@@ -172,13 +172,17 @@ export const MAX_SESSION_TOKENS = parsePositiveIntEnv(
  * Maximum chars for the PKB seed message pushed at the start of a
  * fresh session. Defaults to 12_000 — generous enough for a multi-
  * repo summary, tight enough that the seed cannot single-handedly
- * exhaust the model's input window.
+ * exhaust the model's input window. Override with `PMK_SEED_CAP=…`
+ * per host.
  */
 export const SEED_CAP = parsePositiveIntEnv("PMK_SEED_CAP", 12_000);
 
 /**
  * Maximum chars for `mra-ask` stdout pushed into session history.
- * Replaces the prior hard-coded 24_000 in `buildMraSuccessMessage`.
+ * Wired into `buildMraSuccessMessage` by a follow-up task (T9 of the
+ * v0.11.1 hardening plan); until then the function still uses its
+ * pre-existing hard-coded 24_000. Setting `PMK_MRA_RESULT_CAP` only
+ * takes effect once that wiring lands.
  */
 export const MRA_RESULT_CAP = parsePositiveIntEnv(
   "PMK_MRA_RESULT_CAP",
