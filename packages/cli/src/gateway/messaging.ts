@@ -328,3 +328,28 @@ export function pruneSessionIfNeeded(
     tokensAfter: session.approxTokens,
   };
 }
+
+/**
+ * Last-resort prune for the msg_too_long retry path. Keeps PKB seed
+ * pair (if present) plus the most-recent user/assistant pair, drops
+ * everything between. Returns dropped (user,assistant) pair count.
+ * Idempotent. Does not consult MAX_SESSION_TOKENS — this is the
+ * absolute floor we'll fall back to when the model has already
+ * rejected the prior payload as too long.
+ */
+export function forcePruneToMinimum(session: SessionLike): number {
+  const msgs = session.messages;
+  const hasPkbSeed =
+    msgs.length >= 2 &&
+    msgs[0].role === "user" &&
+    msgs[0].content.startsWith(PKB_SEED_PREFIX) &&
+    msgs[1].role === "assistant";
+  const seedSlice = hasPkbSeed ? msgs.slice(0, 2) : [];
+  const seedEnd = hasPkbSeed ? 2 : 0;
+  if (msgs.length - seedEnd <= 2) return 0;
+  const droppedPairs = Math.floor((msgs.length - seedEnd - 2) / 2);
+  const tailSlice = msgs.slice(-2);
+  session.messages = [...seedSlice, ...tailSlice];
+  session.approxTokens = approxTokensFor(session.messages);
+  return droppedPairs;
+}

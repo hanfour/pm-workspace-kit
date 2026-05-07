@@ -3,11 +3,14 @@ import * as assert from "node:assert/strict";
 import {
   approxTokensFor,
   capMessageContent,
+  forcePruneToMinimum,
   MAX_SESSION_TOKENS,
   SEED_CAP,
   MRA_RESULT_CAP,
   pruneSessionIfNeeded,
 } from "../src/gateway/messaging";
+
+const SEED = "我先把 workspace 的 PKB context 給你 xxx";
 
 describe("capMessageContent", () => {
   it("returns content unchanged when within limit", () => {
@@ -84,5 +87,46 @@ describe("pruneSessionIfNeeded with opts", () => {
     };
     const r = pruneSessionIfNeeded(session);
     assert.equal(r.pruned, false);
+  });
+});
+
+describe("forcePruneToMinimum", () => {
+  it("keeps seed pair + last pair, returns droppedPairs", () => {
+    const session = {
+      messages: [
+        { role: "user" as const, content: SEED }, { role: "assistant" as const, content: "ok" },
+        { role: "user" as const, content: "Q1" }, { role: "assistant" as const, content: "A1" },
+        { role: "user" as const, content: "Q2" }, { role: "assistant" as const, content: "A2" },
+        { role: "user" as const, content: "Q3" }, { role: "assistant" as const, content: "A3" },
+      ],
+      approxTokens: 0,
+    };
+    const dropped = forcePruneToMinimum(session);
+    assert.equal(dropped, 2);
+    assert.equal(session.messages.length, 4);
+    assert.ok(session.messages[0].content.startsWith("我先把"));
+    assert.equal(session.messages[3].content, "A3");
+  });
+  it("works without seed pair", () => {
+    const session = {
+      messages: [
+        { role: "user" as const, content: "Q1" }, { role: "assistant" as const, content: "A1" },
+        { role: "user" as const, content: "Q2" }, { role: "assistant" as const, content: "A2" },
+      ],
+      approxTokens: 0,
+    };
+    assert.equal(forcePruneToMinimum(session), 1);
+    assert.equal(session.messages[0].content, "Q2");
+  });
+  it("idempotent on already-minimal sessions", () => {
+    const session = {
+      messages: [
+        { role: "user" as const, content: SEED }, { role: "assistant" as const, content: "ok" },
+        { role: "user" as const, content: "Q" }, { role: "assistant" as const, content: "A" },
+      ],
+      approxTokens: 0,
+    };
+    assert.equal(forcePruneToMinimum(session), 0);
+    assert.equal(session.messages.length, 4);
   });
 });
