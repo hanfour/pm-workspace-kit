@@ -1,6 +1,11 @@
 import { describe, it } from "node:test";
 import * as assert from "node:assert/strict";
-import { capMessageContent } from "../src/gateway/messaging";
+import {
+  capMessageContent,
+  MAX_SESSION_TOKENS,
+  SEED_CAP,
+  MRA_RESULT_CAP,
+} from "../src/gateway/messaging";
 
 describe("capMessageContent", () => {
   it("returns content unchanged when within limit", () => {
@@ -19,5 +24,17 @@ describe("capMessageContent", () => {
   });
   it("counts chars not bytes (multibyte safe)", () => {
     assert.equal(capMessageContent("你好你好你好", 10).originalChars, 6);
+  });
+});
+
+describe("messaging cap defaults", () => {
+  it("MAX_SESSION_TOKENS default is 25_000 (v0.11.1)", () => {
+    assert.equal(MAX_SESSION_TOKENS, 25_000);
+  });
+  it("SEED_CAP default is 12_000", () => {
+    assert.equal(SEED_CAP, 12_000);
+  });
+  it("MRA_RESULT_CAP default is 16_000", () => {
+    assert.equal(MRA_RESULT_CAP, 16_000);
   });
 });

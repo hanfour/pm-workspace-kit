@@ -148,21 +148,42 @@ export function buildMraSuccessMessage(repo: string, stdout: string): string {
 
 // ─────────────────── session pruning (v0.8.1, #18) ──────────────────────
 
-/**
- * Soft cap for `session.approxTokens` before pruning kicks in. Set to
- * about 70% of a typical 90k-token gateway-DM context budget — leaves
- * headroom for system prompt + retrieval prefix + the new user turn
- * and the model's reply.
- *
- * Tunable via `PMK_MAX_SESSION_TOKENS` env var so hosts can override
- * without rebuilding (e.g. drop to 30k for cheaper Haiku-tier models
- * or push higher for Opus-tier 200k budgets).
- */
-export const MAX_SESSION_TOKENS = (() => {
-  const raw = process.env.PMK_MAX_SESSION_TOKENS;
+function parsePositiveIntEnv(name: string, fallback: number): number {
+  const raw = process.env[name];
   const parsed = raw ? Number.parseInt(raw, 10) : NaN;
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : 60_000;
-})();
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+/**
+ * Soft cap for `session.approxTokens` before pruning kicks in.
+ * v0.11.1: lowered default from 60_000 → 25_000. The 60k figure
+ * assumed ~70% of a 90k DM-context budget and ignored the host
+ * config that `claude-agent-sdk` inherits when it spawns the local
+ * `claude` CLI. 25k leaves explicit headroom for system prompt +
+ * retrieval prefix + SDK-inherited host context + new turn + reply.
+ * Override with `PMK_MAX_SESSION_TOKENS=…` per host.
+ */
+export const MAX_SESSION_TOKENS = parsePositiveIntEnv(
+  "PMK_MAX_SESSION_TOKENS",
+  25_000,
+);
+
+/**
+ * Maximum chars for the PKB seed message pushed at the start of a
+ * fresh session. Defaults to 12_000 — generous enough for a multi-
+ * repo summary, tight enough that the seed cannot single-handedly
+ * exhaust the model's input window.
+ */
+export const SEED_CAP = parsePositiveIntEnv("PMK_SEED_CAP", 12_000);
+
+/**
+ * Maximum chars for `mra-ask` stdout pushed into session history.
+ * Replaces the prior hard-coded 24_000 in `buildMraSuccessMessage`.
+ */
+export const MRA_RESULT_CAP = parsePositiveIntEnv(
+  "PMK_MRA_RESULT_CAP",
+  16_000,
+);
 
 /** How many recent (user, assistant) pairs to always keep across a prune. */
 export const KEEP_RECENT_TURNS = 10;
