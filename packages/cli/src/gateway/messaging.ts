@@ -22,6 +22,29 @@ export function truncate(s: string, max: number): string {
   return `${s.slice(0, max)}\n…(truncated ${s.length - max} chars)`;
 }
 
+export interface CapResult {
+  content: string;
+  capped: boolean;
+  originalChars: number;
+}
+
+/**
+ * Wraps `truncate` to additionally report whether truncation happened
+ * and the pre-truncation length. Callers (write sites for PKB seed and
+ * mra-results) use the metadata to write `message.capped` audit
+ * events without re-measuring.
+ */
+export function capMessageContent(content: string, limit: number): CapResult {
+  if (content.length <= limit) {
+    return { content, capped: false, originalChars: content.length };
+  }
+  return {
+    content: truncate(content, limit),
+    capped: true,
+    originalChars: content.length,
+  };
+}
+
 /**
  * Build a one-shot seed message containing PKB content for the
  * configured ingest spec. Returns undefined when no PKB is found
