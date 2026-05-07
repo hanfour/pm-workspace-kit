@@ -94,6 +94,20 @@ export function formatAuditReport(report: AuditReport): string {
       ),
   );
 
+  // context safety
+  lines.push("");
+  lines.push(chalk.bold("Context safety"));
+  const cs = report.contextSafety;
+  lines.push(
+    label("context.exceeded:") +
+      `${cs.contextExceeded.total} (first-call ${cs.contextExceeded.firstCall}, synthesise ${cs.contextExceeded.synthesise})`,
+  );
+  lines.push(label("force-pruned:") + cs.contextForcePruned);
+  lines.push(
+    label("messages capped:") +
+      `${cs.messageCapped.total} (seed ${cs.messageCapped.seed}, mra-result ${cs.messageCapped.mraResult})`,
+  );
+
   // flags
   if (report.flags.length > 0) {
     lines.push("");

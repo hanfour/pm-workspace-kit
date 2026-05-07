@@ -175,6 +175,29 @@ describe("formatAuditReport", () => {
     assert.match(out, /U_IT1 ×11.*U_IT2 ×8.*U_IT3 ×5/);
   });
 
+  it("renders Context safety section with non-zero counts", () => {
+    const report = emptyReport();
+    report.contextSafety = {
+      contextExceeded: { total: 2, firstCall: 1, synthesise: 1 },
+      contextForcePruned: 2,
+      messageCapped: { total: 3, seed: 2, mraResult: 1 },
+    };
+    const out = stripAnsi(formatAuditReport(report));
+    assert.match(out, /Context safety/);
+    assert.match(out, /context\.exceeded:\s+2 \(first-call 1, synthesise 1\)/);
+    assert.match(out, /force-pruned:\s+2/);
+    assert.match(out, /messages capped:\s+3 \(seed 2, mra-result 1\)/);
+  });
+
+  it("renders Context safety section with zero counts (always shown)", () => {
+    const report = emptyReport(); // contextSafety already zero from emptyReport helper
+    const out = stripAnsi(formatAuditReport(report));
+    assert.match(out, /Context safety/);
+    assert.match(out, /context\.exceeded:\s+0 \(first-call 0, synthesise 0\)/);
+    assert.match(out, /force-pruned:\s+0/);
+    assert.match(out, /messages capped:\s+0 \(seed 0, mra-result 0\)/);
+  });
+
   it("renders flags section only when there are flags", () => {
     const report = emptyReport({
       flags: [
