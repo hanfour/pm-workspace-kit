@@ -108,6 +108,32 @@ export function formatAuditReport(report: AuditReport): string {
       `${cs.messageCapped.total} (seed ${cs.messageCapped.seed}, mra-result ${cs.messageCapped.mraResult})`,
   );
 
+  // token usage
+  lines.push("");
+  lines.push(chalk.bold("Token usage"));
+  const tu = report.tokenUsage;
+  lines.push(label("total in / out:") + `${formatTokens(tu.total.inputTokens)} / ${formatTokens(tu.total.outputTokens)} tokens`);
+  if (tu.total.cacheReadTokens > 0) {
+    lines.push(label("cache read:") + `${formatTokens(tu.total.cacheReadTokens)} tokens`);
+  }
+  lines.push(
+    label("per-actor (top 3):") +
+      (tu.perActor.length === 0
+        ? chalk.dim("(none)")
+        : tu.perActor
+            .slice(0, 3)
+            .map((e) => `${e.actor} ${formatTokens(e.inputTokens)} in`)
+            .join(", ")),
+  );
+  lines.push(
+    label("per-model:") +
+      (tu.perModel.length === 0
+        ? chalk.dim("(none)")
+        : tu.perModel
+            .map((e) => `${e.model} (${formatTokens(e.inputTokens)} in / ${formatTokens(e.outputTokens)} out)`)
+            .join(", ")),
+  );
+
   // flags
   if (report.flags.length > 0) {
     lines.push("");
@@ -141,6 +167,18 @@ export function formatDurationMs(ms: number | undefined): string {
   const days = Math.floor(hours / 24);
   const remHours = hours % 24;
   return remHours === 0 ? `${days}d` : `${days}d ${remHours}h`;
+}
+
+/**
+ * Render a token count in compact form. 0 → "0" (so empty audits read
+ * naturally). Otherwise sub-1M → "X.Yk" (one decimal, including sub-1k
+ * counts like 700 → "0.7k" for visual alignment with thousands-scale
+ * peers in the same line). >= 1M → "X.YM".
+ */
+export function formatTokens(n: number): string {
+  if (!Number.isFinite(n) || n <= 0) return "0";
+  if (n < 1_000_000) return `${(n / 1000).toFixed(1)}k`;
+  return `${(n / 1_000_000).toFixed(1)}M`;
 }
 
 function label(text: string): string {

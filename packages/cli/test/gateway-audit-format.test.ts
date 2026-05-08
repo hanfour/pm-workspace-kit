@@ -208,6 +208,34 @@ describe("formatAuditReport", () => {
     assert.match(out, /messages capped:\s+0 \(seed 0, mra-result 0\)/);
   });
 
+  it("renders Token usage section with non-zero counts (T8 / v0.12.0)", () => {
+    const report = emptyReport();
+    report.tokenUsage = {
+      total: { inputTokens: 12300, outputTokens: 700, cacheReadTokens: 9000, cacheCreationTokens: 0 },
+      perActor: [
+        { actor: "Uabc", inputTokens: 8200, outputTokens: 500 },
+        { actor: "Udef", inputTokens: 3100, outputTokens: 150 },
+        { actor: "Uxyz", inputTokens: 1000, outputTokens: 50 },
+      ],
+      perModel: [{ model: "claude-sonnet-4-6", inputTokens: 12300, outputTokens: 700 }],
+    };
+    const out = stripAnsi(formatAuditReport(report));
+    assert.match(out, /Token usage/);
+    assert.match(out, /total in \/ out:\s+12\.3k \/ 0\.7k tokens/);
+    assert.match(out, /cache read:\s+9\.0k tokens/);
+    assert.match(out, /per-actor.*Uabc 8\.2k in.*Udef 3\.1k in/);
+    assert.match(out, /per-model:\s+claude-sonnet-4-6 \(12\.3k in \/ 0\.7k out\)/);
+  });
+
+  it("renders Token usage section with zero counts (always shown, no cache line)", () => {
+    const report = emptyReport();
+    const out = stripAnsi(formatAuditReport(report));
+    assert.match(out, /Token usage/);
+    assert.match(out, /total in \/ out:\s+0 \/ 0 tokens/);
+    assert.doesNotMatch(out, /cache read:/);
+    assert.match(out, /per-actor.*\(none\)/);
+  });
+
   it("renders flags section only when there are flags", () => {
     const report = emptyReport({
       flags: [
