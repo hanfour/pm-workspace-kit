@@ -41,6 +41,16 @@ function emptyReport(overrides: Partial<AuditReport> = {}): AuditReport {
       contextForcePruned: 0,
       messageCapped: { total: 0, seed: 0, mraResult: 0 },
     },
+    tokenUsage: {
+      total: {
+        inputTokens: 0,
+        outputTokens: 0,
+        cacheReadTokens: 0,
+        cacheCreationTokens: 0,
+      },
+      perActor: [],
+      perModel: [],
+    },
     flags: [],
     ...overrides,
   };
