@@ -72,6 +72,32 @@ export interface AuditReport {
     contextForcePruned: number;
     messageCapped: { total: number; seed: number; mraResult: number };
   };
+  /**
+   * v0.12.0: per-call token accounting aggregated from `token.usage`
+   * events. Operators use this to attribute spend to actors and gauge
+   * cache effectiveness — high `cacheReadTokens` relative to
+   * `inputTokens` indicates prompt caching is paying off.
+   */
+  tokenUsage: {
+    total: {
+      inputTokens: number;
+      outputTokens: number;
+      cacheReadTokens: number;
+      cacheCreationTokens: number;
+    };
+    /** Top actors by inputTokens, descending. */
+    perActor: Array<{
+      actor: string;
+      inputTokens: number;
+      outputTokens: number;
+    }>;
+    /** Per-model breakdown, sorted by inputTokens descending. */
+    perModel: Array<{
+      model: string;
+      inputTokens: number;
+      outputTokens: number;
+    }>;
+  };
   flags: string[];
 }
 
@@ -127,6 +153,16 @@ export function buildAuditReport(
     msgCapSeed = 0,
     msgCapMra = 0;
 
+  // v0.12.0: token.usage accumulators. Cache fields are optional on the
+  // event (absence ≠ zero), but we collapse "not reported" to 0 in the
+  // rollup since operators just want totals.
+  let tuTotalIn = 0,
+    tuTotalOut = 0,
+    tuCacheRead = 0,
+    tuCacheCreate = 0;
+  const tuPerActor = new Map<string, { in: number; out: number }>();
+  const tuPerModel = new Map<string, { in: number; out: number }>();
+
   for (const e of events) {
     switch (e.type) {
       case "turn.processed":
@@ -180,6 +216,21 @@ export function buildAuditReport(
         if (e.kind === "seed") msgCapSeed++;
         else if (e.kind === "mra-result") msgCapMra++;
         break;
+      case "token.usage": {
+        tuTotalIn += e.inputTokens;
+        tuTotalOut += e.outputTokens;
+        tuCacheRead += e.cacheReadTokens ?? 0;
+        tuCacheCreate += e.cacheCreationTokens ?? 0;
+        const actorAcc = tuPerActor.get(e.actor) ?? { in: 0, out: 0 };
+        actorAcc.in += e.inputTokens;
+        actorAcc.out += e.outputTokens;
+        tuPerActor.set(e.actor, actorAcc);
+        const modelAcc = tuPerModel.get(e.model) ?? { in: 0, out: 0 };
+        modelAcc.in += e.inputTokens;
+        modelAcc.out += e.outputTokens;
+        tuPerModel.set(e.model, modelAcc);
+        break;
+      }
     }
   }
 
@@ -255,6 +306,28 @@ export function buildAuditReport(
         seed: msgCapSeed,
         mraResult: msgCapMra,
       },
+    },
+    tokenUsage: {
+      total: {
+        inputTokens: tuTotalIn,
+        outputTokens: tuTotalOut,
+        cacheReadTokens: tuCacheRead,
+        cacheCreationTokens: tuCacheCreate,
+      },
+      perActor: Array.from(tuPerActor.entries())
+        .map(([actor, v]) => ({
+          actor,
+          inputTokens: v.in,
+          outputTokens: v.out,
+        }))
+        .sort((a, b) => b.inputTokens - a.inputTokens),
+      perModel: Array.from(tuPerModel.entries())
+        .map(([model, v]) => ({
+          model,
+          inputTokens: v.in,
+          outputTokens: v.out,
+        }))
+        .sort((a, b) => b.inputTokens - a.inputTokens),
     },
     flags,
   };

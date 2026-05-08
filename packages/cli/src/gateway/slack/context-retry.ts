@@ -76,7 +76,13 @@ export async function chatWithContextRetry(
     phase,
     chatOptions,
   } = args;
-  const opts: ChatOptions = chatOptions ?? { onToken: () => {} };
+  // v0.12.0: forward actor through to llm.chat() so AnthropicApiKeyProvider
+  // can attribute the token.usage audit event without the helper having
+  // to know which provider is in play.
+  const opts: ChatOptions = {
+    ...(chatOptions ?? { onToken: () => {} }),
+    actor,
+  };
 
   try {
     const full = await llm.chat(systemPrompt, buildMessages(), opts);

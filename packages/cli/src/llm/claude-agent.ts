@@ -29,6 +29,13 @@ export function isContextTooLongError(err: unknown): boolean {
  * inherit whatever auth the user already has (OAuth, subscription, API
  * key, Bedrock, Vertex) without requiring a separate ANTHROPIC_API_KEY.
  *
+ * As of v0.12.0 this provider is the FALLBACK path — `autoResolve`
+ * prefers `AnthropicApiKeyProvider` when an API key is available
+ * because that path does not inherit the host's `~/.claude/` config
+ * (skills/hooks/MCP descriptions) into every system prompt, which
+ * v0.11.x had to absorb via tighter PMK_*_CAP defaults. This provider
+ * still works without code changes; it just no longer defaults.
+ *
  * The SDK is stateful per `query()` call. To keep `LlmProvider.chat`
  * stateless from the caller's perspective, each turn serialises the full
  * history into a single prompt wrapped with transcript markers. This is

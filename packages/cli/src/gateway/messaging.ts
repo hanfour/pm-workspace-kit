@@ -156,36 +156,32 @@ function parsePositiveIntEnv(name: string, fallback: number): number {
 
 /**
  * Soft cap for `session.approxTokens` before pruning kicks in.
- * v0.11.1: lowered default from 60_000 → 25_000. The 60k figure
- * assumed ~70% of a 90k DM-context budget and ignored the host
- * config that `claude-agent-sdk` inherits when it spawns the local
- * `claude` CLI. 25k leaves explicit headroom for system prompt +
- * retrieval prefix + SDK-inherited host context + new turn + reply.
- * Override with `PMK_MAX_SESSION_TOKENS=…` per host.
+ * v0.11.1 lowered to 25_000 to absorb claude-agent-sdk host-context
+ * overhead. v0.12.0: raised back to 60_000 — anthropic-api is now the
+ * default provider and SDK overhead is no longer in play. Tighten with
+ * PMK_MAX_SESSION_TOKENS for hosts on the claude-agent fallback.
  */
 export const MAX_SESSION_TOKENS = parsePositiveIntEnv(
   "PMK_MAX_SESSION_TOKENS",
-  25_000,
+  60_000,
 );
 
 /**
- * Maximum chars for the PKB seed message pushed at the start of a
- * fresh session. Defaults to 12_000 — generous enough for a multi-
- * repo summary, tight enough that the seed cannot single-handedly
- * exhaust the model's input window. Override with `PMK_SEED_CAP=…`
- * per host.
+ * Maximum chars for the PKB seed message. v0.12.0: raised 12_000 →
+ * 30_000 with anthropic-api default. Override with PMK_SEED_CAP=… per
+ * host.
  */
-export const SEED_CAP = parsePositiveIntEnv("PMK_SEED_CAP", 12_000);
+export const SEED_CAP = parsePositiveIntEnv("PMK_SEED_CAP", 30_000);
 
 /**
  * Maximum chars for `mra-ask` stdout pushed into session history.
- * Applied at the call site in `synthesiseAfterMra` (slack/index.ts)
- * before passing to `buildMraSuccessMessage`. Override with
- * `PMK_MRA_RESULT_CAP=…` per host.
+ * v0.12.0: raised 16_000 → 40_000. Wired into capMessageContent at
+ * the synthesiseAfterMra call site (slack/index.ts). Override with
+ * PMK_MRA_RESULT_CAP=… per host.
  */
 export const MRA_RESULT_CAP = parsePositiveIntEnv(
   "PMK_MRA_RESULT_CAP",
-  16_000,
+  40_000,
 );
 
 /** How many recent (user, assistant) pairs to always keep across a prune. */

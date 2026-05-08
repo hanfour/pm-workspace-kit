@@ -152,6 +152,25 @@ export interface MessageCappedEvent {
   cappedChars: number;
 }
 
+/**
+ * Per-call token accounting (v0.12.0). Emitted once per model round so
+ * audits can attribute spend to the actor and reveal cache effectiveness
+ * (cache reads are billed at a fraction of input tokens). The cache
+ * fields are optional because not every provider/model surfaces them —
+ * absence means "not reported", not "zero".
+ */
+export interface TokenUsageEvent {
+  type: "token.usage";
+  actor: string;
+  provider: "anthropic-api" | "claude-agent";
+  model: string;
+  inputTokens: number;
+  outputTokens: number;
+  /** Present only when prompt caching was active. */
+  cacheReadTokens?: number;
+  cacheCreationTokens?: number;
+}
+
 export type GatewayEvent =
   | MraAskEndEvent
   | TurnProcessedEvent
@@ -160,7 +179,8 @@ export type GatewayEvent =
   | GatewayPresenceEvent
   | ContextExceededEvent
   | ContextForcePrunedEvent
-  | MessageCappedEvent;
+  | MessageCappedEvent
+  | TokenUsageEvent;
 
 /** What lands on disk: the event plus the ISO timestamp added at append time. */
 export type StoredGatewayEvent = GatewayEvent & { at: string };
@@ -175,6 +195,7 @@ const VALID_TYPES: ReadonlySet<string> = new Set([
   "context.exceeded",
   "context.force-pruned",
   "message.capped",
+  "token.usage",
 ]);
 
 /**

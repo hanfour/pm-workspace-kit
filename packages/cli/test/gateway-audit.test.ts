@@ -508,4 +508,57 @@ describe("gateway audit aggregator (#24)", () => {
     assert.equal(buildAuditReport({ days: NaN }).windowDays, 7);
     assert.equal(buildAuditReport({ days: 14 }).windowDays, 14);
   });
+
+  it("tokenUsage aggregates token.usage events (T7 / v0.12.0)", async () => {
+    const { appendGatewayEvent } = await import("../src/gateway/events");
+    const { buildAuditReport } = await import("../src/gateway/audit");
+    const now = Date.now();
+    appendGatewayEvent({
+      type: "token.usage",
+      actor: "Uabc",
+      provider: "anthropic-api",
+      model: "claude-sonnet-4-6",
+      inputTokens: 1000,
+      outputTokens: 100,
+    });
+    appendGatewayEvent({
+      type: "token.usage",
+      actor: "Uabc",
+      provider: "anthropic-api",
+      model: "claude-sonnet-4-6",
+      inputTokens: 2000,
+      outputTokens: 200,
+      cacheReadTokens: 500,
+    });
+    appendGatewayEvent({
+      type: "token.usage",
+      actor: "Udef",
+      provider: "anthropic-api",
+      model: "claude-sonnet-4-6",
+      inputTokens: 3000,
+      outputTokens: 300,
+    });
+
+    const report = buildAuditReport({ days: 30, nowMs: now });
+    assert.equal(report.tokenUsage.total.inputTokens, 6000);
+    assert.equal(report.tokenUsage.total.outputTokens, 600);
+    assert.equal(report.tokenUsage.total.cacheReadTokens, 500);
+    assert.equal(report.tokenUsage.total.cacheCreationTokens, 0);
+
+    // Per-actor: both Uabc and Udef have inputTokens=3000 — order between
+    // them is implementation-defined for ties (stable sort + Map insertion
+    // order), so assert order-agnostically.
+    const top = report.tokenUsage.perActor;
+    assert.equal(top.length, 2);
+    const byActor = Object.fromEntries(top.map((t) => [t.actor, t]));
+    assert.equal(byActor.Uabc.inputTokens, 3000);
+    assert.equal(byActor.Uabc.outputTokens, 300);
+    assert.equal(byActor.Udef.inputTokens, 3000);
+    assert.equal(byActor.Udef.outputTokens, 300);
+
+    assert.equal(report.tokenUsage.perModel.length, 1);
+    assert.equal(report.tokenUsage.perModel[0].model, "claude-sonnet-4-6");
+    assert.equal(report.tokenUsage.perModel[0].inputTokens, 6000);
+    assert.equal(report.tokenUsage.perModel[0].outputTokens, 600);
+  });
 });

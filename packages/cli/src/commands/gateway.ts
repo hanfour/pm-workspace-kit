@@ -206,6 +206,31 @@ async function initCmd(): Promise<void> {
       );
     }
 
+    println("");
+    println(
+      chalk.dim(
+        "  v0.12+: pmk gateway prefers the Anthropic API directly (no SDK overhead).",
+      ),
+    );
+    println(
+      chalk.dim(
+        "    If you skip this prompt, set ANTHROPIC_API_KEY in your environment, or",
+      ),
+    );
+    println(
+      chalk.dim(
+        "    keep the legacy claude-agent path with PMK_PROVIDER=claude-agent.",
+      ),
+    );
+    const apiKeyInput = (
+      await rl.question(
+        chalk.cyan(
+          `Anthropic API key (sk-ant-...) ${existing.apiKey ? "[unchanged on enter]" : "[blank to use env var]"}: `,
+        ),
+      )
+    ).trim();
+    const apiKey = apiKeyInput || existing.apiKey;
+
     const cfg = {
       version: 1 as const,
       blocklist: existing.blocklist,
@@ -214,6 +239,7 @@ async function initCmd(): Promise<void> {
       mraWorkspace,
       audience: existing.audience,
       escalation: existing.escalation,
+      ...(apiKey ? { apiKey } : {}),
       slack: { appToken, botToken },
     };
     if (!hasValidSlackTokens(cfg)) {
