@@ -2,6 +2,13 @@ import type { ChatMessage, LlmProviderName } from "@pmk/shared";
 
 export interface ChatOptions {
   onToken?: (chunk: string) => void;
+  /**
+   * Slack user ID (or "cli:<name>" for CLI invocations) the call is on
+   * behalf of. Used by AnthropicApiKeyProvider to attribute the
+   * `token.usage` audit event. Optional — providers that don't emit
+   * usage events ignore it; if undefined no event is written.
+   */
+  actor?: string;
 }
 
 export interface LlmProvider {
