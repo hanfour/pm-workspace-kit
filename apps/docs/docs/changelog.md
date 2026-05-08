@@ -8,6 +8,39 @@ All notable changes to **pm-workspace-kit** are documented here.
 
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Each release also has a longer narrative on [GitHub Releases](https://github.com/hanfour/pm-workspace-kit/releases) with rationale, dogfood notes, and test plans.
 
+## [v0.12.0] — 2026-05-08 — gateway: anthropic-api as default provider
+
+### Why
+
+v0.11.1 hardened the gateway against `msg_too_long` by lowering caps and adding an auto-retry path, but cause #2 from the 2026-05-07 incident — `claude-agent-sdk` spawning the local `claude` CLI and inheriting the host's `~/.claude/` config (skills/hooks/MCP descriptions) as un-budgeted system context — was absorbed by tighter caps, not eliminated. v0.12.0 flips the default to the direct Anthropic SDK so SDK overhead is no longer a budget unknown, and restores cap headroom.
+
+Spec: [`apps/docs/docs/plans/2026-05-08-gateway-anthropic-api-default.md`](./plans/2026-05-08-gateway-anthropic-api-default.md). Migration: [v0.12 migration notes](./gateway/v0.12-migration.md).
+
+### Changed
+
+- **Default LLM provider auto-resolves to `anthropic-api` first** (was `claude-agent`). Soft flip — users with `ANTHROPIC_API_KEY` set auto-switch; users without it stay on `claude-agent` with no behavioural change. `PMK_PROVIDER=claude-agent` still pins the legacy path explicitly.
+- **Cap defaults restored to operationally useful values** now that SDK overhead is gone on the default path:
+  - `PMK_MAX_SESSION_TOKENS` 25_000 → 60_000
+  - `PMK_SEED_CAP` 12_000 → 30_000
+  - `PMK_MRA_RESULT_CAP` 16_000 → 40_000
+- **`gateway init` prompts for `ANTHROPIC_API_KEY`** after Slack tokens; stored in `~/.pmk/gateway.json` `apiKey` field at mode 0600. Empty input keeps existing value or falls back to env var. The running gateway daemon needs a graceful restart to pick up a newly-set apiKey (matches the existing audience/escalation config-mutation pattern).
+
+### Added
+
+- **`token.usage` event** in `events-YYYY-MM.log` — emitted by `AnthropicApiKeyProvider.chat()` after each successful stream completion, when an `actor` is provided in `ChatOptions`. Fields: `actor`, `provider`, `model`, `inputTokens`, `outputTokens`, optional `cacheReadTokens` / `cacheCreationTokens`. Best-effort write — failures don't break the chat.
+- **`Token usage` section** in `pmk gateway audit` rolls up the new events: total in/out, cache read (when non-zero), top-3 per-actor by input tokens, per-model breakdown.
+- **`ChatOptions.actor`** optional field on the `LlmProvider.chat()` interface for usage attribution. Threaded through `chatWithContextRetry` automatically; CLI command-side wiring is future work.
+
+### Tests
+
+`@pmk/cli` 304 → **312** (+8): `resolver.ts` autoResolve order (apiKey-preferred + fail path), `AnthropicApiKeyProvider.chat()` token-usage emission with mocked stream + `finalMessage()`, no-emission when actor undefined, `events.ts` round-trip for `token.usage`, `audit.ts` aggregation, `audit-format.ts` `Token usage` rendering for non-zero + zero cases. Cap-default test assertions flipped from v0.11.1 values to v0.12.0 values.
+
+### Forward-looking
+
+`claude-agent` provider stays as a soft-flip fallback indefinitely. Re-evaluate deprecation in v0.13+ based on usage data from the new `Token usage` audit section. $-cost calculation is a v0.13+ candidate, gated on a stable price-table source. SlackGateway integration harness remains tracked as a v0.11.2 follow-up.
+
+---
+
 ## [v0.11.1] — 2026-05-07 — gateway `msg_too_long` hardening
 
 ### Why
