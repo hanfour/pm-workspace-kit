@@ -397,6 +397,23 @@ describe("gateway events log (#24)", () => {
     assert.ok(types.includes("message.capped"));
   });
 
+  it("round-trips token.usage event (T2 / v0.12.0)", async () => {
+    const { appendGatewayEvent, readGatewayEvents } =
+      await import("../src/gateway/events");
+    appendGatewayEvent({
+      type: "token.usage",
+      actor: "Uabc",
+      provider: "anthropic-api",
+      model: "claude-sonnet-4-6",
+      inputTokens: 12345,
+      outputTokens: 678,
+      cacheReadTokens: 9000,
+      cacheCreationTokens: 0,
+    });
+    const types = readGatewayEvents({}).map((e) => e.type);
+    assert.ok(types.includes("token.usage"));
+  });
+
   it("legacy events.log with mixed valid + malformed lines: malformed are skipped, valid still parse", async () => {
     const { readGatewayEvents } = await import("../src/gateway/events");
     const gatewayDir = path.join(tmpHome, ".pmk", "gateway");
