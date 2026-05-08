@@ -32,15 +32,15 @@ describe("capMessageContent", () => {
   });
 });
 
-describe("messaging cap defaults", () => {
-  it("MAX_SESSION_TOKENS default is 25_000 (v0.11.1)", () => {
-    assert.equal(MAX_SESSION_TOKENS, 25_000);
+describe("messaging cap defaults (v0.12.0)", () => {
+  it("MAX_SESSION_TOKENS default is 60_000", () => {
+    assert.equal(MAX_SESSION_TOKENS, 60_000);
   });
-  it("SEED_CAP default is 12_000", () => {
-    assert.equal(SEED_CAP, 12_000);
+  it("SEED_CAP default is 30_000", () => {
+    assert.equal(SEED_CAP, 30_000);
   });
-  it("MRA_RESULT_CAP default is 16_000", () => {
-    assert.equal(MRA_RESULT_CAP, 16_000);
+  it("MRA_RESULT_CAP default is 40_000", () => {
+    assert.equal(MRA_RESULT_CAP, 40_000);
   });
 });
 
