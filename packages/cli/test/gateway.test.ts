@@ -588,11 +588,15 @@ describe("messaging helpers", () => {
     assert.match(m, /app\/models\/x\.rb/);
   });
 
-  it("buildMraSuccessMessage truncates very long stdout", () => {
+  it("buildMraSuccessMessage no longer truncates internally (caller caps via MRA_RESULT_CAP)", () => {
+    // T9: hardcoded 24_000 cap removed from buildMraSuccessMessage; the
+    // call site in synthesiseAfterMra now applies capMessageContent
+    // with MRA_RESULT_CAP before passing stdout in. The builder itself
+    // is now passthrough — verify it preserves the full payload.
     const big = "x".repeat(40_000);
     const m = buildMraSuccessMessage("erp", big);
-    assert.ok(m.length < 30_000);
-    assert.match(m, /truncated/);
+    assert.ok(m.length >= 40_000);
+    assert.ok(!m.includes("truncated"));
   });
 
   it("buildMraFailureMessage uses 'unknown' when reason missing", () => {
@@ -678,7 +682,9 @@ describe("pruneSessionIfNeeded (#18)", () => {
   });
 
   it("prunes oldest pairs when over cap, preserves PKB seed + last K pairs", () => {
-    // 60 pairs × 4 000 chars each ≈ 137k tokens — well over the 60k cap.
+    // 60 pairs × 4 000 chars each ≈ 137k tokens — well over the cap
+    // (which was 60k pre-v0.11.1, 25k from v0.11.1 onward; either way
+    // this fixture exceeds it).
     const session = makeSession({
       pairs: 60,
       contentSize: 4_000,

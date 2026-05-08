@@ -443,6 +443,64 @@ describe("gateway audit aggregator (#24)", () => {
     );
   });
 
+  it("contextSafety counts the new context.* and message.capped events", async () => {
+    const at = new Date().toISOString();
+    seedEvent(tmpHome, at, {
+      type: "context.exceeded",
+      actor: "Uabc",
+      sessionTokensBefore: 30000,
+      retrievalAtoms: 1,
+      phase: "first-call",
+    });
+    seedEvent(tmpHome, at, {
+      type: "context.exceeded",
+      actor: "Udef",
+      sessionTokensBefore: 28000,
+      retrievalAtoms: 0,
+      phase: "synthesise",
+    });
+    seedEvent(tmpHome, at, {
+      type: "context.force-pruned",
+      actor: "Uabc",
+      droppedPairs: 4,
+      tokensAfter: 1200,
+    });
+    seedEvent(tmpHome, at, {
+      type: "context.force-pruned",
+      actor: "Udef",
+      droppedPairs: 3,
+      tokensAfter: 1500,
+    });
+    seedEvent(tmpHome, at, {
+      type: "message.capped",
+      actor: "Uabc",
+      kind: "seed",
+      originalChars: 88292,
+      cappedChars: 12000,
+    });
+    seedEvent(tmpHome, at, {
+      type: "message.capped",
+      actor: "Uabc",
+      kind: "seed",
+      originalChars: 70000,
+      cappedChars: 12000,
+    });
+    seedEvent(tmpHome, at, {
+      type: "message.capped",
+      actor: "Udef",
+      kind: "mra-result",
+      originalChars: 30000,
+      cappedChars: 16000,
+    });
+    const { buildAuditReport } = await import("../src/gateway/audit");
+    const report = buildAuditReport({ days: 30 });
+    assert.deepEqual(report.contextSafety, {
+      contextExceeded: { total: 2, firstCall: 1, synthesise: 1 },
+      contextForcePruned: 2,
+      messageCapped: { total: 3, seed: 2, mraResult: 1 },
+    });
+  });
+
   it("days option must be a positive integer; bad input falls back to 7", async () => {
     const { buildAuditReport } = await import("../src/gateway/audit");
     assert.equal(buildAuditReport({ days: 0 }).windowDays, 7);

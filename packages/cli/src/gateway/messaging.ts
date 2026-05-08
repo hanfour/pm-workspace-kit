@@ -22,6 +22,29 @@ export function truncate(s: string, max: number): string {
   return `${s.slice(0, max)}\n…(truncated ${s.length - max} chars)`;
 }
 
+export interface CapResult {
+  content: string;
+  capped: boolean;
+  originalChars: number;
+}
+
+/**
+ * Wraps `truncate` to additionally report whether truncation happened
+ * and the pre-truncation length. Callers (write sites for PKB seed and
+ * mra-results) use the metadata to write `message.capped` audit
+ * events without re-measuring.
+ */
+export function capMessageContent(content: string, limit: number): CapResult {
+  if (content.length <= limit) {
+    return { content, capped: false, originalChars: content.length };
+  }
+  return {
+    content: truncate(content, limit),
+    capped: true,
+    originalChars: content.length,
+  };
+}
+
 /**
  * Build a one-shot seed message containing PKB content for the
  * configured ingest spec. Returns undefined when no PKB is found
@@ -118,28 +141,52 @@ export function buildMraSuccessMessage(repo: string, stdout: string): string {
     `這是 \`mra ask ${repo}\` 的回傳結果（請依此 synthesise 最終答案；若這份結果不足，可再 emit 一次 mra-ask，但仍以 PKB + 這份結果優先）：`,
     "",
     "```mra-result",
-    truncate(stdout.trim(), 24_000),
+    stdout.trim(),
     "```",
   ].join("\n");
 }
 
 // ─────────────────── session pruning (v0.8.1, #18) ──────────────────────
 
-/**
- * Soft cap for `session.approxTokens` before pruning kicks in. Set to
- * about 70% of a typical 90k-token gateway-DM context budget — leaves
- * headroom for system prompt + retrieval prefix + the new user turn
- * and the model's reply.
- *
- * Tunable via `PMK_MAX_SESSION_TOKENS` env var so hosts can override
- * without rebuilding (e.g. drop to 30k for cheaper Haiku-tier models
- * or push higher for Opus-tier 200k budgets).
- */
-export const MAX_SESSION_TOKENS = (() => {
-  const raw = process.env.PMK_MAX_SESSION_TOKENS;
+function parsePositiveIntEnv(name: string, fallback: number): number {
+  const raw = process.env[name];
   const parsed = raw ? Number.parseInt(raw, 10) : NaN;
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : 60_000;
-})();
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+/**
+ * Soft cap for `session.approxTokens` before pruning kicks in.
+ * v0.11.1: lowered default from 60_000 → 25_000. The 60k figure
+ * assumed ~70% of a 90k DM-context budget and ignored the host
+ * config that `claude-agent-sdk` inherits when it spawns the local
+ * `claude` CLI. 25k leaves explicit headroom for system prompt +
+ * retrieval prefix + SDK-inherited host context + new turn + reply.
+ * Override with `PMK_MAX_SESSION_TOKENS=…` per host.
+ */
+export const MAX_SESSION_TOKENS = parsePositiveIntEnv(
+  "PMK_MAX_SESSION_TOKENS",
+  25_000,
+);
+
+/**
+ * Maximum chars for the PKB seed message pushed at the start of a
+ * fresh session. Defaults to 12_000 — generous enough for a multi-
+ * repo summary, tight enough that the seed cannot single-handedly
+ * exhaust the model's input window. Override with `PMK_SEED_CAP=…`
+ * per host.
+ */
+export const SEED_CAP = parsePositiveIntEnv("PMK_SEED_CAP", 12_000);
+
+/**
+ * Maximum chars for `mra-ask` stdout pushed into session history.
+ * Applied at the call site in `synthesiseAfterMra` (slack/index.ts)
+ * before passing to `buildMraSuccessMessage`. Override with
+ * `PMK_MRA_RESULT_CAP=…` per host.
+ */
+export const MRA_RESULT_CAP = parsePositiveIntEnv(
+  "PMK_MRA_RESULT_CAP",
+  16_000,
+);
 
 /** How many recent (user, assistant) pairs to always keep across a prune. */
 export const KEEP_RECENT_TURNS = 10;
@@ -158,13 +205,18 @@ interface SessionLike {
 const PKB_SEED_PREFIX = "我先把 workspace 的 PKB context 給你";
 
 /**
- * Estimate token count for a message-array using the same ~3.5
- * chars-per-token heuristic the rest of the gateway uses (matches
- * `approxTokensFor` in slack/index.ts).
+ * Estimate token count for a primary message-array, optionally adding
+ * the cost of an `extra` array (e.g. `retrievalPrefix` content that is
+ * sent to the model on the next call but not stored in
+ * `session.messages`). Uses the same ~3.5 chars-per-token heuristic.
  */
-function approxTokensFor(messages: ChatMessage[]): number {
+export function approxTokensFor(
+  messages: ChatMessage[],
+  extra: ChatMessage[] = [],
+): number {
   let total = 0;
   for (const m of messages) total += m.content.length;
+  for (const m of extra) total += m.content.length;
   return Math.ceil(total / 3.5);
 }
 
@@ -174,6 +226,13 @@ export interface PruneResult {
   droppedPairs: number;
   /** Token tally after pruning (matches `session.approxTokens`). */
   tokensAfter: number;
+}
+
+export interface PruneOpts {
+  /** Messages sent on next call but not in session.messages (e.g. retrievalPrefix). */
+  extra?: ChatMessage[];
+  /** New user turn that will be appended to the call payload. */
+  newUser?: string;
 }
 
 /**
@@ -192,7 +251,17 @@ export interface PruneResult {
  * for the caller to log. Caller is responsible for calling
  * `saveSession()` afterward so the pruned state hits disk.
  */
-export function pruneSessionIfNeeded(session: SessionLike): PruneResult {
+export function pruneSessionIfNeeded(
+  session: SessionLike,
+  opts: PruneOpts = {},
+): PruneResult {
+  const extras: ChatMessage[] = [
+    ...(opts.extra ?? []),
+    ...(opts.newUser ? [{ role: "user" as const, content: opts.newUser }] : []),
+  ];
+  // Recompute INCLUDING extras so we don't undercount the next call.
+  session.approxTokens = approxTokensFor(session.messages, extras);
+
   if (session.approxTokens <= MAX_SESSION_TOKENS) {
     return {
       pruned: false,
@@ -217,8 +286,10 @@ export function pruneSessionIfNeeded(session: SessionLike): PruneResult {
     msgs.length - seedEnd - 1 <= KEEP_RECENT_TURNS * 2
   ) {
     // We've already pruned and not enough new turns have accumulated
-    // to need another pass. Recompute tokens just in case.
-    session.approxTokens = approxTokensFor(msgs);
+    // to need another pass. Recompute tokens just in case — include
+    // extras so the post-call invariant is consistent across all
+    // return paths (downstream callers see a single, comparable value).
+    session.approxTokens = approxTokensFor(msgs, extras);
     return {
       pruned: false,
       droppedPairs: 0,
@@ -249,10 +320,35 @@ export function pruneSessionIfNeeded(session: SessionLike): PruneResult {
   };
 
   session.messages = [...seedSlice, marker, ...recent];
-  session.approxTokens = approxTokensFor(session.messages);
+  session.approxTokens = approxTokensFor(session.messages, extras);
   return {
     pruned: true,
     droppedPairs,
     tokensAfter: session.approxTokens,
   };
+}
+
+/**
+ * Last-resort prune for the msg_too_long retry path. Keeps PKB seed
+ * pair (if present) plus the most-recent user/assistant pair, drops
+ * everything between. Returns dropped (user,assistant) pair count.
+ * Idempotent. Does not consult MAX_SESSION_TOKENS — this is the
+ * absolute floor we'll fall back to when the model has already
+ * rejected the prior payload as too long.
+ */
+export function forcePruneToMinimum(session: SessionLike): number {
+  const msgs = session.messages;
+  const hasPkbSeed =
+    msgs.length >= 2 &&
+    msgs[0].role === "user" &&
+    msgs[0].content.startsWith(PKB_SEED_PREFIX) &&
+    msgs[1].role === "assistant";
+  const seedSlice = hasPkbSeed ? msgs.slice(0, 2) : [];
+  const seedEnd = hasPkbSeed ? 2 : 0;
+  if (msgs.length - seedEnd <= 2) return 0;
+  const droppedPairs = Math.floor((msgs.length - seedEnd - 2) / 2);
+  const tailSlice = msgs.slice(-2);
+  session.messages = [...seedSlice, ...tailSlice];
+  session.approxTokens = approxTokensFor(session.messages);
+  return droppedPairs;
 }
