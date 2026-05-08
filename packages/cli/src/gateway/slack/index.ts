@@ -206,7 +206,16 @@ export class SlackAdapter {
       logLevel: "warn" as never, // Avoid noisy stdout in normal operation.
     });
     this.web = new WebClient(opts.config.slack.botToken);
-    this.llm = resolveProvider(loadCliConfig());
+    // v0.12.0: prefer ANTHROPIC_API_KEY from env (already merged by
+    // loadCliConfig()), then ~/.pmk/config.json, then gateway.json.
+    // The merge happens once at adapter init — running daemons need a
+    // restart to pick up a freshly-written gateway.json apiKey, same
+    // caveat as audience/escalation config.
+    const baseCliConfig = loadCliConfig();
+    const mergedConfig = baseCliConfig.apiKey
+      ? baseCliConfig
+      : { ...baseCliConfig, apiKey: this.config.apiKey };
+    this.llm = resolveProvider(mergedConfig);
   }
 
   async start(): Promise<SlackBotInfo> {

@@ -81,6 +81,13 @@ export interface GatewayConfig {
   audience: AudienceConfig;
   /** Pool of IT/domain contacts pmk can @-mention on `escalate`. */
   escalation: EscalationConfig;
+  /**
+   * Anthropic API key. v0.12.0+: written by `pmk gateway init` so the
+   * gateway can prefer the anthropic-api provider without requiring
+   * the operator to also set ANTHROPIC_API_KEY in env. Env var still
+   * takes precedence at runtime (loadCliConfig() reads env first).
+   */
+  apiKey?: string;
   slack: SlackConfig;
 }
 
