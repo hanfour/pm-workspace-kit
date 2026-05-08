@@ -10,9 +10,9 @@ import { NoProviderAvailableError, type LlmProvider } from "./provider";
 /**
  * Find a usable LLM provider.
  *
- * Order (`config.provider: "auto"`):
- *   1. local `claude` binary on PATH → ClaudeAgentSdkProvider
- *   2. ANTHROPIC_API_KEY (or config.apiKey) → AnthropicApiKeyProvider
+ * Order (`config.provider: "auto"`, v0.12.0+):
+ *   1. ANTHROPIC_API_KEY (or config.apiKey) → AnthropicApiKeyProvider
+ *   2. local `claude` binary on PATH → ClaudeAgentSdkProvider (fallback)
  *   3. fail with actionable error
  *
  * `PMK_PROVIDER` env var overrides `config.provider`.
@@ -47,14 +47,17 @@ export function resolveProvider(config: PmkConfig): LlmProvider {
 }
 
 function autoResolve(config: PmkConfig): LlmProvider {
+  // v0.12.0: prefer anthropic-api when apiKey is available — eliminates
+  // claude-agent-sdk host-context overhead. Falls through to claude-agent
+  // for users without an API key (zero-touch upgrade for that branch).
+  if (config.apiKey) {
+    return new AnthropicApiKeyProvider({ ...config, apiKey: config.apiKey });
+  }
   const claudePath = findClaudeExecutable();
   if (claudePath) {
     return new ClaudeAgentSdkProvider(config, claudePath);
   }
-  if (config.apiKey) {
-    return new AnthropicApiKeyProvider({ ...config, apiKey: config.apiKey });
-  }
-  throw new NoProviderAvailableError(["claude-agent", "anthropic-api"]);
+  throw new NoProviderAvailableError(["anthropic-api", "claude-agent"]);
 }
 
 /**

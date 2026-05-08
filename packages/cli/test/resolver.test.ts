@@ -77,3 +77,29 @@ describe("resolveProvider (explicit provider)", () => {
     );
   });
 });
+
+describe("resolveProvider autoResolve order (v0.12.0)", () => {
+  beforeEach(() => {
+    delete process.env.PMK_PROVIDER;
+    process.env.PMK_SKIP_CLAUDE_PROBE = "1"; // disable filesystem probe in tests
+  });
+  afterEach(() => {
+    if (ORIG_PROVIDER !== undefined) process.env.PMK_PROVIDER = ORIG_PROVIDER;
+    else delete process.env.PMK_PROVIDER;
+    delete process.env.PMK_SKIP_CLAUDE_PROBE;
+  });
+
+  it("apiKey present → anthropic-api (preferred over claude-agent)", () => {
+    const provider = resolveProvider(
+      baseConfig({ provider: "auto", apiKey: "sk-ant-xxx" }),
+    );
+    assert.equal(provider.name, "anthropic-api");
+  });
+
+  it("apiKey absent + no claude binary → throws NoProviderAvailableError", () => {
+    assert.throws(
+      () => resolveProvider(baseConfig({ provider: "auto", apiKey: undefined })),
+      /no usable LLM provider/,
+    );
+  });
+});
