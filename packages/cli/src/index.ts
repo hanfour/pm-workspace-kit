@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { Command } from "commander";
 import * as dotenv from "dotenv";
+import pkg from "../package.json";
 import { proposeCommand } from "./commands/propose";
 import { ingestCommand } from "./commands/ingest";
 import { applyCommand } from "./commands/apply";
@@ -32,7 +33,7 @@ program
     "pmk — pm-workspace-kit command-line interface.\n" +
       "Verbs: propose / ingest / apply / discuss / ask / debug / index / resume / worktree / tdd / explore / case / gateway.",
   )
-  .version("0.7.0-dev");
+  .version(pkg.version);
 
 program
   .command("propose [topic]")

@@ -10,8 +10,6 @@ import {
 import { handleAdminSlash } from "./admin";
 import { chatWithContextRetry } from "./context-retry";
 import {
-  formatBackOnlineNotice,
-  formatOfflineNotice,
   formatTrackingSummary,
   markdownToMrkdwn,
   truncateForSlack,
@@ -19,8 +17,6 @@ import {
 import {
   channelCasesDir,
   clearThreadEscalation,
-  listRecentChannels,
-  listRecentUsers,
   loadChannelChatSession,
   loadChannelMeta,
   loadThreadEscalation,
@@ -31,6 +27,12 @@ import {
   saveUserSession,
   userCasesDir,
 } from "../session-store";
+import { EnvelopeDedup } from "./envelope-dedup";
+import { PresenceBroadcaster } from "./presence";
+
+// v0.13: re-exported so existing test imports (`gateway.test.ts`) keep
+// working after the extraction to `./concurrency`.
+export { runWithConcurrency } from "./concurrency";
 import type { ChatMessage } from "@pmk/shared";
 import { pickGatewayPrompt } from "@pmk/shared";
 import { resolveProvider, type LlmProvider } from "../../llm";
@@ -47,7 +49,10 @@ import {
   saveCase,
   stripCaseUpdateBlock,
 } from "../../case";
-import { mraDoctor, runMraAsk } from "../../adapters/mra";
+import {
+  mraDoctor as mraDoctorImpl,
+  runMraAsk as runMraAskImpl,
+} from "../../adapters/mra";
 import { appendGatewayEvent } from "../events";
 import { createLastLineThrottle } from "../throttle";
 import { sanitizeProgressLine } from "./progress";
@@ -126,13 +131,6 @@ export function slashCommandArgsFromBody(
   return { channelId, userId, rest, scope };
 }
 
-/**
- * Cap for `seenEnvelopes`. Slack retries any un-acked event up to 3
- * times within ~30s; 2 000 entries gives a generous window even on
- * noisy workspaces while keeping memory bounded for long-running hosts.
- */
-const SEEN_ENVELOPES_MAX = 2000;
-
 export interface SlackBotInfo {
   botUserId: string;
   workspaceName: string;
@@ -153,24 +151,28 @@ export interface SlackAdapterOptions {
   offlineDurationMs?: number;
   /** #44: was the previous exit a graceful shutdown? */
   gracefulShutdown?: boolean;
+  /**
+   * v0.13 integration-harness hooks (test-only DI). When `web` and
+   * `socket` are both provided, the appToken/botToken guard is
+   * skipped and these are used in place of the real Slack clients —
+   * lets tests drive the full event-handler graph without Slack
+   * credentials. When `llm` is provided, the on-disk CLI-config
+   * lookup is skipped too. Prod callers pass none of these and get
+   * the unchanged real-client construction path.
+   */
+  web?: WebClient;
+  socket?: SocketModeClient;
+  llm?: LlmProvider;
+  /**
+   * v0.13 harness DI: override the `mra ask` round (binary launch) +
+   * workspace check. Defaults to the real adapters from
+   * `../../adapters/mra`; tests substitute scripted versions so the
+   * mra-ask escalate flow can be driven without spawning a real
+   * subprocess or needing `mra` on PATH.
+   */
+  mraDoctor?: typeof mraDoctorImpl;
+  runMraAsk?: typeof runMraAskImpl;
 }
-
-/**
- * #44: presence broadcasts within this window are suppressed (event
- * still emitted with `broadcast:false`). Catches rapid kill→restart
- * cycles that would otherwise spam every recently-active user/channel
- * with stacked "暫離" / "重新上線" pairs.
- */
-const MIN_BROADCAST_GAP_MS = 5 * 60_000;
-
-/**
- * #44: concurrency cap for fan-out broadcast posts. Slack
- * `chat.postMessage` Tier 3 limit is ~50 req/min/channel; spreading
- * the fan-out across recently-active DMs + channels at concurrency=3
- * keeps us well under cap and finishes a full broadcast in seconds
- * rather than the prior O(N) serial pattern that took 20+ s.
- */
-const BROADCAST_CONCURRENCY = 3;
 
 export class SlackAdapter {
   private socket: SocketModeClient;
@@ -182,17 +184,24 @@ export class SlackAdapter {
   private lastSeenAt?: number;
   private offlineDurationMs?: number;
   private gracefulShutdown: boolean;
-  /** Monotonic sequence for presence events emitted by THIS process. */
-  private presenceSeq = 0;
   private llm: LlmProvider;
+  private readonly mraDoctor: typeof mraDoctorImpl;
+  private readonly runMraAsk: typeof runMraAskImpl;
   private inFlight = new Set<string>();
-  /** Envelope IDs we've already accepted; protects against Slack retries.
-   * Bounded LRU — see {@link SEEN_ENVELOPES_MAX}. */
-  private seenEnvelopes: string[] = [];
-  private seenEnvelopeSet = new Set<string>();
+  /** Envelope IDs we've already accepted; protects against Slack retries. */
+  private readonly dedup: EnvelopeDedup;
+  /** Online/offline broadcast fan-out (#44). */
+  private readonly presence: PresenceBroadcaster;
 
   constructor(opts: SlackAdapterOptions) {
-    if (!opts.config.slack.appToken || !opts.config.slack.botToken) {
+    // v0.13: token guard only fires on the prod construction path.
+    // When both transport fakes are injected, the adapter never opens
+    // a real Slack connection so the tokens are irrelevant.
+    const useFakeTransport = !!(opts.web && opts.socket);
+    if (
+      !useFakeTransport &&
+      (!opts.config.slack.appToken || !opts.config.slack.botToken)
+    ) {
       throw new Error("slack.appToken and slack.botToken must be set");
     }
     this.config = opts.config;
@@ -201,21 +210,38 @@ export class SlackAdapter {
     this.lastSeenAt = opts.lastSeenAt;
     this.offlineDurationMs = opts.offlineDurationMs;
     this.gracefulShutdown = opts.gracefulShutdown ?? false;
-    this.socket = new SocketModeClient({
-      appToken: opts.config.slack.appToken,
-      logLevel: "warn" as never, // Avoid noisy stdout in normal operation.
+    if (opts.socket) {
+      this.socket = opts.socket;
+    } else {
+      this.socket = new SocketModeClient({
+        appToken: opts.config.slack.appToken!,
+        logLevel: "warn" as never, // Avoid noisy stdout in normal operation.
+      });
+    }
+    this.web = opts.web ?? new WebClient(opts.config.slack.botToken!);
+    if (opts.llm) {
+      this.llm = opts.llm;
+    } else {
+      // v0.12.0: prefer ANTHROPIC_API_KEY from env (already merged by
+      // loadCliConfig()), then ~/.pmk/config.json, then gateway.json.
+      // The merge happens once at adapter init — running daemons need a
+      // restart to pick up a freshly-written gateway.json apiKey, same
+      // caveat as audience/escalation config.
+      const baseCliConfig = loadCliConfig();
+      const mergedConfig = baseCliConfig.apiKey
+        ? baseCliConfig
+        : { ...baseCliConfig, apiKey: this.config.apiKey };
+      this.llm = resolveProvider(mergedConfig);
+    }
+    this.mraDoctor = opts.mraDoctor ?? mraDoctorImpl;
+    this.runMraAsk = opts.runMraAsk ?? runMraAskImpl;
+    this.dedup = new EnvelopeDedup();
+    this.presence = new PresenceBroadcaster({
+      web: this.web,
+      onLog: this.onLog,
+      offlineDurationMs: this.offlineDurationMs,
+      gracefulShutdown: this.gracefulShutdown,
     });
-    this.web = new WebClient(opts.config.slack.botToken);
-    // v0.12.0: prefer ANTHROPIC_API_KEY from env (already merged by
-    // loadCliConfig()), then ~/.pmk/config.json, then gateway.json.
-    // The merge happens once at adapter init — running daemons need a
-    // restart to pick up a freshly-written gateway.json apiKey, same
-    // caveat as audience/escalation config.
-    const baseCliConfig = loadCliConfig();
-    const mergedConfig = baseCliConfig.apiKey
-      ? baseCliConfig
-      : { ...baseCliConfig, apiKey: this.config.apiKey };
-    this.llm = resolveProvider(mergedConfig);
   }
 
   async start(): Promise<SlackBotInfo> {
@@ -255,16 +281,16 @@ export class SlackAdapter {
     this.socket.on("reconnect", () => this.onLog("slack socket reconnected"));
     await this.socket.start();
 
-    // #44: always invoke broadcastBackOnline so the audit captures
-    // every online transition (suppressed or sent). The method
-    // itself decides whether to actually broadcast based on
-    // offlineDurationMs / wasOffline.
-    await this.broadcastBackOnline();
+    // #44: always invoke presence.backOnline so the audit captures
+    // every online transition (suppressed or sent). The presence
+    // module itself decides whether to actually broadcast based on
+    // offlineDurationMs / gracefulShutdown.
+    await this.presence.backOnline();
     return this.botInfo;
   }
 
   async stop(): Promise<void> {
-    await this.broadcastOffline();
+    await this.presence.offline();
     try {
       await this.socket.disconnect();
     } catch {
@@ -307,12 +333,12 @@ export class SlackAdapter {
     // Slack retry of an event we already accepted? Drop silently —
     // we've either replied or are still processing the original.
     if (
-      this.seenEnvelopeSet.has(payload.envelope_id) ||
+      this.dedup.has(payload.envelope_id) ||
       (payload.retry_num ?? 0) > 0
     ) {
       return;
     }
-    this.rememberEnvelope(payload.envelope_id);
+    this.dedup.remember(payload.envelope_id);
 
     if (this.inFlight.has(userId)) {
       await this.web.chat.postMessage({
@@ -374,12 +400,12 @@ export class SlackAdapter {
     const event = payload?.event;
     if (!event || !this.botInfo) return;
     if (
-      this.seenEnvelopeSet.has(payload.envelope_id) ||
+      this.dedup.has(payload.envelope_id) ||
       (payload.retry_num ?? 0) > 0
     ) {
       return;
     }
-    this.rememberEnvelope(payload.envelope_id);
+    this.dedup.remember(payload.envelope_id);
     const channelId = event.channel;
     const userId = event.user;
     // replyThreadTs anchors the bot's response. sessionThreadTs (raw
@@ -1041,7 +1067,7 @@ export class SlackAdapter {
       systemPrompt,
       actor,
     } = args;
-    const doctor = mraDoctor({ workspace: this.config.mraWorkspace });
+    const doctor = this.mraDoctor({ workspace: this.config.mraWorkspace });
     if (!doctor.ok || !doctor.workspace) {
       // Host-side log so the gateway operator can see WHY mra-ask
       // bailed (config-fixable vs binary-missing vs workspace-stale).
@@ -1101,7 +1127,7 @@ export class SlackAdapter {
       `mra ask repo=${request.repo} q=${truncate(request.question, 120)}`,
     );
     const mraStartMs = Date.now();
-    const result = await runMraAsk(
+    const result = await this.runMraAsk(
       {
         repo: request.repo,
         question: request.question,
@@ -1347,12 +1373,12 @@ export class SlackAdapter {
     if (this.config.blocklist.includes(args.userId)) return;
 
     if (
-      this.seenEnvelopeSet.has(payload.envelope_id) ||
+      this.dedup.has(payload.envelope_id) ||
       (payload.retry_num ?? 0) > 0
     ) {
       return;
     }
-    this.rememberEnvelope(payload.envelope_id);
+    this.dedup.remember(payload.envelope_id);
 
     try {
       await this.handleSlashCommand(args);
@@ -1498,143 +1524,6 @@ export class SlackAdapter {
     }
   }
 
-  /** Bounded-LRU insert into the envelope dedup cache. */
-  private rememberEnvelope(envelopeId: string): void {
-    this.seenEnvelopeSet.add(envelopeId);
-    this.seenEnvelopes.push(envelopeId);
-    if (this.seenEnvelopes.length > SEEN_ENVELOPES_MAX) {
-      const evict = this.seenEnvelopes.shift();
-      if (evict !== undefined) this.seenEnvelopeSet.delete(evict);
-    }
-  }
-
-  // ─────────────────────────── broadcasts ───────────────────────────
-
-  private nextPresenceSeq(): number {
-    return ++this.presenceSeq;
-  }
-
-  /**
-   * Emit a `gateway.offline` event and broadcast the notice. Always
-   * broadcasts (never suppressed) — operators want to see the
-   * "going down" notice even when the corresponding "back up" is
-   * suppressed. Cheap because it's only called once at shutdown.
-   */
-  private async broadcastOffline(): Promise<void> {
-    const seq = this.nextPresenceSeq();
-    const text = formatOfflineNotice();
-    await this.broadcast(text);
-    appendGatewayEvent({
-      type: "gateway.offline",
-      seq,
-      reason: "shutdown",
-      broadcast: true,
-    });
-  }
-
-  /**
-   * Emit a `gateway.online` event and (conditionally) broadcast the
-   * notice. #44: suppress the broadcast on fast restarts (graceful
-   * or otherwise) so a kill→restart loop doesn't stack stale notices
-   * across recently-active channels — but still record the
-   * transition in events.log so the audit can detect churn.
-   */
-  private async broadcastBackOnline(): Promise<void> {
-    const seq = this.nextPresenceSeq();
-    const dur = this.offlineDurationMs;
-    const fastRestart =
-      dur !== undefined && dur < MIN_BROADCAST_GAP_MS;
-    if (fastRestart) {
-      const reason = this.gracefulShutdown
-        ? "graceful-fast-restart"
-        : "fast-recovery";
-      this.onLog(
-        `back-online suppressed (offline ${dur}ms < ${MIN_BROADCAST_GAP_MS}ms, ${reason})`,
-      );
-      appendGatewayEvent({
-        type: "gateway.online",
-        seq,
-        reason,
-        broadcast: false,
-        offlineDurationMs: dur,
-      });
-      return;
-    }
-    const text = formatBackOnlineNotice(dur);
-    await this.broadcast(text);
-    appendGatewayEvent({
-      type: "gateway.online",
-      seq,
-      reason: this.gracefulShutdown
-        ? "graceful-long-downtime"
-        : "crash-recovery",
-      broadcast: true,
-      offlineDurationMs: dur,
-    });
-  }
-
-  /**
-   * Fan-out a presence notice to every recently-active DM + channel.
-   * #44: switched from serial `await` per recipient (which took 20+ s
-   * for ~24 recipients and could be cut off by SIGTERM mid-loop, leaving
-   * a stacked broadcast on the next restart) to bounded concurrency
-   * via `runWithConcurrency`. Errors per recipient are swallowed —
-   * one rejected DM (user left workspace) or kicked-bot channel must
-   * not abort the rest.
-   */
-  private async broadcast(text: string): Promise<void> {
-    const userIds = listRecentUsers(24);
-    const channels = listRecentChannels(24);
-    const tasks: Array<() => Promise<unknown>> = [
-      ...userIds.map((uid) => () => this.dmSafe(uid, text)),
-      ...channels.map(
-        (c) => () =>
-          this.web.chat.postMessage({ channel: c.channelId, text }).catch(() => {
-            /* bot may have been kicked; skip */
-          }),
-      ),
-    ];
-    await runWithConcurrency(BROADCAST_CONCURRENCY, tasks);
-  }
-
-  private async dmSafe(uid: string, text: string): Promise<void> {
-    try {
-      const im = await this.web.conversations.open({ users: uid });
-      const channel = im.channel?.id;
-      if (channel) {
-        await this.web.chat.postMessage({ channel, text });
-      }
-    } catch {
-      /* user may have left workspace; skip */
-    }
-  }
-}
-
-/**
- * Run `tasks` with at most `limit` in flight at once. Used by the
- * adapter's broadcast fan-out (#44). Workers exit when the queue is
- * empty; per-task throws are silently swallowed so one bad recipient
- * doesn't abort the rest.
- */
-export async function runWithConcurrency(
-  limit: number,
-  tasks: Array<() => Promise<unknown>>,
-): Promise<void> {
-  if (tasks.length === 0) return;
-  const queue = [...tasks];
-  const workerCount = Math.min(limit, queue.length);
-  const workers = Array.from({ length: workerCount }, async () => {
-    while (queue.length) {
-      const fn = queue.shift();
-      if (!fn) return;
-      try {
-        await fn();
-      } catch {
-        /* swallowed by design — see broadcast() */
-      }
-    }
-  });
-  await Promise.all(workers);
 }
 
 // ─────────────────────────── ambient Slack types ──────────────────────

@@ -8,6 +8,32 @@ All notable changes to **pm-workspace-kit** are documented here.
 
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Each release also has a longer narrative on [GitHub Releases](https://github.com/hanfour/pm-workspace-kit/releases) with rationale, dogfood notes, and test plans.
 
+## [v0.12.1] — 2026-05-19 — README + CLI version catch-up
+
+[GitHub release](https://github.com/hanfour/pm-workspace-kit/releases/tag/v0.12.1)
+
+### Why
+
+Two non-feature drifts caught during a v0.12 review, neither blocking but both visible: the README `Latest release` section was stuck at v0.10.1 while the tag stream had marched to v0.12.0 (two minor versions of gateway hardening invisible to anyone reading the repo front page), and `pmk --version` had been reporting `0.7.0-dev` since v0.7.0 because Commander's `.version()` was a string literal that the v0.10.1 `bump-version.mjs` work never reached. Tying both off in one patch so the v0.12 series ends with the repo's outward-facing version surfaces in sync.
+
+### Fixed
+
+- **`pmk --version` no longer hardcoded.** `packages/cli/src/index.ts` now imports `version` from `../package.json` (via `resolveJsonModule`) and feeds it into Commander's `.version()`. The path resolves identically at compile time (`src/../package.json`) and at runtime from the built `dist/index.js` (`dist/../package.json`), both pointing at `packages/cli/package.json`, so `npm run version:bump` propagates to the CLI surface from this release forward with no additional wiring.
+
+### Docs
+
+- **README `Latest release` caught up v0.10.1 → v0.12.0.** Header date + version updated, narrative paragraph extended with the v0.10.1 → v0.12.1 chain (gateway presence + per-channel audience + monthly audit logs in v0.11.0, `msg_too_long` three-layer defense + `Context safety` audit section in v0.11.1, `anthropic-api` soft-flip + `token.usage` + `Token usage` audit section in v0.12.0, this README/CLI catch-up in v0.12.1), and four new rows in the release table.
+
+### Tests
+
+`@pmk/cli` 312 → **312** (unchanged): the version-source change is a 1-line wiring fix verified by a smoke test (`pmk --version` reports the bumped value, 0.12.0 before and 0.12.1 after `version:bump`). No new test was added because the fix relies on TypeScript's `resolveJsonModule` + Node's relative-`require` resolution, both of which are exercised by every release build; a dedicated unit test would test the runtime, not the change.
+
+### Operator note
+
+Zero migration. Existing `~/.pmk/` state and gateway config carry forward unchanged. Anyone scripting against `pmk --version` should be aware the reported value finally tracks the real release tag — if a script relied on the stale `0.7.0-dev` marker, update it.
+
+---
+
 ## [v0.12.0] — 2026-05-08 — gateway: anthropic-api as default provider
 
 ### Why

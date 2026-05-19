@@ -18,6 +18,7 @@ import {
 } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { spawnSync } from "node:child_process";
 
 const v = process.argv[2];
 if (!v || !/^\d+\.\d+\.\d+(-[\w.]+)?$/.test(v)) {
@@ -50,3 +51,19 @@ for (const f of files) {
 }
 
 console.log(`\nbumped ${files.length} package.json files to ${v}`);
+
+// v0.13: regenerate package-lock.json so the lockfile's workspace
+// entries track the bumped manifests. Without this the lockfile is
+// the lone hold-out (drifted to 0.3.0 through v0.12 even after
+// scripts/bump-version.mjs landed in v0.10.1). `--package-lock-only`
+// keeps node_modules untouched — fast and side-effect-free.
+console.log("regenerating package-lock.json (--package-lock-only)…");
+const lock = spawnSync("npm", ["install", "--package-lock-only"], {
+  cwd: root,
+  stdio: "inherit",
+});
+if (lock.status !== 0) {
+  console.error("\nlockfile regen failed; manifests are bumped but lockfile may be stale");
+  process.exit(lock.status ?? 1);
+}
+console.log("lockfile aligned");
