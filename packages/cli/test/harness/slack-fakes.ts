@@ -383,6 +383,37 @@ export function dmMessagePayload(args: {
   };
 }
 
+/** Slack `slash_commands` envelope payload builder. */
+export function slashCommandPayload(args: {
+  user_id: string;
+  channel_id?: string;
+  text: string;
+  envelope_id?: string;
+}): {
+  ack: () => Promise<void>;
+  envelope_id: string;
+  retry_num: number;
+  body: {
+    command: string;
+    text: string;
+    user_id: string;
+    channel_id: string;
+  };
+} {
+  const channel_id = args.channel_id ?? "D-HOST-DM";
+  return {
+    ack: async () => undefined,
+    envelope_id: args.envelope_id ?? `env-slash-${args.user_id}-${Date.now()}`,
+    retry_num: 0,
+    body: {
+      command: "/pmk",
+      text: args.text,
+      user_id: args.user_id,
+      channel_id,
+    },
+  };
+}
+
 /** Slack `app_mention` event payload builder for channel @-mentions. */
 export function appMentionPayload(args: {
   user: string;

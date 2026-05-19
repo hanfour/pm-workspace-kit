@@ -16,6 +16,7 @@ import {
   appMentionPayload,
   buildHarness,
   dmMessagePayload,
+  slashCommandPayload,
   type Harness,
 } from "./harness/slack-fakes";
 import {
@@ -23,6 +24,11 @@ import {
   saveChannelMeta,
 } from "../src/gateway/session-store";
 import { loadCase, newCase, saveCase } from "../src/case";
+import {
+  loadGatewayConfig,
+  saveGatewayConfig,
+} from "../src/gateway/config";
+import { readAdminLog } from "../src/gateway/admin-log";
 
 describe("SlackAdapter integration: DM happy-path", () => {
   let h: Harness;
@@ -333,5 +339,115 @@ describe("SlackAdapter integration: channel @-mention", () => {
       .postsTo(channelId)
       .filter((p) => p.text && !p.text.includes("thinking"));
     assert.ok(summaryPosts.length >= 1, "tracking summary should be posted");
+  });
+});
+
+describe("SlackAdapter integration: /pmk admin slash command", () => {
+  let h: Harness;
+
+  beforeEach(() => {
+    h = buildHarness({ config: { admins: ["U-HOST"] } });
+    // handleAdminSlash → adminAudience → loadGatewayConfig reads from
+    // disk, so the in-memory config the harness built needs to be
+    // committed to the tmp HOME before any admin command can succeed.
+    saveGatewayConfig({
+      version: 1,
+      admins: ["U-HOST"],
+      blocklist: [],
+      audience: { default: "tech", users: {}, channels: {} },
+      escalation: { default: [], repos: {} },
+      slack: {
+        appToken: "xapp-test",
+        botToken: "xoxb-test",
+        botUserId: "UBOTID",
+        workspaceName: "test-workspace",
+      },
+    });
+  });
+
+  afterEach(() => {
+    h.cleanup();
+  });
+
+  it("admin sets audience override → config mutates, admin.log appends, success replied", async () => {
+    await h.adapter.start();
+
+    await h.socket.emit(
+      "slash_commands",
+      slashCommandPayload({
+        user_id: "U-HOST",
+        channel_id: "D-HOST-DM",
+        text: "admin audience set <@UOTHER> exec",
+      }),
+    );
+
+    // Config now persists the per-user override.
+    const after = loadGatewayConfig();
+    assert.equal(after.audience.users["UOTHER"], "exec");
+
+    // admin.log captured the mutation.
+    const log = readAdminLog();
+    assert.equal(log.length, 1);
+    assert.equal(log[0].actor, "U-HOST");
+    assert.equal(log[0].origin, "slack");
+    assert.equal(log[0].action, "audience.set");
+    assert.equal(log[0].ok, true);
+    assert.match(log[0].args ?? "", /UOTHER exec/);
+
+    // Reply posted to the DM channel.
+    const posts = h.web.postsTo("D-HOST-DM");
+    assert.equal(posts.length, 1);
+    assert.match(posts[0].text ?? "", /audience set to/);
+  });
+
+  it("non-admin user → blocked, no admin.log entry, no config mutation", async () => {
+    await h.adapter.start();
+
+    await h.socket.emit(
+      "slash_commands",
+      slashCommandPayload({
+        user_id: "U-RANDOM",
+        channel_id: "D-RANDOM-DM",
+        text: "admin audience set <@UVICTIM> biz",
+      }),
+    );
+
+    const after = loadGatewayConfig();
+    assert.equal(
+      after.audience.users["UVICTIM"],
+      undefined,
+      "non-admin must not be able to mutate config",
+    );
+
+    // No admin-action entry; the gate fires upstream of handleAdminSlash.
+    const log = readAdminLog();
+    assert.equal(log.length, 0, "permission deny is not logged in admin.log");
+
+    const posts = h.web.postsTo("D-RANDOM-DM");
+    assert.equal(posts.length, 1);
+    assert.match(posts[0].text ?? "", /限管理員/);
+  });
+
+  it("/pmk admin invoked outside DM scope → rejected with DM-only notice", async () => {
+    await h.adapter.start();
+
+    await h.socket.emit(
+      "slash_commands",
+      slashCommandPayload({
+        user_id: "U-HOST",
+        channel_id: "C-PUBLIC",
+        text: "admin audience set <@UOTHER> biz",
+      }),
+    );
+
+    const after = loadGatewayConfig();
+    assert.equal(after.audience.users["UOTHER"], undefined);
+
+    const log = readAdminLog();
+    assert.equal(log.length, 0);
+
+    const posts = h.web.postsTo("C-PUBLIC");
+    assert.equal(posts.length, 1);
+    assert.match(posts[0].text ?? "", /只能在 DM/);
   });
 });
