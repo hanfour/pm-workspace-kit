@@ -38,6 +38,7 @@ import {
 } from "../src/gateway/knowledge";
 import { readGatewayEvents } from "../src/gateway/events";
 import { saveUserSession } from "../src/gateway/session-store";
+import { PmkContextTooLongError } from "../src/llm/claude-agent";
 
 describe("SlackAdapter integration: DM happy-path", () => {
   let h: Harness;
@@ -722,5 +723,139 @@ describe("SlackAdapter integration: presence broadcast (#44)", () => {
     assert.equal(offline.length, 1);
     assert.equal(offline[0].broadcast, true);
     assert.equal(offline[0].reason, "shutdown");
+  });
+});
+
+describe("SlackAdapter integration: msg_too_long hardening (v0.11.1)", () => {
+  let h: Harness;
+
+  /** Seed a paired DM history so `forcePruneToMinimum` has turns to drop. */
+  function seedPairedHistory(userId: string) {
+    saveUserSession({
+      userId,
+      messages: [
+        { role: "user", content: "Q1: walk me through the order schema" },
+        { role: "assistant", content: "A1: orders has columns a, b, c…" },
+        { role: "user", content: "Q2: and the payments table?" },
+        { role: "assistant", content: "A2: payments has fields x, y, z…" },
+        { role: "user", content: "Q3: any indexes I should know?" },
+        { role: "assistant", content: "A3: idx_orders_status, idx_payments_id…" },
+      ],
+      lastActiveAt: Date.now(),
+      approxTokens: 30_000,
+      turns: 3,
+    });
+  }
+
+  beforeEach(() => {
+    h = buildHarness();
+  });
+
+  afterEach(() => {
+    h.cleanup();
+  });
+
+  it("first call PmkContextTooLong → force-prune → retry success → :scissors: prefix + events", async () => {
+    const userId = "U-CHATTY";
+    seedPairedHistory(userId);
+
+    h.llm.script(
+      () => {
+        throw new PmkContextTooLongError(new Error("msg_too_long"));
+      },
+      "After pruning, here is the cleaner answer.",
+    );
+
+    await h.adapter.start();
+    await h.socket.emit(
+      "message",
+      dmMessagePayload({
+        user: userId,
+        channel: "D-CHATTY-DM",
+        text: "and what about the reports table?",
+      }),
+    );
+
+    assert.equal(
+      h.llm.calls.length,
+      2,
+      "LLM called twice: original throws, retry succeeds",
+    );
+
+    const finalText = h.web.updated[h.web.updated.length - 1].text ?? "";
+    assert.match(
+      finalText,
+      /^:scissors: 對話過長，已自動裁掉 \d+ 輪舊訊息/,
+      "final reply prefixed with the scissors trim notice",
+    );
+    assert.match(finalText, /cleaner answer/);
+
+    const eventTypes = readGatewayEvents().map(
+      (e) => (e as { type: string }).type,
+    );
+    assert.ok(eventTypes.includes("context.exceeded"));
+    assert.ok(eventTypes.includes("context.force-pruned"));
+  });
+
+  it("first call AND retry both PmkContextTooLong → hard-fail with :x: notice", async () => {
+    const userId = "U-CHATTY2";
+    seedPairedHistory(userId);
+
+    const ctxErr = () => {
+      throw new PmkContextTooLongError(new Error("msg_too_long"));
+    };
+    h.llm.script(ctxErr, ctxErr);
+
+    await h.adapter.start();
+    await h.socket.emit(
+      "message",
+      dmMessagePayload({
+        user: userId,
+        channel: "D-CHATTY2-DM",
+        text: "another huge follow-up",
+      }),
+    );
+
+    assert.equal(h.llm.calls.length, 2);
+    const finalText = h.web.updated[h.web.updated.length - 1].text ?? "";
+    assert.match(
+      finalText,
+      /對話太長.*重新提問/,
+      "hard-fail surfaces the new-thread guidance, not the raw API error",
+    );
+  });
+
+  it("non-context error surfaces as :warning: error message (no force-prune)", async () => {
+    h.llm.script(() => {
+      throw new Error("rate limit exceeded");
+    });
+
+    await h.adapter.start();
+    await h.socket.emit(
+      "message",
+      dmMessagePayload({
+        user: "U-PM",
+        channel: "D-PM-DM",
+        text: "hello",
+      }),
+    );
+
+    assert.equal(
+      h.llm.calls.length,
+      1,
+      "non-context errors must not trigger the retry path",
+    );
+    const finalText = h.web.updated[h.web.updated.length - 1].text ?? "";
+    assert.match(finalText, /:warning:/);
+    assert.match(finalText, /rate limit/);
+
+    const eventTypes = readGatewayEvents().map(
+      (e) => (e as { type: string }).type,
+    );
+    assert.equal(
+      eventTypes.includes("context.exceeded"),
+      false,
+      "no context.exceeded for non-context errors",
+    );
   });
 });
