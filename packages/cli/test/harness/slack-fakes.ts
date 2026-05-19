@@ -91,6 +91,15 @@ export class FakeWebClient {
 
   conversations = {
     history: async (_args: unknown) => this.conversationsHistoryResponse,
+    /**
+     * `dmSafe` (broadcast fan-out) calls `conversations.open({ users })`
+     * to get the IM channel id before posting. We deterministically
+     * derive `D-<userId>` so tests can assert on the DM channel id.
+     */
+    open: async (args: { users?: string }) => ({
+      ok: true,
+      channel: { id: `D-${args.users ?? "UNKNOWN"}` },
+    }),
   };
 
   reactions = {

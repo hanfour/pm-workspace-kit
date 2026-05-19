@@ -36,6 +36,8 @@ import {
   saveAtom,
   type KnowledgeAtom,
 } from "../src/gateway/knowledge";
+import { readGatewayEvents } from "../src/gateway/events";
+import { saveUserSession } from "../src/gateway/session-store";
 
 describe("SlackAdapter integration: DM happy-path", () => {
   let h: Harness;
@@ -611,5 +613,114 @@ describe("SlackAdapter integration: reaction-based atom approval", () => {
       findAtomByApprovalMessage("C-ANYWHERE", "1700000999.999999"),
       undefined,
     );
+  });
+});
+
+describe("SlackAdapter integration: presence broadcast (#44)", () => {
+  let h: Harness;
+
+  afterEach(() => {
+    h.cleanup();
+  });
+
+  /** Filter readGatewayEvents output to a single event type for cleaner asserts. */
+  function eventsOfType(type: string): Array<Record<string, unknown>> {
+    return readGatewayEvents().filter(
+      (e) => (e as { type: string }).type === type,
+    ) as unknown as Array<Record<string, unknown>>;
+  }
+
+  it("first-ever start (no offline duration) → broadcasts online with broadcast:true", async () => {
+    h = buildHarness();
+    await h.adapter.start();
+
+    const online = eventsOfType("gateway.online");
+    assert.equal(online.length, 1);
+    assert.equal(online[0].broadcast, true);
+    // No suppression reason — falls into the crash-recovery branch
+    // because gracefulShutdown defaulted to false.
+    assert.equal(online[0].reason, "crash-recovery");
+  });
+
+  it("fast graceful restart (offline < 5min, graceful=true) → suppress with broadcast:false", async () => {
+    h = buildHarness({
+      wasOffline: true,
+      offlineDurationMs: 60_000, // 1 min, well under MIN_BROADCAST_GAP_MS=5min
+      gracefulShutdown: true,
+    });
+    await h.adapter.start();
+
+    const online = eventsOfType("gateway.online");
+    assert.equal(online.length, 1);
+    assert.equal(online[0].broadcast, false);
+    assert.equal(online[0].reason, "graceful-fast-restart");
+    assert.equal(online[0].offlineDurationMs, 60_000);
+  });
+
+  it("fast crash recovery (offline < 5min, gracefulShutdown=false) → suppress with reason fast-recovery", async () => {
+    h = buildHarness({
+      wasOffline: true,
+      offlineDurationMs: 30_000,
+      gracefulShutdown: false,
+    });
+    await h.adapter.start();
+
+    const online = eventsOfType("gateway.online");
+    assert.equal(online.length, 1);
+    assert.equal(online[0].broadcast, false);
+    assert.equal(online[0].reason, "fast-recovery");
+  });
+
+  it("long downtime (offline > 5min) → actually broadcasts to recently-active recipients", async () => {
+    h = buildHarness({
+      wasOffline: true,
+      offlineDurationMs: 30 * 60_000, // 30 min, well past threshold
+      gracefulShutdown: false,
+    });
+    // Seed one recently-active DM so listRecentUsers has a recipient.
+    saveUserSession({
+      userId: "U-RECENT",
+      messages: [],
+      lastActiveAt: Date.now(),
+      approxTokens: 0,
+      turns: 0,
+    });
+
+    await h.adapter.start();
+
+    const online = eventsOfType("gateway.online");
+    assert.equal(online.length, 1);
+    assert.equal(online[0].broadcast, true);
+    assert.equal(online[0].reason, "crash-recovery");
+
+    // Fan-out attempted an actual DM post for the recent user (via
+    // dmSafe → conversations.open then chat.postMessage). In the harness
+    // the fake `conversations.history` and `users.info` defaults are
+    // benign, so chat.postMessage should have been called at least once
+    // with a back-online notice.
+    assert.ok(
+      h.web.posted.length >= 1,
+      "broadcast should reach at least the seeded recent user",
+    );
+    assert.match(
+      h.web.posted[0].text ?? "",
+      /上線|back|online/i,
+      "broadcast text should mention coming back online",
+    );
+  });
+
+  it("stop() emits gateway.offline (always broadcasts; suppression is online-only)", async () => {
+    h = buildHarness();
+    await h.adapter.start();
+    // Stop after start: broadcastOffline always fires the audit event
+    // and posts the offline notice (the audit rationale is "operators
+    // want to see the going-down notice even when the corresponding
+    // back-up is suppressed").
+    await h.adapter.stop();
+
+    const offline = eventsOfType("gateway.offline");
+    assert.equal(offline.length, 1);
+    assert.equal(offline[0].broadcast, true);
+    assert.equal(offline[0].reason, "shutdown");
   });
 });
