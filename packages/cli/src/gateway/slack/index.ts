@@ -17,16 +17,20 @@ import {
 import {
   channelCasesDir,
   clearThreadEscalation,
-  loadChannelChatSession,
   loadChannelMeta,
   loadThreadEscalation,
   loadUserSession,
-  saveChannelChatSession,
   saveChannelMeta,
   saveThreadEscalation,
   saveUserSession,
   userCasesDir,
 } from "../session-store";
+import {
+  appendChannelTurns,
+  entriesToMessages,
+  loadChannelTurns,
+  type ChannelLogEntry,
+} from "../channel-log";
 import { EnvelopeDedup } from "./envelope-dedup";
 import { PresenceBroadcaster } from "./presence";
 
@@ -423,16 +427,31 @@ export class SlackAdapter {
 
     if (this.config.blocklist.includes(userId)) return;
 
-    if (this.inFlight.has(channelId)) {
+    // v0.13: lock per-user-per-channel instead of per-channel. The old
+    // per-channel key serialised every @-mention in the channel,
+    // blocking multi-user Q&A in open channels (different users had
+    // to wait for each other's LLM round to finish). Per-user-per-
+    // channel still serialises a single user's rapid double-taps (the
+    // original intent of the lock) but lets distinct users proceed
+    // in parallel.
+    //
+    // Trade-off: when the channel has an active case file
+    // (`/pmk open <name>`), parallel @-mentions can race on
+    // `saveCase` (last write wins). In practice case-channels are
+    // low-traffic single-thread workflows, so the race is rare;
+    // the v0.13 backlog tracks a load-modify-write retry on case
+    // files if it bites.
+    const inFlightKey = `${channelId}:${userId}`;
+    if (this.inFlight.has(inFlightKey)) {
       await this.web.chat.postMessage({
         channel: channelId,
         thread_ts: replyThreadTs,
-        text: ":hourglass: 已有訊息在處理中，請稍候。",
+        text: ":hourglass: 你上一則訊息還在處理，請稍候。",
       });
       return;
     }
 
-    this.inFlight.add(channelId);
+    this.inFlight.add(inFlightKey);
     try {
       // Absorb-first: if this thread is pending escalation and the
       // mentioner is one of the tagged IT contacts, treat the message
@@ -464,7 +483,7 @@ export class SlackAdapter {
         })
         .catch(() => {});
     } finally {
-      this.inFlight.delete(channelId);
+      this.inFlight.delete(inFlightKey);
     }
   }
 
@@ -1289,14 +1308,53 @@ export class SlackAdapter {
       // per-thread session (top-level mentions share one "main" session,
       // each Slack thread gets an isolated session). Users who want
       // bug-tracking semantics explicitly run `/pmk open <name>`.
-      const session = loadChannelChatSession(channelId, sessionThreadTs);
+      //
+      // v0.13: switched from `ChannelChatSession` (read-modify-write
+      // `chat-session.json`) to append-only `channel-log.ts`. The legacy
+      // model raced when parallel @-mentions in the same channel both
+      // load → push → save (last write wins). The append-only log uses
+      // atomic `fs.appendFileSync` so two writers both land; the
+      // saveSession closure here only appends entries new since this
+      // turn's load, filtered by `(role, content)` so prune-trimmed
+      // history (local to this request's LLM context) is NOT
+      // re-appended.
+      const loadedEntries = loadChannelTurns(channelId, sessionThreadTs);
+      const initialMessages = entriesToMessages(loadedEntries);
+      const initialKeys = new Set(
+        initialMessages.map((m) => `${m.role} ${m.content}`),
+      );
+      const session: FreeChatSession = {
+        messages: [...initialMessages],
+        turns: loadedEntries.filter(
+          (e) => e.role === "user" && e.userId !== undefined,
+        ).length,
+        approxTokens: approxTokensFor(initialMessages),
+      };
       await this.runFreeChatTurn({
         channelId,
         threadTs,
         text,
         userId,
         session,
-        saveSession: (s) => saveChannelChatSession(s, sessionThreadTs),
+        saveSession: (s) => {
+          const newMessages = s.messages.filter(
+            (m) => !initialKeys.has(`${m.role} ${m.content}`),
+          );
+          if (newMessages.length === 0) return;
+          const now = new Date().toISOString();
+          const entries: ChannelLogEntry[] = newMessages.map((m) => ({
+            ts: now,
+            role: m.role,
+            content: m.content,
+            // Only the message whose content matches the turn's prompt
+            // is attributed to the calling user; seed and mra-result
+            // user-role messages stay unattributed.
+            ...(m.role === "user" && m.content === text
+              ? { userId }
+              : {}),
+          }));
+          appendChannelTurns(channelId, sessionThreadTs, entries);
+        },
       });
       // Touch channel meta so listRecentChannels picks it up for the
       // offline / online broadcast list.

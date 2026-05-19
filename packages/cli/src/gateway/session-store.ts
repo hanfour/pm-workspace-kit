@@ -66,22 +66,13 @@ export interface ChannelMeta {
   lastActiveAt: number;
 }
 
-/**
- * Channel-shared free-chat session. Used when `@pmk` is mentioned in a
- * channel that has no active case — the bot drops into the same
- * PKB-grounded chat mode as DMs, but the message history is shared
- * across everyone in the channel (mirrors how channel cases are
- * shared, not per-user).
- *
- * File: ~/.pmk/gateway/slack/channels/<channelId>/chat-session.json
- */
-export interface ChannelChatSession {
-  channelId: string;
-  messages: ChatMessage[];
-  lastActiveAt: number;
-  approxTokens: number;
-  turns: number;
-}
+/* v0.13: the `ChannelChatSession` type + `loadChannelChatSession` /
+ * `saveChannelChatSession` helpers that previously lived here are
+ * gone. They modelled the channel free-chat history as a single
+ * read-modify-write blob (`chat-session.json`) which raced when
+ * parallel @-mentions in the same channel both loaded → mutated →
+ * saved. Free-chat now uses the append-only `gateway/channel-log.ts`
+ * module; on-disk files migrate automatically on first load. */
 
 export function loadUserSession(
   slackUserId: string,
@@ -106,40 +97,6 @@ export function saveUserSession(s: UserSession, threadTs?: string): void {
   s.lastActiveAt = Date.now();
   fs.writeFileSync(
     path.join(dir, "session.json"),
-    JSON.stringify(s, null, 2),
-    "utf8",
-  );
-}
-
-export function loadChannelChatSession(
-  slackChannelId: string,
-  threadTs?: string,
-): ChannelChatSession {
-  const file = path.join(
-    channelDir(slackChannelId, threadTs),
-    "chat-session.json",
-  );
-  if (!fs.existsSync(file)) {
-    return {
-      channelId: slackChannelId,
-      messages: [],
-      lastActiveAt: 0,
-      approxTokens: 0,
-      turns: 0,
-    };
-  }
-  return JSON.parse(fs.readFileSync(file, "utf8")) as ChannelChatSession;
-}
-
-export function saveChannelChatSession(
-  s: ChannelChatSession,
-  threadTs?: string,
-): void {
-  const dir = channelDir(s.channelId, threadTs);
-  fs.mkdirSync(dir, { recursive: true });
-  s.lastActiveAt = Date.now();
-  fs.writeFileSync(
-    path.join(dir, "chat-session.json"),
     JSON.stringify(s, null, 2),
     "utf8",
   );

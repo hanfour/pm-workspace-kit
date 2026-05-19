@@ -38,6 +38,7 @@ import {
 } from "../src/gateway/knowledge";
 import { readGatewayEvents } from "../src/gateway/events";
 import { saveUserSession } from "../src/gateway/session-store";
+import { loadChannelTurns } from "../src/gateway/channel-log";
 import { PmkContextTooLongError } from "../src/llm/claude-agent";
 
 describe("SlackAdapter integration: DM happy-path", () => {
@@ -954,5 +955,205 @@ describe("SlackAdapter integration: envelope dedup", () => {
     const log = readAdminLog();
     assert.equal(log.length, 1);
     assert.equal(log[0].action, "status");
+  });
+});
+
+describe("SlackAdapter integration: channel inFlight lock (v0.13)", () => {
+  let h: Harness;
+
+  beforeEach(() => {
+    h = buildHarness();
+  });
+
+  afterEach(() => {
+    h.cleanup();
+  });
+
+  it("different users in same channel run concurrently (per-user-per-channel key)", async () => {
+    // First scripted reply waits on a gate so we can fire a second
+    // @-mention while the first is still in flight.
+    let releaseFirst: () => void = () => {};
+    const firstGate = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+
+    h.llm.script(
+      async () => {
+        await firstGate;
+        return "answer for alice";
+      },
+      "answer for bob",
+    );
+
+    await h.adapter.start();
+
+    const p1 = h.socket.emit(
+      "app_mention",
+      appMentionPayload({
+        user: "U-ALICE",
+        channel: "C-QA",
+        text: "<@UBOTID> what does this scope do?",
+        envelope_id: "env-alice",
+      }),
+    );
+
+    // Let p1 reach its llm.chat() await and acquire its
+    // `${channel}:${user}` inFlight key.
+    await new Promise((res) => setImmediate(res));
+
+    // Different user, same channel — should NOT be blocked by the
+    // pre-v0.13 channel-wide lock.
+    await h.socket.emit(
+      "app_mention",
+      appMentionPayload({
+        user: "U-BOB",
+        channel: "C-QA",
+        text: "<@UBOTID> separate question",
+        envelope_id: "env-bob",
+      }),
+    );
+
+    // Bob's path completed (synthesised reply landed); Alice still
+    // awaiting the gate. Both LLM calls happened.
+    assert.equal(h.llm.calls.length, 2);
+
+    // No busy notice was posted (the previous behaviour would have
+    // dropped Bob's request with `:hourglass: 已有訊息在處理中`).
+    const busy = h.web.posted.find((p) =>
+      p.text?.includes("還在處理"),
+    );
+    assert.equal(busy, undefined, "no busy notice for different users");
+
+    // Release Alice so the test can finish cleanly.
+    releaseFirst();
+    await p1;
+
+    // Both placeholders → both final updates.
+    assert.equal(h.web.updated.length, 2);
+  });
+
+  it("same user double-tap in same channel → second blocked with busy notice", async () => {
+    let releaseFirst: () => void = () => {};
+    const firstGate = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+
+    h.llm.script(async () => {
+      await firstGate;
+      return "first answer";
+    });
+
+    await h.adapter.start();
+
+    const p1 = h.socket.emit(
+      "app_mention",
+      appMentionPayload({
+        user: "U-ALICE",
+        channel: "C-QA",
+        text: "<@UBOTID> q1",
+        envelope_id: "env-alice-1",
+      }),
+    );
+
+    // Let p1 acquire its inFlight key before the second emit checks.
+    await new Promise((res) => setImmediate(res));
+
+    // Same user + same channel + different envelope_id (so dedup
+    // doesn't catch it first) → must be blocked by the per-user lock.
+    await h.socket.emit(
+      "app_mention",
+      appMentionPayload({
+        user: "U-ALICE",
+        channel: "C-QA",
+        text: "<@UBOTID> q2 from same user",
+        envelope_id: "env-alice-2",
+      }),
+    );
+
+    assert.equal(
+      h.llm.calls.length,
+      1,
+      "second tap from the same user must not start a parallel LLM round",
+    );
+
+    const busy = h.web.posted.find((p) =>
+      p.text?.includes("還在處理"),
+    );
+    assert.ok(busy, "busy notice should fire on same-user double-tap");
+    assert.match(
+      busy!.text ?? "",
+      /你上一則訊息還在處理/,
+      "notice should call out THIS user's prior message, not the channel",
+    );
+
+    releaseFirst();
+    await p1;
+  });
+
+  it("two users' concurrent turns both land in the channel-log (race-free persistence)", async () => {
+    // End-to-end proof that the v0.13 concurrency change + append-only
+    // log together prevent the data-loss race the legacy
+    // ChannelChatSession had: with the OLD model, Bob's loadChannel-
+    // ChatSession would have snapshotted before Alice's save, then
+    // Bob's saveChannelChatSession would have overwritten Alice's turn
+    // on disk (Slack-side messages still posted, but channel context
+    // would lose Alice's turn for future LLM calls).
+    let releaseFirst: () => void = () => {};
+    const firstGate = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    h.llm.script(
+      async () => {
+        await firstGate;
+        return "alice answer";
+      },
+      "bob answer",
+    );
+
+    await h.adapter.start();
+
+    const p1 = h.socket.emit(
+      "app_mention",
+      appMentionPayload({
+        user: "U-ALICE",
+        channel: "C-LOG",
+        text: "<@UBOTID> alice prompt",
+        envelope_id: "env-a",
+      }),
+    );
+
+    await new Promise((res) => setImmediate(res));
+
+    await h.socket.emit(
+      "app_mention",
+      appMentionPayload({
+        user: "U-BOB",
+        channel: "C-LOG",
+        text: "<@UBOTID> bob prompt",
+        envelope_id: "env-b",
+      }),
+    );
+
+    releaseFirst();
+    await p1;
+
+    const entries = loadChannelTurns("C-LOG");
+    const userTurns = entries.filter((e) => e.role === "user" && e.userId);
+    const userIds = userTurns.map((e) => e.userId);
+    assert.ok(
+      userIds.includes("U-ALICE"),
+      "Alice's turn persisted in the log",
+    );
+    assert.ok(
+      userIds.includes("U-BOB"),
+      "Bob's turn persisted in the log",
+    );
+    assert.equal(userTurns.length, 2, "exactly two user-attributed turns");
+
+    const assistantContents = entries
+      .filter((e) => e.role === "assistant")
+      .map((e) => e.content);
+    assert.ok(assistantContents.some((c) => c.includes("alice answer")));
+    assert.ok(assistantContents.some((c) => c.includes("bob answer")));
   });
 });

@@ -20,11 +20,9 @@ import {
   clearThreadEscalation,
   listRecentChannels,
   listRecentUsers,
-  loadChannelChatSession,
   loadChannelMeta,
   loadThreadEscalation,
   loadUserSession,
-  saveChannelChatSession,
   saveChannelMeta,
   saveThreadEscalation,
   saveUserSession,
@@ -418,21 +416,8 @@ describe("session-store", () => {
     assert.deepEqual(recent.sort(), ["U-fresh"]);
   });
 
-  it("channel chat session round-trips and starts empty", () => {
-    const fresh = loadChannelChatSession("C-x");
-    assert.equal(fresh.channelId, "C-x");
-    assert.equal(fresh.messages.length, 0);
-    assert.equal(fresh.turns, 0);
-    fresh.messages.push({ role: "user", content: "hello channel" });
-    fresh.turns = 1;
-    fresh.approxTokens = 7;
-    saveChannelChatSession(fresh);
-    const reload = loadChannelChatSession("C-x");
-    assert.equal(reload.turns, 1);
-    assert.equal(reload.approxTokens, 7);
-    assert.equal(reload.messages[0].content, "hello channel");
-    assert.ok(reload.lastActiveAt > 0);
-  });
+  // Channel-chat-session round-trip + thread isolation moved to
+  // `channel-log.test.ts` (v0.13 append-only model).
 
   it("channel meta save → load + listRecentChannels", () => {
     const m = loadChannelMeta("C-debug");
@@ -872,21 +857,8 @@ describe("thread-aware sessions", () => {
     assert.equal(thread.messages.length, 0);
   });
 
-  it("channel chat thread/main isolation", () => {
-    const main = loadChannelChatSession("C-z");
-    main.messages.push({ role: "user", content: "channel main" });
-    saveChannelChatSession(main);
-
-    const thread = loadChannelChatSession("C-z", "ts-1");
-    assert.equal(thread.messages.length, 0);
-    thread.messages.push({ role: "user", content: "channel thread" });
-    saveChannelChatSession(thread, "ts-1");
-
-    const mainReload = loadChannelChatSession("C-z");
-    assert.equal(mainReload.messages[0].content, "channel main");
-    const threadReload = loadChannelChatSession("C-z", "ts-1");
-    assert.equal(threadReload.messages[0].content, "channel thread");
-  });
+  // Channel-chat-session round-trip + thread isolation moved to
+  // `channel-log.test.ts` (v0.13 append-only model).
 });
 
 describe("audience picker", () => {
