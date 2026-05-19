@@ -19,6 +19,10 @@ import type { WebClient } from "@slack/web-api";
 import type { SocketModeClient } from "@slack/socket-mode";
 import type { ChatMessage } from "@pmk/shared";
 import type { LlmProvider } from "../../src/llm/provider";
+import type {
+  MraAskResult,
+  MraDoctorReport,
+} from "../../src/adapters/mra";
 import { SlackAdapter } from "../../src/gateway/slack";
 import {
   GATEWAY_CONFIG_VERSION,
@@ -193,6 +197,54 @@ export class FakeLlmProvider implements LlmProvider {
   }
 }
 
+/**
+ * Stand-in for the two `mra` adapter calls SlackAdapter makes
+ * (`mraDoctor` + `runMraAsk`). `doctorResponse` defaults to a
+ * happy report pointing at a fake workspace path so the doctor
+ * pre-check passes; `scriptAsk(...)` queues `runMraAsk` results
+ * FIFO. Tests asserting on call args can read `askCalls`.
+ */
+export interface FakeMraAskCall {
+  repo: string;
+  question: string;
+  cwd: string;
+}
+
+export class FakeMra {
+  doctorResponse: MraDoctorReport = {
+    ok: true,
+    binaryPath: "/fake/bin/mra",
+    workspace: "/fake/workspace",
+  };
+  askCalls: FakeMraAskCall[] = [];
+  private askScripted: Array<MraAskResult> = [];
+
+  scriptAsk(...results: MraAskResult[]): this {
+    this.askScripted.push(...results);
+    return this;
+  }
+
+  doctor = (
+    _opts: { cwd?: string; workspace?: string } = {},
+  ): MraDoctorReport => this.doctorResponse;
+
+  runAsk = async (
+    args: { repo: string; question: string; cwd: string },
+  ): Promise<MraAskResult> => {
+    this.askCalls.push({
+      repo: args.repo,
+      question: args.question,
+      cwd: args.cwd,
+    });
+    if (this.askScripted.length === 0) {
+      throw new Error(
+        `FakeMra exhausted: no scripted ask result for call #${this.askCalls.length}`,
+      );
+    }
+    return this.askScripted.shift()!;
+  };
+}
+
 /** Defaults a test can override piecewise via `buildHarness({ config: ... })`. */
 function defaultGatewayConfig(): GatewayConfig {
   return {
@@ -215,6 +267,7 @@ export interface Harness {
   web: FakeWebClient;
   socket: FakeSocketModeClient;
   llm: FakeLlmProvider;
+  mra: FakeMra;
   /** Absolute path to the tmp HOME the harness redirected to. */
   home: string;
   /** Restores `$HOME` and removes the tmp dir. Idempotent. */
@@ -246,6 +299,7 @@ export function buildHarness(opts: BuildHarnessOptions = {}): Harness {
   const web = new FakeWebClient();
   const socket = new FakeSocketModeClient();
   const llm = new FakeLlmProvider();
+  const mra = new FakeMra();
 
   const config: GatewayConfig = {
     ...defaultGatewayConfig(),
@@ -262,6 +316,8 @@ export function buildHarness(opts: BuildHarnessOptions = {}): Harness {
     web: web as unknown as WebClient,
     socket: socket as unknown as SocketModeClient,
     llm,
+    mraDoctor: mra.doctor,
+    runMraAsk: mra.runAsk,
   });
 
   return {
@@ -269,6 +325,7 @@ export function buildHarness(opts: BuildHarnessOptions = {}): Harness {
     web,
     socket,
     llm,
+    mra,
     home,
     cleanup: () => {
       if (restored) return;

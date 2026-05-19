@@ -47,7 +47,10 @@ import {
   saveCase,
   stripCaseUpdateBlock,
 } from "../../case";
-import { mraDoctor, runMraAsk } from "../../adapters/mra";
+import {
+  mraDoctor as mraDoctorImpl,
+  runMraAsk as runMraAskImpl,
+} from "../../adapters/mra";
 import { appendGatewayEvent } from "../events";
 import { createLastLineThrottle } from "../throttle";
 import { sanitizeProgressLine } from "./progress";
@@ -165,6 +168,15 @@ export interface SlackAdapterOptions {
   web?: WebClient;
   socket?: SocketModeClient;
   llm?: LlmProvider;
+  /**
+   * v0.13 harness DI: override the `mra ask` round (binary launch) +
+   * workspace check. Defaults to the real adapters from
+   * `../../adapters/mra`; tests substitute scripted versions so the
+   * mra-ask escalate flow can be driven without spawning a real
+   * subprocess or needing `mra` on PATH.
+   */
+  mraDoctor?: typeof mraDoctorImpl;
+  runMraAsk?: typeof runMraAskImpl;
 }
 
 /**
@@ -197,6 +209,8 @@ export class SlackAdapter {
   /** Monotonic sequence for presence events emitted by THIS process. */
   private presenceSeq = 0;
   private llm: LlmProvider;
+  private readonly mraDoctor: typeof mraDoctorImpl;
+  private readonly runMraAsk: typeof runMraAskImpl;
   private inFlight = new Set<string>();
   /** Envelope IDs we've already accepted; protects against Slack retries.
    * Bounded LRU — see {@link SEEN_ENVELOPES_MAX}. */
@@ -243,6 +257,8 @@ export class SlackAdapter {
         : { ...baseCliConfig, apiKey: this.config.apiKey };
       this.llm = resolveProvider(mergedConfig);
     }
+    this.mraDoctor = opts.mraDoctor ?? mraDoctorImpl;
+    this.runMraAsk = opts.runMraAsk ?? runMraAskImpl;
   }
 
   async start(): Promise<SlackBotInfo> {
@@ -1068,7 +1084,7 @@ export class SlackAdapter {
       systemPrompt,
       actor,
     } = args;
-    const doctor = mraDoctor({ workspace: this.config.mraWorkspace });
+    const doctor = this.mraDoctor({ workspace: this.config.mraWorkspace });
     if (!doctor.ok || !doctor.workspace) {
       // Host-side log so the gateway operator can see WHY mra-ask
       // bailed (config-fixable vs binary-missing vs workspace-stale).
@@ -1128,7 +1144,7 @@ export class SlackAdapter {
       `mra ask repo=${request.repo} q=${truncate(request.question, 120)}`,
     );
     const mraStartMs = Date.now();
-    const result = await runMraAsk(
+    const result = await this.runMraAsk(
       {
         repo: request.repo,
         question: request.question,

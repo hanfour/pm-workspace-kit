@@ -107,3 +107,119 @@ describe("SlackAdapter integration: DM happy-path", () => {
     assert.match(posts[0].text ?? "", /封鎖名單/);
   });
 });
+
+describe("SlackAdapter integration: mra-ask escalate round", () => {
+  let h: Harness;
+
+  beforeEach(() => {
+    h = buildHarness();
+  });
+
+  afterEach(() => {
+    h.cleanup();
+  });
+
+  it("LLM emits mra-ask → runMraAsk called → synthesise round produces visible reply", async () => {
+    // First LLM call: tells the gateway to delegate to mra ask.
+    // Second LLM call: synthesises a final user-facing answer that
+    // references the mra subprocess output.
+    h.llm.script(
+      "preamble talking about the repo.\n" +
+        "```mra-ask\n" +
+        "repo: erp\n" +
+        "question: where is sales_performances defined?\n" +
+        "```",
+      "The `sales_performances` scope lives in `models/order.rb:42`. Here is the breakdown…",
+    );
+    h.mra.scriptAsk({
+      ok: true,
+      stdout: "scope :sales_performances defined in models/order.rb:42",
+      stderr: "",
+      attempts: 1,
+    });
+
+    await h.adapter.start();
+
+    await h.socket.emit(
+      "message",
+      dmMessagePayload({
+        user: "U-PM",
+        channel: "D-PM-DM",
+        text: "where is sales_performances defined?",
+      }),
+    );
+
+    assert.equal(h.llm.calls.length, 2, "first-call + synthesise = 2 LLM calls");
+    assert.equal(h.mra.askCalls.length, 1, "mra ask invoked exactly once");
+    assert.equal(h.mra.askCalls[0].repo, "erp");
+    assert.match(h.mra.askCalls[0].question, /sales_performances/);
+    assert.equal(h.mra.askCalls[0].cwd, "/fake/workspace");
+
+    // Placeholder + progress-update + final update all target the
+    // same channel; the latest update text carries the synthesised
+    // answer with the machine-readable `mra-ask` block stripped.
+    assert.ok(h.web.updated.length >= 1, "at least one chat.update should fire");
+    const finalText = h.web.updated[h.web.updated.length - 1].text ?? "";
+    assert.match(finalText, /models\/order\.rb:42/);
+    assert.doesNotMatch(finalText, /```mra-ask/);
+  });
+
+  it("mraDoctor failure surfaces as synthetic mra failure to the LLM (no askCall)", async () => {
+    h.mra.doctorResponse = {
+      ok: false,
+      reason: "configured mraWorkspace stale; no .collab/repos.json",
+    };
+    h.llm.script(
+      "preamble.\n```mra-ask\nrepo: erp\nquestion: where is X?\n```",
+      "Sorry, can't reach mra workspace right now — best-effort answer based on PKB.",
+    );
+
+    await h.adapter.start();
+    await h.socket.emit(
+      "message",
+      dmMessagePayload({
+        user: "U-PM",
+        channel: "D-PM-DM",
+        text: "where is X?",
+      }),
+    );
+
+    assert.equal(h.mra.askCalls.length, 0, "doctor short-circuits before runAsk");
+    assert.equal(
+      h.llm.calls.length,
+      2,
+      "synthesise still runs with a synthetic mra-failed result",
+    );
+    const finalText = h.web.updated[h.web.updated.length - 1].text ?? "";
+    assert.match(finalText, /best-effort/);
+  });
+
+  it("runMraAsk failure surfaces via buildMraFailureMessage into synthesise", async () => {
+    h.llm.script(
+      "preamble.\n```mra-ask\nrepo: erp\nquestion: where is X?\n```",
+      "mra returned no relevant code; falling back to PKB summary.",
+    );
+    h.mra.scriptAsk({
+      ok: false,
+      stdout: "",
+      stderr: "mra: repo `erp` not found in workspace",
+      reason: "exit 1",
+      attempts: 2,
+    });
+
+    await h.adapter.start();
+    await h.socket.emit(
+      "message",
+      dmMessagePayload({
+        user: "U-PM",
+        channel: "D-PM-DM",
+        text: "where is X?",
+      }),
+    );
+
+    assert.equal(h.mra.askCalls.length, 1);
+    assert.equal(h.llm.calls.length, 2, "synthesise still runs after mra failure");
+    const finalText = h.web.updated[h.web.updated.length - 1].text ?? "";
+    assert.match(finalText, /PKB summary/);
+  });
+});
