@@ -38,6 +38,7 @@ import {
 } from "../src/gateway/knowledge";
 import { readGatewayEvents } from "../src/gateway/events";
 import { saveUserSession } from "../src/gateway/session-store";
+import { loadChannelTurns } from "../src/gateway/channel-log";
 import { PmkContextTooLongError } from "../src/llm/claude-agent";
 
 describe("SlackAdapter integration: DM happy-path", () => {
@@ -1087,5 +1088,72 @@ describe("SlackAdapter integration: channel inFlight lock (v0.13)", () => {
 
     releaseFirst();
     await p1;
+  });
+
+  it("two users' concurrent turns both land in the channel-log (race-free persistence)", async () => {
+    // End-to-end proof that the v0.13 concurrency change + append-only
+    // log together prevent the data-loss race the legacy
+    // ChannelChatSession had: with the OLD model, Bob's loadChannel-
+    // ChatSession would have snapshotted before Alice's save, then
+    // Bob's saveChannelChatSession would have overwritten Alice's turn
+    // on disk (Slack-side messages still posted, but channel context
+    // would lose Alice's turn for future LLM calls).
+    let releaseFirst: () => void = () => {};
+    const firstGate = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    h.llm.script(
+      async () => {
+        await firstGate;
+        return "alice answer";
+      },
+      "bob answer",
+    );
+
+    await h.adapter.start();
+
+    const p1 = h.socket.emit(
+      "app_mention",
+      appMentionPayload({
+        user: "U-ALICE",
+        channel: "C-LOG",
+        text: "<@UBOTID> alice prompt",
+        envelope_id: "env-a",
+      }),
+    );
+
+    await new Promise((res) => setImmediate(res));
+
+    await h.socket.emit(
+      "app_mention",
+      appMentionPayload({
+        user: "U-BOB",
+        channel: "C-LOG",
+        text: "<@UBOTID> bob prompt",
+        envelope_id: "env-b",
+      }),
+    );
+
+    releaseFirst();
+    await p1;
+
+    const entries = loadChannelTurns("C-LOG");
+    const userTurns = entries.filter((e) => e.role === "user" && e.userId);
+    const userIds = userTurns.map((e) => e.userId);
+    assert.ok(
+      userIds.includes("U-ALICE"),
+      "Alice's turn persisted in the log",
+    );
+    assert.ok(
+      userIds.includes("U-BOB"),
+      "Bob's turn persisted in the log",
+    );
+    assert.equal(userTurns.length, 2, "exactly two user-attributed turns");
+
+    const assistantContents = entries
+      .filter((e) => e.role === "assistant")
+      .map((e) => e.content);
+    assert.ok(assistantContents.some((c) => c.includes("alice answer")));
+    assert.ok(assistantContents.some((c) => c.includes("bob answer")));
   });
 });
