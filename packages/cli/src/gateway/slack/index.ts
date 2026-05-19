@@ -423,16 +423,31 @@ export class SlackAdapter {
 
     if (this.config.blocklist.includes(userId)) return;
 
-    if (this.inFlight.has(channelId)) {
+    // v0.13: lock per-user-per-channel instead of per-channel. The old
+    // per-channel key serialised every @-mention in the channel,
+    // blocking multi-user Q&A in open channels (different users had
+    // to wait for each other's LLM round to finish). Per-user-per-
+    // channel still serialises a single user's rapid double-taps (the
+    // original intent of the lock) but lets distinct users proceed
+    // in parallel.
+    //
+    // Trade-off: when the channel has an active case file
+    // (`/pmk open <name>`), parallel @-mentions can race on
+    // `saveCase` (last write wins). In practice case-channels are
+    // low-traffic single-thread workflows, so the race is rare;
+    // the v0.13 backlog tracks a load-modify-write retry on case
+    // files if it bites.
+    const inFlightKey = `${channelId}:${userId}`;
+    if (this.inFlight.has(inFlightKey)) {
       await this.web.chat.postMessage({
         channel: channelId,
         thread_ts: replyThreadTs,
-        text: ":hourglass: 已有訊息在處理中，請稍候。",
+        text: ":hourglass: 你上一則訊息還在處理，請稍候。",
       });
       return;
     }
 
-    this.inFlight.add(channelId);
+    this.inFlight.add(inFlightKey);
     try {
       // Absorb-first: if this thread is pending escalation and the
       // mentioner is one of the tagged IT contacts, treat the message
@@ -464,7 +479,7 @@ export class SlackAdapter {
         })
         .catch(() => {});
     } finally {
-      this.inFlight.delete(channelId);
+      this.inFlight.delete(inFlightKey);
     }
   }
 
