@@ -859,3 +859,102 @@ describe("SlackAdapter integration: msg_too_long hardening (v0.11.1)", () => {
     );
   });
 });
+
+describe("SlackAdapter integration: envelope dedup", () => {
+  let h: Harness;
+
+  beforeEach(() => {
+    h = buildHarness();
+  });
+
+  afterEach(() => {
+    h.cleanup();
+  });
+
+  it("same envelope_id delivered twice → handler runs once (DM path)", async () => {
+    h.llm.script("first answer", "second answer");
+    await h.adapter.start();
+
+    const payload = dmMessagePayload({
+      user: "U-PM",
+      channel: "D-PM-DM",
+      text: "first delivery",
+      envelope_id: "env-dupe-12345",
+    });
+    await h.socket.emit("message", payload);
+    await h.socket.emit("message", payload);
+
+    assert.equal(
+      h.llm.calls.length,
+      1,
+      "duplicate envelope_id must be deduped before reaching the LLM",
+    );
+    assert.equal(h.web.updated.length, 1, "only one final update fires");
+  });
+
+  it("retry_num > 0 is dropped (DM path)", async () => {
+    h.llm.script("should not be called");
+    await h.adapter.start();
+
+    await h.socket.emit(
+      "message",
+      dmMessagePayload({
+        user: "U-PM",
+        channel: "D-PM-DM",
+        text: "retried delivery",
+        envelope_id: "env-retry-1",
+        retry_num: 1,
+      }),
+    );
+
+    assert.equal(h.llm.calls.length, 0, "retry_num>0 envelopes are dropped");
+    assert.equal(h.web.posted.length, 0, "no placeholder, no anything");
+  });
+
+  it("same envelope_id delivered twice → handler runs once (app_mention path)", async () => {
+    h.llm.script("first", "second");
+    await h.adapter.start();
+
+    const payload = appMentionPayload({
+      user: "U-PM",
+      channel: "C-DESIGN",
+      text: "<@UBOTID> hello",
+      envelope_id: "env-mention-dupe",
+    });
+    await h.socket.emit("app_mention", payload);
+    await h.socket.emit("app_mention", payload);
+
+    assert.equal(h.llm.calls.length, 1);
+    assert.equal(h.web.updated.length, 1);
+  });
+
+  it("same envelope_id delivered twice → handler runs once (slash_commands path)", async () => {
+    // Persist a config with this user as admin so /pmk admin status
+    // dispatches through handleAdminSlash on the first delivery.
+    saveGatewayConfig({
+      version: 1,
+      admins: ["U-HOST"],
+      blocklist: [],
+      audience: { default: "tech", users: {}, channels: {} },
+      escalation: { default: [], repos: {} },
+      slack: { appToken: "xapp-test", botToken: "xoxb-test" },
+    });
+    h = buildHarness({ config: { admins: ["U-HOST"] } });
+    await h.adapter.start();
+
+    const payload = slashCommandPayload({
+      user_id: "U-HOST",
+      channel_id: "D-HOST-DM",
+      text: "admin status",
+      envelope_id: "env-slash-dupe",
+    });
+    await h.socket.emit("slash_commands", payload);
+    await h.socket.emit("slash_commands", payload);
+
+    // The admin-log row is the cleanest "did the handler actually run"
+    // signal — and there should be exactly one even after two deliveries.
+    const log = readAdminLog();
+    assert.equal(log.length, 1);
+    assert.equal(log[0].action, "status");
+  });
+});
