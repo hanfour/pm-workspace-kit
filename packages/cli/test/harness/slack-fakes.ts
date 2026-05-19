@@ -383,6 +383,41 @@ export function dmMessagePayload(args: {
   };
 }
 
+/** Slack `reaction_added` event payload builder. */
+export function reactionAddedPayload(args: {
+  user: string;
+  reaction: string;
+  itemChannel: string;
+  itemTs: string;
+  itemUser?: string;
+  envelope_id?: string;
+}): {
+  ack: () => Promise<void>;
+  envelope_id: string;
+  retry_num: number;
+  event: {
+    type: "reaction_added";
+    user: string;
+    reaction: string;
+    item_user: string;
+    item: { type: "message"; channel: string; ts: string };
+  };
+} {
+  return {
+    ack: async () => undefined,
+    envelope_id:
+      args.envelope_id ?? `env-react-${args.itemTs}-${args.user}`,
+    retry_num: 0,
+    event: {
+      type: "reaction_added",
+      user: args.user,
+      reaction: args.reaction,
+      item_user: args.itemUser ?? "UBOTID",
+      item: { type: "message", channel: args.itemChannel, ts: args.itemTs },
+    },
+  };
+}
+
 /** Slack `slash_commands` envelope payload builder. */
 export function slashCommandPayload(args: {
   user_id: string;

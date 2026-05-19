@@ -16,6 +16,7 @@ import {
   appMentionPayload,
   buildHarness,
   dmMessagePayload,
+  reactionAddedPayload,
   slashCommandPayload,
   type Harness,
 } from "./harness/slack-fakes";
@@ -29,6 +30,12 @@ import {
   saveGatewayConfig,
 } from "../src/gateway/config";
 import { readAdminLog } from "../src/gateway/admin-log";
+import {
+  findAtomByApprovalMessage,
+  loadAtoms,
+  saveAtom,
+  type KnowledgeAtom,
+} from "../src/gateway/knowledge";
 
 describe("SlackAdapter integration: DM happy-path", () => {
   let h: Harness;
@@ -449,5 +456,160 @@ describe("SlackAdapter integration: /pmk admin slash command", () => {
     const posts = h.web.postsTo("C-PUBLIC");
     assert.equal(posts.length, 1);
     assert.match(posts[0].text ?? "", /只能在 DM/);
+  });
+});
+
+describe("SlackAdapter integration: reaction-based atom approval", () => {
+  let h: Harness;
+
+  function seedPendingAtom(args: {
+    channelId: string;
+    messageTs: string;
+    contributorUserId: string;
+  }): KnowledgeAtom {
+    const atom: KnowledgeAtom = {
+      id: "atom-test-12345",
+      createdAt: Date.now(),
+      scope: "general",
+      question: "where is sales_performances defined?",
+      answer: "models/order.rb:42",
+      summary: "sales_performances scope lives in the Order model.",
+      tags: ["erp", "scope"],
+      source: {
+        threadKey: `${args.channelId}:${args.messageTs}`,
+        contributorUserId: args.contributorUserId,
+      },
+      status: "pending",
+      expiresAt: Date.now() + 24 * 3600 * 1000,
+      approval: { channelId: args.channelId, messageTs: args.messageTs },
+    };
+    saveAtom(atom);
+    return atom;
+  }
+
+  beforeEach(() => {
+    h = buildHarness();
+  });
+
+  afterEach(() => {
+    h.cleanup();
+  });
+
+  it(":white_check_mark: from the contributor promotes pending atom to approved", async () => {
+    const channelId = "C-OPS";
+    const messageTs = "1700000300.000300";
+    const contributor = "U-IT";
+
+    seedPendingAtom({ channelId, messageTs, contributorUserId: contributor });
+
+    await h.adapter.start();
+    await h.socket.emit(
+      "reaction_added",
+      reactionAddedPayload({
+        user: contributor,
+        reaction: "white_check_mark",
+        itemChannel: channelId,
+        itemTs: messageTs,
+      }),
+    );
+
+    // Atom flipped to approved on disk.
+    const after = loadAtoms({ promote: false });
+    assert.equal(after.length, 1);
+    assert.equal(after[0].status, "approved");
+    assert.equal(after[0].expiresAt, undefined);
+
+    // Confirmation reply posted in the thread.
+    const replies = h.web
+      .postsTo(channelId)
+      .filter((p) => p.thread_ts === messageTs);
+    assert.equal(replies.length, 1);
+    assert.match(replies[0].text ?? "", /生效/);
+  });
+
+  it(":x: from the contributor deletes the pending atom", async () => {
+    const channelId = "C-OPS";
+    const messageTs = "1700000400.000400";
+    const contributor = "U-IT";
+
+    seedPendingAtom({ channelId, messageTs, contributorUserId: contributor });
+
+    await h.adapter.start();
+    await h.socket.emit(
+      "reaction_added",
+      reactionAddedPayload({
+        user: contributor,
+        reaction: "x",
+        itemChannel: channelId,
+        itemTs: messageTs,
+      }),
+    );
+
+    // Atom file removed from disk.
+    const after = loadAtoms({ promote: false });
+    assert.equal(after.length, 0);
+
+    const replies = h.web
+      .postsTo(channelId)
+      .filter((p) => p.thread_ts === messageTs);
+    assert.equal(replies.length, 1);
+    assert.match(replies[0].text ?? "", /捨棄/);
+  });
+
+  it("non-contributor reaction is ignored — atom stays pending", async () => {
+    const channelId = "C-OPS";
+    const messageTs = "1700000500.000500";
+    const contributor = "U-IT";
+    const stranger = "U-RANDOM";
+
+    seedPendingAtom({ channelId, messageTs, contributorUserId: contributor });
+
+    await h.adapter.start();
+    await h.socket.emit(
+      "reaction_added",
+      reactionAddedPayload({
+        user: stranger,
+        reaction: "white_check_mark",
+        itemChannel: channelId,
+        itemTs: messageTs,
+      }),
+    );
+
+    const after = loadAtoms({ promote: false });
+    assert.equal(after.length, 1);
+    assert.equal(
+      after[0].status,
+      "pending",
+      "atom must stay pending when a non-contributor reacts",
+    );
+
+    assert.equal(
+      h.web.postsTo(channelId).length,
+      0,
+      "no confirmation post for an ignored reaction",
+    );
+  });
+
+  it("reaction on a non-atom message is a no-op (other reactions still flow elsewhere)", async () => {
+    await h.adapter.start();
+    await h.socket.emit(
+      "reaction_added",
+      reactionAddedPayload({
+        user: "U-ANY",
+        reaction: "white_check_mark",
+        itemChannel: "C-ANYWHERE",
+        itemTs: "1700000999.999999",
+      }),
+    );
+
+    // No findAtomByApprovalMessage match → return early; no posts, no
+    // atom mutation.
+    assert.equal(h.web.posted.length, 0);
+    assert.equal(loadAtoms({ promote: false }).length, 0);
+    // Sanity: lookup function agrees the message is not anchored.
+    assert.equal(
+      findAtomByApprovalMessage("C-ANYWHERE", "1700000999.999999"),
+      undefined,
+    );
   });
 });
