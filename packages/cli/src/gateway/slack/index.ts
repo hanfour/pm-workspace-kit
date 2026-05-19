@@ -4,8 +4,6 @@ import type { GatewayConfig } from "../config";
 import {
   isAdmin,
   pickAudience,
-  pickEffectiveEscalationPool,
-  pickEscalationPool,
 } from "../config";
 import { handleAdminSlash } from "./admin";
 import { chatWithContextRetry } from "./context-retry";
@@ -16,12 +14,9 @@ import {
 } from "../formatters";
 import {
   channelCasesDir,
-  clearThreadEscalation,
   loadChannelMeta,
-  loadThreadEscalation,
   loadUserSession,
   saveChannelMeta,
-  saveThreadEscalation,
   saveUserSession,
   userCasesDir,
 } from "../session-store";
@@ -32,6 +27,7 @@ import {
   type ChannelLogEntry,
 } from "../channel-log";
 import { EnvelopeDedup } from "./envelope-dedup";
+import { EscalationCoordinator } from "./escalation";
 import { PresenceBroadcaster } from "./presence";
 
 // v0.13: re-exported so existing test imports (`gateway.test.ts`) keep
@@ -78,13 +74,8 @@ import {
   findAtomByApprovalMessage,
   formatAtomsForInjection,
   rejectAtom,
-  saveAtom,
   searchAtoms,
-  type KnowledgeAtom,
 } from "../knowledge";
-
-type KnowledgeAtomLike = Pick<KnowledgeAtom, "question" | "answer" | "summary">;
-import { extractKnowledgeAtom } from "../extractor";
 import * as path from "node:path";
 import * as fs from "node:fs";
 
@@ -196,6 +187,8 @@ export class SlackAdapter {
   private readonly dedup: EnvelopeDedup;
   /** Online/offline broadcast fan-out (#44). */
   private readonly presence: PresenceBroadcaster;
+  /** Outbound escalate + inbound absorb + asker-synthesis follow-up. */
+  private readonly escalation: EscalationCoordinator;
 
   constructor(opts: SlackAdapterOptions) {
     // v0.13: token guard only fires on the prod construction path.
@@ -245,6 +238,12 @@ export class SlackAdapter {
       onLog: this.onLog,
       offlineDurationMs: this.offlineDurationMs,
       gracefulShutdown: this.gracefulShutdown,
+    });
+    this.escalation = new EscalationCoordinator({
+      web: this.web,
+      config: this.config,
+      onLog: this.onLog,
+      llm: this.llm,
     });
   }
 
@@ -367,7 +366,7 @@ export class SlackAdapter {
       // into the knowledge store and stop — don't run the normal LLM
       // turn (otherwise we'd answer the IT's reply as if it were a
       // user question).
-      const absorbed = await this.maybeAbsorbEscalationReply({
+      const absorbed = await this.escalation.maybeAbsorbReply({
         channelId: event.channel!,
         threadTs: replyThreadTs,
         contributorUserId: userId,
@@ -456,7 +455,7 @@ export class SlackAdapter {
       // Absorb-first: if this thread is pending escalation and the
       // mentioner is one of the tagged IT contacts, treat the message
       // as the expert answer instead of routing to the LLM.
-      const absorbed = await this.maybeAbsorbEscalationReply({
+      const absorbed = await this.escalation.maybeAbsorbReply({
         channelId,
         threadTs: replyThreadTs,
         contributorUserId: userId,
@@ -697,7 +696,7 @@ export class SlackAdapter {
     // them once IT answers.
     const escReq = parseEscalate(full);
     if (escReq) {
-      await this.handleEscalation({
+      await this.escalation.escalate({
         channelId,
         threadTs,
         askerUserId: userId,
@@ -728,201 +727,6 @@ export class SlackAdapter {
     });
   }
 
-  /**
-   * pmk emits an `escalate` directive → @-mention an IT/domain expert
-   * in the thread and persist a pending-escalation marker so the next
-   * reply from a registered contributor in the same thread is absorbed
-   * into the knowledge store.
-   *
-   * No-op (with a friendly note) when no escalation pool is configured.
-   */
-  private async handleEscalation(args: {
-    channelId: string;
-    threadTs: string;
-    askerUserId: string;
-    request: { repo?: string; question: string; reason?: string };
-  }): Promise<void> {
-    const { channelId, threadTs, askerUserId, request } = args;
-    const pool = pickEscalationPool(this.config, request.repo);
-    // v0.8.2 (#30): filter out the asker themselves — @-mentioning the
-    // person who just asked the question is useless and creates the
-    // weird "<@U_asker> 想麻煩你補充..." artefact when the pool only
-    // happens to contain them. Helper lives in config.ts so it's
-    // unit-testable in isolation.
-    const effectivePool = pickEffectiveEscalationPool(
-      this.config,
-      request.repo,
-      askerUserId,
-    );
-
-    if (effectivePool.length === 0) {
-      // Two distinct config gaps land here:
-      //   - pool is genuinely empty (host hasn't run `pmk gateway escalation add`)
-      //   - pool resolves to [askerUserId] only (would tag self)
-      // Pre-v0.8.2 we silently logged + skipped, so the host had no
-      // way to know from the Slack thread that the v0.7 escalate flow
-      // was suppressed for a config reason. Now we post a visible
-      // warning naming the fix.
-      this.onLog(
-        `escalate requested (repo=${request.repo ?? "—"}) but no usable contacts ` +
-          `(pool=[${pool.join(",")}], asker=${askerUserId}); ` +
-          `posting config-hint instead of @-mention`,
-      );
-      const scopeLabel = request.repo ? `\`${request.repo}\`` : "default";
-      await this.web.chat
-        .postMessage({
-          channel: channelId,
-          thread_ts: threadTs,
-          text:
-            `:warning: pmk 想 escalate 這題，但目前 ${scopeLabel} 池沒有設定其他 IT/domain 聯絡人。\n` +
-            `host 端設定方式：\n` +
-            (request.repo
-              ? `\`pmk gateway escalation add ${request.repo} <userId>\`（針對此 repo）\n`
-              : "") +
-            `\`pmk gateway escalation add default <userId>\`（fallback 池）\n` +
-            `bot 仍會用既有 PKB 給出 best-effort 答案；之後設定好 pool 再問同樣問題就會自動 @ 對的人。`,
-        })
-        .catch((err) => {
-          this.onLog(
-            `failed to post escalation config-hint: ${(err as Error).message}`,
-          );
-        });
-      // Deliberately do NOT save the pending marker — there's nobody
-      // to wait for, so an absorb hook would never fire.
-      return;
-    }
-
-    const mentions = effectivePool.map((id) => `<@${id}>`).join(" ");
-    const reasonLine = request.reason ? `\n_原因_：${request.reason}` : "";
-    await this.web.chat
-      .postMessage({
-        channel: channelId,
-        thread_ts: threadTs,
-        text: `${mentions} 想麻煩你補充，pmk 沒有足夠 context 回答這題：\n> ${request.question}${reasonLine}\n\n回覆時請記得 \`@pmk\` 一下（例：\`@pmk 答案是…\`），這樣 pmk 才接得到你的回覆並吸收成 knowledge atom，之後同樣問題就能直接答出來。`,
-      })
-      .catch((err) => {
-        this.onLog(
-          `failed to post escalation mention: ${(err as Error).message}`,
-        );
-      });
-    saveThreadEscalation({
-      channelId,
-      threadTs,
-      question: request.question,
-      scope: request.repo,
-      reason: request.reason,
-      pendingSince: Date.now(),
-      mentionedUserIds: effectivePool,
-      askerUserId,
-    });
-    appendGatewayEvent({
-      type: "escalate.triggered",
-      channelId,
-      threadTs,
-      scope: request.repo,
-    });
-  }
-
-  /**
-   * Try to absorb a reply in a pending-escalation thread into the
-   * knowledge store. Called from both DM and channel paths.
-   *
-   * Returns true if the reply triggered an absorb attempt (success or
-   * failure both count — caller may want to acknowledge in Slack).
-   */
-  private async maybeAbsorbEscalationReply(args: {
-    channelId: string;
-    threadTs: string;
-    contributorUserId: string;
-    answerText: string;
-  }): Promise<boolean> {
-    const { channelId, threadTs, contributorUserId, answerText } = args;
-    const esc = loadThreadEscalation(channelId, threadTs);
-    if (!esc) return false;
-    if (!esc.mentionedUserIds.includes(contributorUserId)) {
-      // Random teammate replied; don't absorb. We only trust the
-      // people pmk explicitly tagged.
-      return false;
-    }
-    // Claim the marker EAGERLY. Without this, two fast IT replies
-    // could both pass the gate and trigger duplicate extraction.
-    clearThreadEscalation(channelId, threadTs);
-    this.onLog(
-      `escalation reply received from ${contributorUserId} in ${channelId}/${threadTs}; extracting`,
-    );
-    let atom: Awaited<ReturnType<typeof extractKnowledgeAtom>>;
-    try {
-      atom = await extractKnowledgeAtom(this.llm, {
-        question: esc.question,
-        reason: esc.reason,
-        expertAnswer: answerText,
-        scope: esc.scope ?? "general",
-        threadKey: `${channelId}:${threadTs}`,
-        contributorUserId,
-      });
-    } catch (err) {
-      this.onLog(`extractor failed: ${(err as Error).message}`);
-      return true;
-    }
-    if (!atom) {
-      this.onLog("extractor returned no atom (parse failure?); skipping save");
-      return true;
-    }
-    try {
-      // First save: atom in pending without approval anchor.
-      const file = saveAtom(atom);
-      this.onLog(`absorbed knowledge atom (pending) → ${file}`);
-      appendGatewayEvent({
-        type: "escalate.absorbed",
-        channelId,
-        threadTs,
-        atomId: atom.id,
-      });
-      const idShort = atom.id.split("-").slice(0, 2).join("-");
-      const post = await this.web.chat
-        .postMessage({
-          channel: channelId,
-          thread_ts: threadTs,
-          text:
-            `:hourglass_flowing_sand: pmk 已收下這份補充（標籤：${atom.tags.join(", ") || "—"}），暫存為 *pending*，` +
-            `24 小時後自動生效，期間不會被其他查詢抓到。\n` +
-            `直接 ✅ 或 ❌ react 這條訊息可立即 approve / reject；` +
-            `或 host 端：\`pmk gateway atoms approve ${idShort}\` / \`pmk gateway atoms reject ${idShort}\``,
-        })
-        .catch((err) => {
-          this.onLog(
-            `failed to post pending notice: ${(err as Error).message}`,
-          );
-          return undefined;
-        });
-      // v0.8.5 (#21): if the bot's confirmation message landed, anchor
-      // the atom to its `ts` so reaction-approval can find it. Re-save
-      // — cheap (one extra fs.write) and keeps the storage layer the
-      // single-source-of-truth.
-      if (post?.ts) {
-        const updated: typeof atom = {
-          ...atom,
-          approval: { channelId, messageTs: String(post.ts) },
-        };
-        saveAtom(updated);
-      }
-    } catch (err) {
-      this.onLog(`failed to save atom: ${(err as Error).message}`);
-      return true;
-    }
-    // Synthesised follow-up: tag the original asker with the answer
-    // so they don't have to re-ask. Best-effort — failures here are
-    // logged but don't fail the absorb.
-    await this.postSynthesisedAnswerForAsker({
-      channelId,
-      threadTs,
-      askerUserId: esc.askerUserId,
-      atom,
-    }).catch((err) =>
-      this.onLog(`post-absorb synthesis failed: ${(err as Error).message}`),
-    );
-    return true;
-  }
 
   /**
    * v0.8.5 (#21): handle a reaction added to one of pmk's pending-
@@ -997,54 +801,6 @@ export class SlackAdapter {
         })
         .catch(() => {});
     }
-  }
-
-  /**
-   * After a fresh atom lands, ping the original asker (if known) with
-   * a one-shot synthesised answer in audience-appropriate tone, so
-   * they don't need to ask the same question a second time.
-   */
-  private async postSynthesisedAnswerForAsker(args: {
-    channelId: string;
-    threadTs: string;
-    askerUserId?: string;
-    atom: KnowledgeAtomLike;
-  }): Promise<void> {
-    const { channelId, threadTs, askerUserId, atom } = args;
-    if (!askerUserId) return;
-    const audience = pickAudience(this.config, askerUserId, channelId);
-    const systemPrompt = pickGatewayPrompt(audience);
-    const synthMessage =
-      `IT 同事剛在這條 thread 補上了答案，請依以下事實 synthesise 一段回覆給原本提問的同事 <@${askerUserId}>。語氣依你的 audience prompt。\n\n` +
-      `原始問題：${atom.question}\n\n` +
-      `IT 答案（verbatim）：\n${atom.answer}\n\n` +
-      `Summary：${atom.summary ?? "(none)"}\n\n` +
-      `不要再 emit 任何 mra-ask 或 escalate block；這只是把答案傳給原問者。`;
-    let reply: string;
-    try {
-      reply = await this.llm.chat(
-        systemPrompt,
-        [{ role: "user", content: synthMessage }],
-        { onToken: () => {} },
-      );
-    } catch (err) {
-      this.onLog(`synth llm call failed: ${(err as Error).message}`);
-      return;
-    }
-    const visible = stripEscalateBlock(
-      stripMraAskBlock(stripCaseUpdateBlock(reply)),
-    );
-    await this.web.chat
-      .postMessage({
-        channel: channelId,
-        thread_ts: threadTs,
-        text: `<@${askerUserId}> ${truncateForSlack(markdownToMrkdwn(visible))}`,
-      })
-      .catch((err) =>
-        this.onLog(
-          `failed to post synthesised follow-up: ${(err as Error).message}`,
-        ),
-      );
   }
 
   /**
