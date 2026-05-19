@@ -18,6 +18,11 @@ import {
   dmMessagePayload,
   type Harness,
 } from "./harness/slack-fakes";
+import {
+  channelCasesDir,
+  saveChannelMeta,
+} from "../src/gateway/session-store";
+import { loadCase, newCase, saveCase } from "../src/case";
 
 describe("SlackAdapter integration: DM happy-path", () => {
   let h: Harness;
@@ -221,5 +226,112 @@ describe("SlackAdapter integration: mra-ask escalate round", () => {
     assert.equal(h.llm.calls.length, 2, "synthesise still runs after mra failure");
     const finalText = h.web.updated[h.web.updated.length - 1].text ?? "";
     assert.match(finalText, /PKB summary/);
+  });
+});
+
+describe("SlackAdapter integration: channel @-mention", () => {
+  let h: Harness;
+
+  beforeEach(() => {
+    h = buildHarness();
+  });
+
+  afterEach(() => {
+    h.cleanup();
+  });
+
+  it("channel mention without active case → free chat", async () => {
+    h.llm.script("Channel free-chat answer about the codebase.");
+    await h.adapter.start();
+
+    await h.socket.emit(
+      "app_mention",
+      appMentionPayload({
+        user: "U-PM",
+        channel: "C-DESIGN",
+        text: "<@UBOTID> what does this module do?",
+      }),
+    );
+
+    assert.equal(h.llm.calls.length, 1);
+    // Bot-mention prefix is stripped before reaching the LLM.
+    const userTurn = h.llm.calls[0].messages.find((m) => m.role === "user");
+    assert.ok(userTurn, "user turn should be present");
+    assert.doesNotMatch(
+      userTurn!.content,
+      /<@UBOTID>/,
+      "leading bot mention must be stripped",
+    );
+
+    assert.ok(h.web.updated.length >= 1);
+    assert.match(
+      h.web.updated[h.web.updated.length - 1].text ?? "",
+      /Channel free-chat/,
+    );
+  });
+
+  it("channel mention with active case → routes to case path, appends turns", async () => {
+    const channelId = "C-INCIDENT";
+    const caseName = "2026-05-19-payments-outage";
+
+    // Bootstrap an open case + active channel meta directly via the
+    // session-store + case modules — same surface `/pmk open` uses,
+    // but cheaper than scripting an extra slash-command first.
+    const dir = channelCasesDir(channelId);
+    const seed = newCase({
+      name: caseName,
+      title: "Payments service returning 500",
+      symptom: "5xx spike at 14:02 UTC; rate ~12% of requests",
+    });
+    saveCase(seed, dir);
+    saveChannelMeta({
+      channelId,
+      activeCase: caseName,
+      lastActiveAt: Date.now(),
+    });
+
+    h.llm.script(
+      "Looking at the symptoms, the most likely culprit is the new retry queue.\n" +
+        "```case-update\n" +
+        "hypothesis: retry queue backpressure under load\n" +
+        "next-question: when did the retry queue ship?\n" +
+        "```",
+    );
+
+    await h.adapter.start();
+
+    await h.socket.emit(
+      "app_mention",
+      appMentionPayload({
+        user: "U-OPS",
+        channel: channelId,
+        text: "<@UBOTID> any theories on root cause?",
+      }),
+    );
+
+    assert.equal(h.llm.calls.length, 1, "case path uses one LLM call");
+
+    const after = loadCase(caseName, dir);
+    // user turn + assistant turn appended after the bootstrap (which
+    // started with an empty messages array).
+    assert.equal(after.messages.length, 2);
+    assert.equal(after.messages[0].role, "user");
+    assert.match(after.messages[0].content, /root cause/);
+    assert.equal(after.messages[1].role, "assistant");
+    // The persisted assistant text has the case-update block stripped.
+    assert.doesNotMatch(after.messages[1].content, /```case-update/);
+    // The directive's actions landed on the case state.
+    assert.equal(after.hypotheses.length, 1);
+    assert.match(after.hypotheses[0].text, /retry queue backpressure/);
+    assert.equal(after.openQuestions.length, 1);
+
+    // Slack-side surface: placeholder + final update; tracking summary
+    // (counts of added hypotheses / questions) posted as a follow-up
+    // message in the same thread.
+    assert.ok(h.web.updated.length >= 1, "final update should fire");
+    const summaryPosts = h.web
+      .postsTo(channelId)
+      .filter((p) => p.text && !p.text.includes("thinking"));
+    assert.ok(summaryPosts.length >= 1, "tracking summary should be posted");
   });
 });
