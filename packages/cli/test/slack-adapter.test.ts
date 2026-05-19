@@ -109,6 +109,10 @@ describe("SlackAdapter integration: DM happy-path", () => {
   });
 
   it("blocklisted user gets the rejection notice and no LLM call", async () => {
+    // Drop the beforeEach default before re-creating with a different
+    // config — otherwise the old tmp HOME leaks (its cleanup never
+    // runs and the next `buildHarness` snapshots HOME after our swap).
+    h.cleanup();
     h = buildHarness({ config: { blocklist: ["U-BAD"] } });
     h.llm.script("should never be called");
     await h.adapter.start();
@@ -929,16 +933,10 @@ describe("SlackAdapter integration: envelope dedup", () => {
   });
 
   it("same envelope_id delivered twice → handler runs once (slash_commands path)", async () => {
-    // Persist a config with this user as admin so /pmk admin status
-    // dispatches through handleAdminSlash on the first delivery.
-    saveGatewayConfig({
-      version: 1,
-      admins: ["U-HOST"],
-      blocklist: [],
-      audience: { default: "tech", users: {}, channels: {} },
-      escalation: { default: [], repos: {} },
-      slack: { appToken: "xapp-test", botToken: "xoxb-test" },
-    });
+    // Drop the beforeEach default before re-creating with admins set —
+    // otherwise the old tmp HOME leaks (its cleanup never fires and
+    // the next `buildHarness` snapshots HOME after our swap).
+    h.cleanup();
     h = buildHarness({ config: { admins: ["U-HOST"] } });
     await h.adapter.start();
 
