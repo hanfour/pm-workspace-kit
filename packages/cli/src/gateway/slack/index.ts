@@ -153,6 +153,18 @@ export interface SlackAdapterOptions {
   offlineDurationMs?: number;
   /** #44: was the previous exit a graceful shutdown? */
   gracefulShutdown?: boolean;
+  /**
+   * v0.13 integration-harness hooks (test-only DI). When `web` and
+   * `socket` are both provided, the appToken/botToken guard is
+   * skipped and these are used in place of the real Slack clients —
+   * lets tests drive the full event-handler graph without Slack
+   * credentials. When `llm` is provided, the on-disk CLI-config
+   * lookup is skipped too. Prod callers pass none of these and get
+   * the unchanged real-client construction path.
+   */
+  web?: WebClient;
+  socket?: SocketModeClient;
+  llm?: LlmProvider;
 }
 
 /**
@@ -192,7 +204,14 @@ export class SlackAdapter {
   private seenEnvelopeSet = new Set<string>();
 
   constructor(opts: SlackAdapterOptions) {
-    if (!opts.config.slack.appToken || !opts.config.slack.botToken) {
+    // v0.13: token guard only fires on the prod construction path.
+    // When both transport fakes are injected, the adapter never opens
+    // a real Slack connection so the tokens are irrelevant.
+    const useFakeTransport = !!(opts.web && opts.socket);
+    if (
+      !useFakeTransport &&
+      (!opts.config.slack.appToken || !opts.config.slack.botToken)
+    ) {
       throw new Error("slack.appToken and slack.botToken must be set");
     }
     this.config = opts.config;
@@ -201,21 +220,29 @@ export class SlackAdapter {
     this.lastSeenAt = opts.lastSeenAt;
     this.offlineDurationMs = opts.offlineDurationMs;
     this.gracefulShutdown = opts.gracefulShutdown ?? false;
-    this.socket = new SocketModeClient({
-      appToken: opts.config.slack.appToken,
-      logLevel: "warn" as never, // Avoid noisy stdout in normal operation.
-    });
-    this.web = new WebClient(opts.config.slack.botToken);
-    // v0.12.0: prefer ANTHROPIC_API_KEY from env (already merged by
-    // loadCliConfig()), then ~/.pmk/config.json, then gateway.json.
-    // The merge happens once at adapter init — running daemons need a
-    // restart to pick up a freshly-written gateway.json apiKey, same
-    // caveat as audience/escalation config.
-    const baseCliConfig = loadCliConfig();
-    const mergedConfig = baseCliConfig.apiKey
-      ? baseCliConfig
-      : { ...baseCliConfig, apiKey: this.config.apiKey };
-    this.llm = resolveProvider(mergedConfig);
+    if (opts.socket) {
+      this.socket = opts.socket;
+    } else {
+      this.socket = new SocketModeClient({
+        appToken: opts.config.slack.appToken!,
+        logLevel: "warn" as never, // Avoid noisy stdout in normal operation.
+      });
+    }
+    this.web = opts.web ?? new WebClient(opts.config.slack.botToken!);
+    if (opts.llm) {
+      this.llm = opts.llm;
+    } else {
+      // v0.12.0: prefer ANTHROPIC_API_KEY from env (already merged by
+      // loadCliConfig()), then ~/.pmk/config.json, then gateway.json.
+      // The merge happens once at adapter init — running daemons need a
+      // restart to pick up a freshly-written gateway.json apiKey, same
+      // caveat as audience/escalation config.
+      const baseCliConfig = loadCliConfig();
+      const mergedConfig = baseCliConfig.apiKey
+        ? baseCliConfig
+        : { ...baseCliConfig, apiKey: this.config.apiKey };
+      this.llm = resolveProvider(mergedConfig);
+    }
   }
 
   async start(): Promise<SlackBotInfo> {
