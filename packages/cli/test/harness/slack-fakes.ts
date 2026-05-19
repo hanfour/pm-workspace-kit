@@ -281,6 +281,14 @@ export interface Harness {
   home: string;
   /** Restores `$HOME` and removes the tmp dir. Idempotent. */
   cleanup: () => void;
+  /**
+   * v0.13: wait until every background InFlightQueue worker drains.
+   * The handlers enqueue work and return immediately (production-shape
+   * fire-and-forget so Slack envelope ack stays under 3s); tests need
+   * to await this after `socket.emit(...)` before asserting on side-
+   * effects like `web.posted` or LLM call counts.
+   */
+  flush: () => Promise<void>;
 }
 
 export interface BuildHarnessOptions {
@@ -336,6 +344,7 @@ export function buildHarness(opts: BuildHarnessOptions = {}): Harness {
     llm,
     mra,
     home,
+    flush: () => adapter.waitForPending(),
     cleanup: () => {
       if (restored) return;
       restored = true;

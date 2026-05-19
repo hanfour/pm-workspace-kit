@@ -28,6 +28,10 @@ import {
   FreeChatTurnRunner,
   type FreeChatSession,
 } from "./free-chat-turn";
+import {
+  InFlightQueue,
+  QueueFullError,
+} from "./inflight-queue";
 import { PresenceBroadcaster } from "./presence";
 
 // v0.13: re-exported so existing test imports (`gateway.test.ts`) keep
@@ -158,7 +162,14 @@ export class SlackAdapter {
   private llm: LlmProvider;
   private readonly mraDoctor: typeof mraDoctorImpl;
   private readonly runMraAsk: typeof runMraAskImpl;
-  private inFlight = new Set<string>();
+  /**
+   * v0.13: per-user (DM) / per-user-per-channel (mention) FIFO queue
+   * for rapid follow-up messages. Pre-v0.13 dropped messages with a
+   * `:hourglass: 還在處理` notice that misled users into thinking they
+   * were queued; the queue actually does that now and matches the
+   * notice semantics.
+   */
+  private readonly queue: InFlightQueue;
   /** Envelope IDs we've already accepted; protects against Slack retries. */
   private readonly dedup: EnvelopeDedup;
   /** Online/offline broadcast fan-out (#44). */
@@ -232,6 +243,7 @@ export class SlackAdapter {
       runMraAsk: this.runMraAsk,
       escalation: this.escalation,
     });
+    this.queue = new InFlightQueue({ onLog: this.onLog });
   }
 
   async start(): Promise<SlackBotInfo> {
@@ -277,6 +289,13 @@ export class SlackAdapter {
     // offlineDurationMs / gracefulShutdown.
     await this.presence.backOnline();
     return this.botInfo;
+  }
+
+  /** v0.13: wait for all pending background work to drain. Used by
+   *  the harness in tests so assertions see post-work state. Production
+   *  callers can use this on graceful shutdown. */
+  async waitForPending(): Promise<void> {
+    await this.queue.waitForAll();
   }
 
   async stop(): Promise<void> {
@@ -330,55 +349,72 @@ export class SlackAdapter {
     }
     this.dedup.remember(payload.envelope_id);
 
-    if (this.inFlight.has(userId)) {
-      await this.web.chat.postMessage({
-        channel: event.channel!,
-        text: ":hourglass: 上一則訊息還在處理，請稍候。",
-      });
-      return;
-    }
+    // replyThreadTs: where Slack should anchor the bot's response.
+    // sessionThreadTs: which conversation history to load — undefined
+    // means "main" (top-level DM, no Slack thread); a thread_ts means
+    // an in-thread reply, which gets its own isolated session so
+    // contexts don't bleed across threads.
+    const replyThreadTs = event.thread_ts ?? event.ts;
+    if (!replyThreadTs) return;
 
-    this.inFlight.add(userId);
+    const channel = event.channel!;
+    const work = async () => {
+      try {
+        // If this DM is in a thread that pmk previously escalated AND
+        // the sender is one of the IT contacts pmk tagged, absorb the
+        // answer into the knowledge store and stop — don't run the
+        // normal LLM turn (otherwise we'd answer the IT's reply as if
+        // it were a user question).
+        const absorbed = await this.escalation.maybeAbsorbReply({
+          channelId: channel,
+          threadTs: replyThreadTs,
+          contributorUserId: userId,
+          answerText: text,
+        });
+        if (absorbed) return;
+        await this.handleDmMessage({
+          channelId: channel,
+          userId,
+          text,
+          threadTs: replyThreadTs,
+          sessionThreadTs: event.thread_ts,
+        });
+      } catch (err) {
+        this.onLog(
+          `error handling DM from ${userId}: ${(err as Error).message}`,
+        );
+        await this.web.chat
+          .postMessage({
+            channel,
+            thread_ts: event.thread_ts,
+            text: `:warning: pmk 內部錯誤：${(err as Error).message}`,
+          })
+          .catch(() => {});
+      }
+    };
+
+    let result: "ran" | "queued";
     try {
-      // replyThreadTs: where Slack should anchor the bot's response.
-      // sessionThreadTs: which conversation history to load — undefined
-      // means "main" (top-level DM, no Slack thread); a thread_ts means
-      // an in-thread reply, which gets its own isolated session so
-      // contexts don't bleed across threads.
-      const replyThreadTs = event.thread_ts ?? event.ts;
-      if (!replyThreadTs) return;
-
-      // If this DM is in a thread that pmk previously escalated AND the
-      // sender is one of the IT contacts pmk tagged, absorb the answer
-      // into the knowledge store and stop — don't run the normal LLM
-      // turn (otherwise we'd answer the IT's reply as if it were a
-      // user question).
-      const absorbed = await this.escalation.maybeAbsorbReply({
-        channelId: event.channel!,
-        threadTs: replyThreadTs,
-        contributorUserId: userId,
-        answerText: text,
-      });
-      if (absorbed) return;
-
-      await this.handleDmMessage({
-        channelId: event.channel!,
-        userId,
-        text,
-        threadTs: replyThreadTs,
-        sessionThreadTs: event.thread_ts,
-      });
+      result = this.queue.enqueue(userId, work);
     } catch (err) {
-      this.onLog(`error handling DM from ${userId}: ${(err as Error).message}`);
+      if (err instanceof QueueFullError) {
+        await this.web.chat
+          .postMessage({
+            channel,
+            text: ":no_entry: 你已有多則訊息排隊中（上限 3 則），請等回覆後再發。",
+          })
+          .catch(() => {});
+        return;
+      }
+      throw err;
+    }
+    if (result === "queued") {
       await this.web.chat
         .postMessage({
-          channel: event.channel!,
-          thread_ts: event.thread_ts,
-          text: `:warning: pmk 內部錯誤：${(err as Error).message}`,
+          channel,
+          text: ":hourglass: 你上一則還在處理，這則已排入隊伍（會依序處理）。",
         })
         .catch(() => {});
-    } finally {
-      this.inFlight.delete(userId);
     }
   }
 
@@ -413,63 +449,75 @@ export class SlackAdapter {
 
     if (this.config.blocklist.includes(userId)) return;
 
-    // v0.13: lock per-user-per-channel instead of per-channel. The old
-    // per-channel key serialised every @-mention in the channel,
-    // blocking multi-user Q&A in open channels (different users had
-    // to wait for each other's LLM round to finish). Per-user-per-
-    // channel still serialises a single user's rapid double-taps (the
-    // original intent of the lock) but lets distinct users proceed
-    // in parallel.
+    // v0.13: queue key is per-user-per-channel. Different users in the
+    // same channel run in parallel; a single user's rapid follow-ups
+    // queue up FIFO behind their own in-flight round (up to 3 deep)
+    // instead of being silently dropped as in pre-v0.13.
     //
     // Trade-off: when the channel has an active case file
-    // (`/pmk open <name>`), parallel @-mentions can race on
+    // (`/pmk open <name>`), parallel @-mentions can still race on
     // `saveCase` (last write wins). In practice case-channels are
     // low-traffic single-thread workflows, so the race is rare;
     // the v0.13 backlog tracks a load-modify-write retry on case
     // files if it bites.
-    const inFlightKey = `${channelId}:${userId}`;
-    if (this.inFlight.has(inFlightKey)) {
-      await this.web.chat.postMessage({
-        channel: channelId,
-        thread_ts: replyThreadTs,
-        text: ":hourglass: 你上一則訊息還在處理，請稍候。",
-      });
-      return;
-    }
+    const queueKey = `${channelId}:${userId}`;
+    const work = async () => {
+      try {
+        // Absorb-first: if this thread is pending escalation and the
+        // mentioner is one of the tagged IT contacts, treat the message
+        // as the expert answer instead of routing to the LLM.
+        const absorbed = await this.escalation.maybeAbsorbReply({
+          channelId,
+          threadTs: replyThreadTs,
+          contributorUserId: userId,
+          answerText: text,
+        });
+        if (absorbed) return;
+        await this.handleChannelMention({
+          channelId,
+          userId,
+          text,
+          threadTs: replyThreadTs,
+          sessionThreadTs,
+        });
+      } catch (err) {
+        this.onLog(
+          `error handling mention in ${channelId}: ${(err as Error).message}`,
+        );
+        await this.web.chat
+          .postMessage({
+            channel: channelId,
+            thread_ts: replyThreadTs,
+            text: `:warning: pmk 內部錯誤：${(err as Error).message}`,
+          })
+          .catch(() => {});
+      }
+    };
 
-    this.inFlight.add(inFlightKey);
+    let result: "ran" | "queued";
     try {
-      // Absorb-first: if this thread is pending escalation and the
-      // mentioner is one of the tagged IT contacts, treat the message
-      // as the expert answer instead of routing to the LLM.
-      const absorbed = await this.escalation.maybeAbsorbReply({
-        channelId,
-        threadTs: replyThreadTs,
-        contributorUserId: userId,
-        answerText: text,
-      });
-      if (absorbed) return;
-
-      await this.handleChannelMention({
-        channelId,
-        userId,
-        text,
-        threadTs: replyThreadTs,
-        sessionThreadTs,
-      });
+      result = this.queue.enqueue(queueKey, work);
     } catch (err) {
-      this.onLog(
-        `error handling mention in ${channelId}: ${(err as Error).message}`,
-      );
+      if (err instanceof QueueFullError) {
+        await this.web.chat
+          .postMessage({
+            channel: channelId,
+            thread_ts: replyThreadTs,
+            text: ":no_entry: 你已有多則訊息排隊中（上限 3 則），請等回覆後再發。",
+          })
+          .catch(() => {});
+        return;
+      }
+      throw err;
+    }
+    if (result === "queued") {
       await this.web.chat
         .postMessage({
           channel: channelId,
           thread_ts: replyThreadTs,
-          text: `:warning: pmk 內部錯誤：${(err as Error).message}`,
+          text: ":hourglass: 你上一則還在處理，這則已排入隊伍（會依序處理）。",
         })
         .catch(() => {});
-    } finally {
-      this.inFlight.delete(inFlightKey);
     }
   }
 

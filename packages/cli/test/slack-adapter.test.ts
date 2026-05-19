@@ -66,6 +66,7 @@ describe("SlackAdapter integration: DM happy-path", () => {
         text: "What is this PRD about?",
       }),
     );
+    await h.flush();
 
     assert.equal(h.llm.calls.length, 1, "LLM should be called once");
 
@@ -104,6 +105,7 @@ describe("SlackAdapter integration: DM happy-path", () => {
         text: "hello bot",
       }),
     );
+    await h.flush();
 
     assert.equal(h.llm.calls.length, 0, "channel-scope message must skip LLM");
     assert.equal(h.web.updated.length, 0, "no update should fire");
@@ -126,6 +128,7 @@ describe("SlackAdapter integration: DM happy-path", () => {
         text: "let me in",
       }),
     );
+    await h.flush();
 
     assert.equal(h.llm.calls.length, 0);
     const posts = h.web.postsTo("D-BAD-DM");
@@ -174,6 +177,7 @@ describe("SlackAdapter integration: mra-ask escalate round", () => {
         text: "where is sales_performances defined?",
       }),
     );
+    await h.flush();
 
     assert.equal(h.llm.calls.length, 2, "first-call + synthesise = 2 LLM calls");
     assert.equal(h.mra.askCalls.length, 1, "mra ask invoked exactly once");
@@ -209,6 +213,7 @@ describe("SlackAdapter integration: mra-ask escalate round", () => {
         text: "where is X?",
       }),
     );
+    await h.flush();
 
     assert.equal(h.mra.askCalls.length, 0, "doctor short-circuits before runAsk");
     assert.equal(
@@ -242,6 +247,7 @@ describe("SlackAdapter integration: mra-ask escalate round", () => {
         text: "where is X?",
       }),
     );
+    await h.flush();
 
     assert.equal(h.mra.askCalls.length, 1);
     assert.equal(h.llm.calls.length, 2, "synthesise still runs after mra failure");
@@ -273,6 +279,7 @@ describe("SlackAdapter integration: channel @-mention", () => {
         text: "<@UBOTID> what does this module do?",
       }),
     );
+    await h.flush();
 
     assert.equal(h.llm.calls.length, 1);
     // Bot-mention prefix is stripped before reaching the LLM.
@@ -329,6 +336,7 @@ describe("SlackAdapter integration: channel @-mention", () => {
         text: "<@UBOTID> any theories on root cause?",
       }),
     );
+    await h.flush();
 
     assert.equal(h.llm.calls.length, 1, "case path uses one LLM call");
 
@@ -395,6 +403,7 @@ describe("SlackAdapter integration: /pmk admin slash command", () => {
         text: "admin audience set <@UOTHER> exec",
       }),
     );
+    await h.flush();
 
     // Config now persists the per-user override.
     const after = loadGatewayConfig();
@@ -426,6 +435,7 @@ describe("SlackAdapter integration: /pmk admin slash command", () => {
         text: "admin audience set <@UVICTIM> biz",
       }),
     );
+    await h.flush();
 
     const after = loadGatewayConfig();
     assert.equal(
@@ -454,6 +464,7 @@ describe("SlackAdapter integration: /pmk admin slash command", () => {
         text: "admin audience set <@UOTHER> biz",
       }),
     );
+    await h.flush();
 
     const after = loadGatewayConfig();
     assert.equal(after.audience.users["UOTHER"], undefined);
@@ -520,6 +531,7 @@ describe("SlackAdapter integration: reaction-based atom approval", () => {
         itemTs: messageTs,
       }),
     );
+    await h.flush();
 
     // Atom flipped to approved on disk.
     const after = loadAtoms({ promote: false });
@@ -552,6 +564,7 @@ describe("SlackAdapter integration: reaction-based atom approval", () => {
         itemTs: messageTs,
       }),
     );
+    await h.flush();
 
     // Atom file removed from disk.
     const after = loadAtoms({ promote: false });
@@ -582,6 +595,7 @@ describe("SlackAdapter integration: reaction-based atom approval", () => {
         itemTs: messageTs,
       }),
     );
+    await h.flush();
 
     const after = loadAtoms({ promote: false });
     assert.equal(after.length, 1);
@@ -609,6 +623,7 @@ describe("SlackAdapter integration: reaction-based atom approval", () => {
         itemTs: "1700000999.999999",
       }),
     );
+    await h.flush();
 
     // No findAtomByApprovalMessage match → return early; no posts, no
     // atom mutation.
@@ -780,6 +795,7 @@ describe("SlackAdapter integration: msg_too_long hardening (v0.11.1)", () => {
         text: "and what about the reports table?",
       }),
     );
+    await h.flush();
 
     assert.equal(
       h.llm.calls.length,
@@ -820,6 +836,7 @@ describe("SlackAdapter integration: msg_too_long hardening (v0.11.1)", () => {
         text: "another huge follow-up",
       }),
     );
+    await h.flush();
 
     assert.equal(h.llm.calls.length, 2);
     const finalText = h.web.updated[h.web.updated.length - 1].text ?? "";
@@ -844,6 +861,7 @@ describe("SlackAdapter integration: msg_too_long hardening (v0.11.1)", () => {
         text: "hello",
       }),
     );
+    await h.flush();
 
     assert.equal(
       h.llm.calls.length,
@@ -887,7 +905,9 @@ describe("SlackAdapter integration: envelope dedup", () => {
       envelope_id: "env-dupe-12345",
     });
     await h.socket.emit("message", payload);
+    await h.flush();
     await h.socket.emit("message", payload);
+    await h.flush();
 
     assert.equal(
       h.llm.calls.length,
@@ -911,6 +931,7 @@ describe("SlackAdapter integration: envelope dedup", () => {
         retry_num: 1,
       }),
     );
+    await h.flush();
 
     assert.equal(h.llm.calls.length, 0, "retry_num>0 envelopes are dropped");
     assert.equal(h.web.posted.length, 0, "no placeholder, no anything");
@@ -927,7 +948,9 @@ describe("SlackAdapter integration: envelope dedup", () => {
       envelope_id: "env-mention-dupe",
     });
     await h.socket.emit("app_mention", payload);
+    await h.flush();
     await h.socket.emit("app_mention", payload);
+    await h.flush();
 
     assert.equal(h.llm.calls.length, 1);
     assert.equal(h.web.updated.length, 1);
@@ -948,7 +971,9 @@ describe("SlackAdapter integration: envelope dedup", () => {
       envelope_id: "env-slash-dupe",
     });
     await h.socket.emit("slash_commands", payload);
+    await h.flush();
     await h.socket.emit("slash_commands", payload);
+    await h.flush();
 
     // The admin-log row is the cleanest "did the handler actually run"
     // signal — and there should be exactly one even after two deliveries.
@@ -958,7 +983,7 @@ describe("SlackAdapter integration: envelope dedup", () => {
   });
 });
 
-describe("SlackAdapter integration: channel inFlight lock (v0.13)", () => {
+describe("SlackAdapter integration: inflight queue (v0.13)", () => {
   let h: Harness;
 
   beforeEach(() => {
@@ -970,8 +995,6 @@ describe("SlackAdapter integration: channel inFlight lock (v0.13)", () => {
   });
 
   it("different users in same channel run concurrently (per-user-per-channel key)", async () => {
-    // First scripted reply waits on a gate so we can fire a second
-    // @-mention while the first is still in flight.
     let releaseFirst: () => void = () => {};
     const firstGate = new Promise<void>((resolve) => {
       releaseFirst = resolve;
@@ -987,65 +1010,67 @@ describe("SlackAdapter integration: channel inFlight lock (v0.13)", () => {
 
     await h.adapter.start();
 
-    const p1 = h.socket.emit(
+    // Both emits are fire-and-forget (handlers enqueue + return fast).
+    void h.socket.emit(
       "app_mention",
       appMentionPayload({
         user: "U-ALICE",
         channel: "C-QA",
-        text: "<@UBOTID> what does this scope do?",
+        text: "<@UBOTID> alice prompt",
         envelope_id: "env-alice",
       }),
     );
-
-    // Let p1 reach its llm.chat() await and acquire its
-    // `${channel}:${user}` inFlight key.
+    // Yield so alice's worker reaches the gated llm.chat() before we
+    // queue bob.
     await new Promise((res) => setImmediate(res));
-
-    // Different user, same channel — should NOT be blocked by the
-    // pre-v0.13 channel-wide lock.
-    await h.socket.emit(
+    void h.socket.emit(
       "app_mention",
       appMentionPayload({
         user: "U-BOB",
         channel: "C-QA",
-        text: "<@UBOTID> separate question",
+        text: "<@UBOTID> bob prompt",
         envelope_id: "env-bob",
       }),
     );
+    // Let bob's worker start and reach its own llm.chat() (different
+    // queue key from alice, so it runs in parallel).
+    await new Promise((res) => setImmediate(res));
 
-    // Bob's path completed (synthesised reply landed); Alice still
-    // awaiting the gate. Both LLM calls happened.
-    assert.equal(h.llm.calls.length, 2);
-
-    // No busy notice was posted (the previous behaviour would have
-    // dropped Bob's request with `:hourglass: 已有訊息在處理中`).
-    const busy = h.web.posted.find((p) =>
-      p.text?.includes("還在處理"),
+    assert.equal(
+      h.llm.calls.length,
+      2,
+      "both workers should be in flight (different queue keys)",
     );
-    assert.equal(busy, undefined, "no busy notice for different users");
 
-    // Release Alice so the test can finish cleanly.
+    // No busy / queued notice was posted (different users → different
+    // queues → no contention).
+    const contention = h.web.posted.find((p) =>
+      /還在處理|排隊中/.test(p.text ?? ""),
+    );
+    assert.equal(contention, undefined, "no queue notice for different users");
+
     releaseFirst();
-    await p1;
+    await h.flush();
 
-    // Both placeholders → both final updates.
-    assert.equal(h.web.updated.length, 2);
+    assert.equal(h.web.updated.length, 2, "both final updates fire");
   });
 
-  it("same user double-tap in same channel → second blocked with busy notice", async () => {
+  it("same user double-tap in same channel → second QUEUED, both processed in order", async () => {
     let releaseFirst: () => void = () => {};
     const firstGate = new Promise<void>((resolve) => {
       releaseFirst = resolve;
     });
-
-    h.llm.script(async () => {
-      await firstGate;
-      return "first answer";
-    });
+    h.llm.script(
+      async () => {
+        await firstGate;
+        return "first answer";
+      },
+      "second answer",
+    );
 
     await h.adapter.start();
 
-    const p1 = h.socket.emit(
+    void h.socket.emit(
       "app_mention",
       appMentionPayload({
         user: "U-ALICE",
@@ -1054,13 +1079,9 @@ describe("SlackAdapter integration: channel inFlight lock (v0.13)", () => {
         envelope_id: "env-alice-1",
       }),
     );
-
-    // Let p1 acquire its inFlight key before the second emit checks.
     await new Promise((res) => setImmediate(res));
-
-    // Same user + same channel + different envelope_id (so dedup
-    // doesn't catch it first) → must be blocked by the per-user lock.
-    await h.socket.emit(
+    // Same user + same channel + different envelope → queued behind q1.
+    void h.socket.emit(
       "app_mention",
       appMentionPayload({
         user: "U-ALICE",
@@ -1069,25 +1090,113 @@ describe("SlackAdapter integration: channel inFlight lock (v0.13)", () => {
         envelope_id: "env-alice-2",
       }),
     );
+    await new Promise((res) => setImmediate(res));
 
     assert.equal(
       h.llm.calls.length,
       1,
-      "second tap from the same user must not start a parallel LLM round",
+      "second tap is queued; only q1's LLM call has started",
     );
-
-    const busy = h.web.posted.find((p) =>
-      p.text?.includes("還在處理"),
+    const queued = h.web.posted.find((p) =>
+      /排入隊伍/.test(p.text ?? ""),
     );
-    assert.ok(busy, "busy notice should fire on same-user double-tap");
-    assert.match(
-      busy!.text ?? "",
-      /你上一則訊息還在處理/,
-      "notice should call out THIS user's prior message, not the channel",
-    );
+    assert.ok(queued, "queued notice should fire when work is queued");
+    assert.match(queued!.text ?? "", /你上一則還在處理/);
 
     releaseFirst();
-    await p1;
+    await h.flush();
+
+    // Both turns processed in order.
+    assert.equal(
+      h.llm.calls.length,
+      2,
+      "after q1 drains, q2's LLM call fires",
+    );
+    assert.equal(h.web.updated.length, 2, "both final updates posted");
+  });
+
+  it("queue cap exceeded → rejection notice, work not enqueued", async () => {
+    let releaseFirst: () => void = () => {};
+    const firstGate = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    // Script enough replies for the running + 3 queued (cap default).
+    h.llm.script(
+      async () => {
+        await firstGate;
+        return "answer 1";
+      },
+      "answer 2",
+      "answer 3",
+      "answer 4",
+    );
+
+    await h.adapter.start();
+
+    // 1st fires immediately (runs).
+    void h.socket.emit(
+      "app_mention",
+      appMentionPayload({
+        user: "U-ALICE",
+        channel: "C-QA",
+        text: "<@UBOTID> q1",
+        envelope_id: "env-a1",
+      }),
+    );
+    await new Promise((res) => setImmediate(res));
+    // 2nd, 3rd, 4th queue behind (depth=1, 2, 3 — cap is 3 queued).
+    void h.socket.emit(
+      "app_mention",
+      appMentionPayload({
+        user: "U-ALICE",
+        channel: "C-QA",
+        text: "<@UBOTID> q2",
+        envelope_id: "env-a2",
+      }),
+    );
+    await new Promise((res) => setImmediate(res));
+    void h.socket.emit(
+      "app_mention",
+      appMentionPayload({
+        user: "U-ALICE",
+        channel: "C-QA",
+        text: "<@UBOTID> q3",
+        envelope_id: "env-a3",
+      }),
+    );
+    await new Promise((res) => setImmediate(res));
+    void h.socket.emit(
+      "app_mention",
+      appMentionPayload({
+        user: "U-ALICE",
+        channel: "C-QA",
+        text: "<@UBOTID> q4",
+        envelope_id: "env-a4",
+      }),
+    );
+    await new Promise((res) => setImmediate(res));
+    // 5th rejected — queue full.
+    void h.socket.emit(
+      "app_mention",
+      appMentionPayload({
+        user: "U-ALICE",
+        channel: "C-QA",
+        text: "<@UBOTID> q5 over cap",
+        envelope_id: "env-a5",
+      }),
+    );
+    await new Promise((res) => setImmediate(res));
+
+    const rejected = h.web.posted.find((p) =>
+      /上限.*3.*則/.test(p.text ?? ""),
+    );
+    assert.ok(rejected, "queue-full rejection notice should fire");
+
+    releaseFirst();
+    await h.flush();
+
+    // 4 LLM calls (q1 ran + q2/q3/q4 from queue) — q5 was rejected.
+    assert.equal(h.llm.calls.length, 4);
   });
 
   it("two users' concurrent turns both land in the channel-log (race-free persistence)", async () => {
@@ -1112,7 +1221,7 @@ describe("SlackAdapter integration: channel inFlight lock (v0.13)", () => {
 
     await h.adapter.start();
 
-    const p1 = h.socket.emit(
+    void h.socket.emit(
       "app_mention",
       appMentionPayload({
         user: "U-ALICE",
@@ -1121,10 +1230,8 @@ describe("SlackAdapter integration: channel inFlight lock (v0.13)", () => {
         envelope_id: "env-a",
       }),
     );
-
     await new Promise((res) => setImmediate(res));
-
-    await h.socket.emit(
+    void h.socket.emit(
       "app_mention",
       appMentionPayload({
         user: "U-BOB",
@@ -1133,9 +1240,10 @@ describe("SlackAdapter integration: channel inFlight lock (v0.13)", () => {
         envelope_id: "env-b",
       }),
     );
+    await new Promise((res) => setImmediate(res));
 
     releaseFirst();
-    await p1;
+    await h.flush();
 
     const entries = loadChannelTurns("C-LOG");
     const userTurns = entries.filter((e) => e.role === "user" && e.userId);
