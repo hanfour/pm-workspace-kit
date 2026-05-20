@@ -298,13 +298,46 @@ export class SlackAdapter {
     await this.queue.waitForAll();
   }
 
-  async stop(): Promise<void> {
-    await this.presence.offline();
+  /**
+   * Graceful shutdown.
+   *
+   * Order matters: (1) cut the socket so no new envelopes arrive and
+   * the queue stops growing; (2) drain in-flight + queued turns so
+   * users actually get their replies (with a bounded timeout so a
+   * stuck LLM round can't block SIGTERM forever); (3) broadcast
+   * offline last, so presence reflects the true "done" moment.
+   *
+   * Pre-v0.13 had no queue and stop() finished in <1s; v0.13's
+   * fire-and-forget handlers turned shutdown into a real drain
+   * problem (PR #55 review: queued turns get abandoned without
+   * posting/saving reply if we don't await here).
+   */
+  async stop(opts: { drainTimeoutMs?: number } = {}): Promise<void> {
     try {
       await this.socket.disconnect();
     } catch {
       /* socket may already be closed */
     }
+
+    const timeoutMs = opts.drainTimeoutMs;
+    if (timeoutMs !== undefined && timeoutMs > 0) {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const timeout = new Promise<"timeout">((resolve) => {
+        timer = setTimeout(() => resolve("timeout"), timeoutMs);
+      });
+      const drained = this.queue.waitForAll().then(() => "drained" as const);
+      const winner = await Promise.race([drained, timeout]);
+      if (timer) clearTimeout(timer);
+      if (winner === "timeout") {
+        this.onLog(
+          `stop: drain timed out after ${timeoutMs}ms; abandoning remaining in-flight work`,
+        );
+      }
+    } else {
+      await this.queue.waitForAll();
+    }
+
+    await this.presence.offline();
   }
 
   // ─────────────────────────── event handlers ───────────────────────────

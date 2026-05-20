@@ -89,7 +89,12 @@ export async function runGateway(opts: GatewayRunOptions = {}): Promise<void> {
     // accurately.
     markGracefulShutdown();
     try {
-      await adapter.stop();
+      // 25s drain budget — K8s SIGTERM gives ~30s before SIGKILL.
+      // The drain awaits queued / in-flight free-chat turns so users
+      // who saw "已排入隊伍" actually get their replies; if a stuck
+      // LLM round blows the budget we log + proceed so SIGKILL isn't
+      // what reaps the process.
+      await adapter.stop({ drainTimeoutMs: 25_000 });
     } catch (err) {
       log(`adapter stop error: ${(err as Error).message}`);
     }

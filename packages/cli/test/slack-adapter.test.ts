@@ -1265,3 +1265,109 @@ describe("SlackAdapter integration: inflight queue (v0.13)", () => {
     assert.ok(assistantContents.some((c) => c.includes("bob answer")));
   });
 });
+
+describe("SlackAdapter integration: graceful shutdown drain (v0.13 #55)", () => {
+  let h: Harness;
+
+  beforeEach(() => {
+    h = buildHarness();
+  });
+
+  afterEach(() => {
+    h.cleanup();
+  });
+
+  it("stop() awaits in-flight queue work before broadcasting offline", async () => {
+    let releaseLlm: () => void = () => {};
+    const llmGate = new Promise<void>((resolve) => {
+      releaseLlm = resolve;
+    });
+    h.llm.script(async () => {
+      await llmGate;
+      return "delayed answer";
+    });
+
+    await h.adapter.start();
+
+    void h.socket.emit(
+      "message",
+      dmMessagePayload({
+        user: "U-SHUTDOWN",
+        channel: "D-SHUTDOWN",
+        text: "ask before shutdown",
+      }),
+    );
+    // Yield so the queue worker actually starts and reaches its LLM await.
+    await new Promise((res) => setImmediate(res));
+
+    // stop() must NOT race ahead of the queued turn; resolve the LLM
+    // gate only after a short delay and prove stop() didn't return
+    // before the final placeholder update landed.
+    const stopStartedAt = Date.now();
+    let stopResolved = false;
+    const stopPromise = h.adapter.stop({ drainTimeoutMs: 5000 }).then(() => {
+      stopResolved = true;
+    });
+    // Tick to let stop() reach its drain-await; it must still be pending.
+    await new Promise((res) => setImmediate(res));
+    assert.equal(
+      stopResolved,
+      false,
+      "stop() must wait for in-flight queue work, not return immediately",
+    );
+    assert.equal(
+      h.web.updated.length,
+      0,
+      "placeholder is still the thinking spinner — LLM hasn't returned",
+    );
+
+    releaseLlm();
+    await stopPromise;
+    const elapsed = Date.now() - stopStartedAt;
+    assert.ok(elapsed < 5000, `stop() should resolve well before the timeout (took ${elapsed}ms)`);
+
+    assert.equal(
+      h.web.updated.length,
+      1,
+      "final placeholder update fired before stop() returned",
+    );
+    assert.match(h.web.updated[0].text ?? "", /delayed answer/);
+  });
+
+  it("stop() honours drainTimeoutMs and logs when in-flight work blows the budget", async () => {
+    const logs: string[] = [];
+    h.cleanup();
+    h = buildHarness({ onLog: (m) => logs.push(m) });
+    // Never released — simulates a stuck LLM round that would otherwise
+    // wedge SIGTERM until SIGKILL.
+    h.llm.script(async () => {
+      await new Promise<void>(() => {});
+      return "never";
+    });
+
+    await h.adapter.start();
+
+    void h.socket.emit(
+      "message",
+      dmMessagePayload({
+        user: "U-STUCK",
+        channel: "D-STUCK",
+        text: "stuck turn",
+      }),
+    );
+    await new Promise((res) => setImmediate(res));
+
+    const startedAt = Date.now();
+    await h.adapter.stop({ drainTimeoutMs: 80 });
+    const elapsed = Date.now() - startedAt;
+
+    assert.ok(
+      elapsed >= 70 && elapsed < 1500,
+      `stop() should resolve near the timeout (~80ms), got ${elapsed}ms`,
+    );
+    assert.ok(
+      logs.some((l) => /drain timed out after 80ms/.test(l)),
+      "shutdown should log the timeout so operators can see abandoned work",
+    );
+  });
+});
