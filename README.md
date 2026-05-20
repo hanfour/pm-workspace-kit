@@ -72,6 +72,7 @@ npx pmk gateway start                         # run the bridge (foreground)
 npx pmk gateway status                        # configured? running? mra workspace ok?
 npx pmk gateway admin add <userId>            # (v0.9) bootstrap first Slack admin — required for /pmk admin
 npx pmk gateway audience set <userId> pm      # (v0.8) tech / pm / biz / exec tone per user
+npx pmk gateway audience set-channel <channelId> exec  # (v0.11, #23) per-channel default; per-user override still wins
 npx pmk gateway escalation add <repo> <userId>  # IT/domain contact pool for `escalate`
 npx pmk gateway atoms list --pending          # absorbed knowledge atoms awaiting promotion
 npx pmk gateway atoms approve <id-prefix>     # promote a pending atom to retrieval-visible
