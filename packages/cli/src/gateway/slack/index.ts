@@ -620,8 +620,10 @@ export class SlackAdapter {
    * `slash_commands` envelope because we registered `/pmk` on the app
    * side). Distinct from the legacy text-message path: `handleDmMessage`
    * (here) and `ChannelMentionHandler.run` (in `./channel-mention.ts`)
-   * both forward to `SlashCommandHandler.run` when the user types
-   * ` /pmk admin help` (leading space) as a regular message.
+   * both forward to `SlashCommandHandler.run` when the user posts a
+   * regular message whose trimmed text starts with `/pmk ` (originally
+   * a leading-space workaround pre-v0.9.1; still works since `text` is
+   * `.trim()`-ed before the prefix check).
    *
    * Envelope shape (via @slack/socket-mode):
    *   payload.body = {
