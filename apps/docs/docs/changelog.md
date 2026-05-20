@@ -8,6 +8,63 @@ All notable changes to **pm-workspace-kit** are documented here.
 
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Each release also has a longer narrative on [GitHub Releases](https://github.com/hanfour/pm-workspace-kit/releases) with rationale, dogfood notes, and test plans.
 
+## [v0.13.0] — 2026-05-20 — SlackGateway harness + adapter decomposition + FIFO inflight queue
+
+[GitHub release](https://github.com/hanfour/pm-workspace-kit/releases/tag/v0.13.0)
+
+### Why
+
+The v0.7 → v0.12 gateway picked up presence broadcast, per-channel audience, monthly audit logs, msg_too_long hardening, anthropic-api as default, token.usage rollups — all landed on a 1708-line `SlackAdapter` monolith with **zero automated coverage**. Every change in that series had to be verified by hand via live-Slack dogfood because instantiating the adapter required real Slack tokens and a live socket connection. Two problems compounded:
+
+1. **No safety net for a refactor.** The adapter mixed Slack transport + session + LLM + mra-ask + escalation + atoms + reactions + presence + slash commands. Splitting it into focused modules — the only way to keep adding features without the file becoming write-only — was hostage to live verification per change.
+2. **Two latent multi-user bugs were invisible.** Rapid follow-up messages from the same user were silently dropped behind a misleading `:hourglass: 你上一則訊息還在處理，請稍候` notice that implied queue semantics; and parallel @-mentions in the same channel raced on a shared `chat-session.json`, so the second writer's turn was overwritten on disk even when both Slack-side replies landed.
+
+v0.13 closes both: a constructor-injected fake transport + 27-test integration harness lands first, then four tranches incrementally extract focused modules under that safety net, and the two multi-user bugs get fixed with semantics that match what the UX always implied.
+
+### Added
+
+- **`SlackGateway` integration harness** (PRs [#52](https://github.com/hanfour/pm-workspace-kit/pull/52)) — `packages/cli/test/harness/slack-fakes.ts` provides `FakeWebClient`, `FakeSocketModeClient`, `FakeLlmProvider`, `FakeMra`, and `buildHarness()`. `SlackAdapter` constructor now accepts optional `web` / `socket` / `llm` / `mraDoctor` / `runMraAsk` overrides (production path is byte-equivalent — defaults to real wiring when none supplied). 27 new integration tests cover DM happy-path, mra-ask escalate, channel @-mention free-chat, channel-with-active-case, `/pmk admin` slash command, reaction-based atom approval, presence broadcast / restart matrix, msg_too_long retry, and envelope dedup across all three event paths. The harness is the prerequisite that made tranches 1–3 below safe to land.
+- **Multi-user channel concurrency** (PR [#53](https://github.com/hanfour/pm-workspace-kit/pull/53)) — the `inFlight` lock key changes from `channelId` to `${channelId}:${userId}`. Different users in the same channel can now ask the bot questions in parallel without waiting for each other's 60–90 s mra-ask round. A single user's rapid double-tap stays serialised (the original intent of the lock). Busy-notice text changes from `:hourglass: 已有訊息在處理中` → `:hourglass: 你上一則訊息還在處理，請稍候` to match the now per-user semantics.
+- **Append-only channel message log** (PR [#53](https://github.com/hanfour/pm-workspace-kit/pull/53)) — `packages/cli/src/gateway/channel-log.ts` replaces the read-modify-write `chat-session.json` with per-channel JSONL: `~/.pmk/gateway/slack/channels/<channelId>/messages.jsonl` (and per-thread under `threads/<ts>/messages.jsonl`). `appendChannelTurns` uses a single `fs.appendFileSync` syscall → POSIX-atomic, so concurrent parallel writers from the new per-user-per-channel lock all land instead of last-write-wins dropping turns. `loadChannelTurns` streams + skips malformed lines + supports `limit` / `sinceMs` filters, and triggers a one-time migration from legacy `chat-session.json` on first read.
+- **FIFO inflight queue** (PR [#55](https://github.com/hanfour/pm-workspace-kit/pull/55)) — `packages/cli/src/gateway/slack/inflight-queue.ts` replaces the pre-v0.13 "drop second message + misleading busy notice" model. Rapid follow-up messages behind an in-flight LLM round now actually queue FIFO (default depth 3) and drain in submission order. Key is the caller's: `userId` for DM, `${channelId}:${userId}` for channel @-mention. At-cap submissions get an explicit `:no_entry: 你已有多則訊息排隊中（上限 3 則），請等回覆後再發` rejection notice instead of silent drop. Queued submissions get `:hourglass: 你上一則還在處理，這則已排入隊伍（會依序處理）`. Slack envelope handlers now return fast (fire-and-forget) so the 3-second ack window stays comfortable.
+- **Graceful shutdown drain** (PR [#55](https://github.com/hanfour/pm-workspace-kit/pull/55) review) — `SlackAdapter.stop({ drainTimeoutMs })` reordered to `socket.disconnect` → `queue.waitForAll` (bounded) → `presence.offline`. The SIGINT/SIGTERM handler passes `25_000` ms (K8s SIGKILL kicks in at 30 s); a stuck LLM round logs `drain timed out after 25000ms; abandoning remaining in-flight work` and continues so SIGKILL isn't what reaps the process. Without the drain, queued turns died with `process.exit(0)` — users who saw the "排入隊伍" notice never got a reply.
+
+### Changed
+
+- **`SlackAdapter` decomposed** (PRs [#52](https://github.com/hanfour/pm-workspace-kit/pull/52), [#54](https://github.com/hanfour/pm-workspace-kit/pull/54), [#55](https://github.com/hanfour/pm-workspace-kit/pull/55)) — three tranches under the new harness:
+  - **Tranche 1** extracts `slack/presence.ts` (146 lines — broadcast fan-out + #44 suppress-on-fast-restart), `slack/envelope-dedup.ts` (45 lines — bounded-LRU dedup), `slack/concurrency.ts` (36 lines — `runWithConcurrency`). Adapter `1708 → 1597` (-111).
+  - **Tranche 2** extracts `slack/escalation.ts` (308 lines — outbound `@-mention IT contacts` + inbound IT-reply absorb + asker-synthesis follow-up). Adapter `1640 → 1411` (-229).
+  - **Tranche 3** extracts `slack/free-chat-turn.ts` (509 lines — full turn orchestration: seed + retrieval + prune + LLM + mra-ask + escalate + reply) and `slack/inflight-queue.ts` (141 lines — the new FIFO queue). Adapter `1411 → 1010` (-401).
+  - **Net: -698 lines (-41%)** from the v0.12.0 baseline. Tranche 4 (dispatcher cleanup, target <800 lines) is deferred.
+- Behaviour byte-equivalent across all three tranches; the harness's tests pass without modification at every step, which is exactly the safety net tranche 1 promised.
+
+### Tests
+
+`@pmk/cli` 312 → **362** (+50). Major additions:
+
+- **Integration harness** (27 tests, Phase 1–3) — DM happy-path (3), mra-ask escalate round (3), channel @-mention free-chat + case path (2), `/pmk admin` slash (3), reaction-based atom approval (4), presence broadcast restart matrix (5), msg_too_long retry hardening (3), envelope dedup across DM / @-mention / slash (4).
+- **Multi-user concurrency** (PR #53, 2 tests) — different users in same channel proceed in parallel; same user double-tap blocked with per-user notice.
+- **Append-only channel log** (PR #53, 7 tests) — append-on-empty, FIFO ordering, malformed-line skip, `sinceMs` cutoff, legacy migration round-trip, `entriesToMessages` shape, multi-channel isolation.
+- **FIFO inflight queue** (PR #55, 10 unit tests) — `enqueue` contract (`ran`/`queued`/`QueueFullError`), default `maxDepth=3`, FIFO order under release, key independence, error isolation (throwing work doesn't poison queue), `waitForAll` correctness, `onLog`-throwing-defence (broken logger can't lock a key out forever).
+- **Inflight queue adapter integration** (PR #55, rewritten suite) — different users still parallel without queue notice, same-user double-tap queues with correct UX text, 4th submission rejected with cap notice.
+- **Graceful shutdown drain** (PR #55 review, 2 tests) — `stop()` waits for in-flight work before broadcasting offline; `stop({ drainTimeoutMs })` honours timeout when work is genuinely stuck and logs the abandon.
+
+Total across the workspace: 362 → **412** pass, 0 fail.
+
+### Operator note
+
+**User-visible Slack text changed.** Rapid follow-up DM/@-mentions now see one of three messages instead of the pre-v0.13 single dropped one:
+
+- 1st follow-up while bot is replying: `:hourglass: 你上一則還在處理，這則已排入隊伍（會依序處理）` — and the message **will be processed**, not dropped.
+- 4th submission while 3 are already queued: `:no_entry: 你已有多則訊息排隊中（上限 3 則），請等回覆後再發` — this one IS dropped, but explicitly.
+- Channel @-mention from a different user while bot is busy with someone else: no notice at all, both run in parallel.
+
+**Zero migration on disk.** The new `channels/<channelId>/messages.jsonl` layout migrates from legacy `chat-session.json` automatically on first read of an existing channel. Operators can `rm` legacy files manually after observing the migration in `events.log`, but the reader is idempotent — re-running upgrade is safe.
+
+**Shutdown takes longer.** Pre-v0.13 graceful shutdown was sub-second; v0.13 now waits up to 25 s for queued / running LLM rounds to complete before exiting. The trade-off: users who saw the "排入隊伍" notice actually get their reply, instead of silent drop on `kill`. K8s `terminationGracePeriodSeconds` should be ≥30 (the default).
+
+---
+
 ## [v0.12.1] — 2026-05-19 — README + CLI version catch-up
 
 [GitHub release](https://github.com/hanfour/pm-workspace-kit/releases/tag/v0.12.1)
