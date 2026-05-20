@@ -189,7 +189,9 @@ describe("gateway config", () => {
       ),
     );
     const loaded = loadGatewayConfig();
-    assert.equal(loaded.audience.default, "tech");
+    // v0.13.1: factory default flipped tech → pm. Most stakeholders
+    // are non-IT; engineers opt-in via per-user override.
+    assert.equal(loaded.audience.default, "pm");
     assert.deepEqual(loaded.audience.users, {});
     assert.deepEqual(loaded.escalation.default, []);
     assert.deepEqual(loaded.escalation.repos, {});

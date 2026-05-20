@@ -8,6 +8,38 @@ All notable changes to **pm-workspace-kit** are documented here.
 
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Each release also has a longer narrative on [GitHub Releases](https://github.com/hanfour/pm-workspace-kit/releases) with rationale, dogfood notes, and test plans.
 
+## [v0.13.1] — 2026-05-20 — gateway audience: flip default tech → pm
+
+[GitHub release](https://github.com/hanfour/pm-workspace-kit/releases/tag/v0.13.1)
+
+### Why
+
+Same-day dogfood on v0.13.0 surfaced a product mismatch the audience-tier code has carried since v0.8.0: `defaultAudience()` returned `{ default: "tech" }`, so every unknown / unconfigured user got engineer-grade replies with file paths, API names, and `:`-separated module references. A test channel with a non-IT teammate (PM / ops) saw the bot answer "ability.rb 沒有全域 admin 角色" with file-line refs and a `dynamic dispatch` callout — accurate but unusable for the actual reader. The four prompts (`tech` / `pm` / `biz` / `exec`) already differentiate cleanly; the bug was that the **default flipped the wrong way** for a typical pmk-gateway workspace where most stakeholders are non-IT.
+
+### Fixed
+
+- **`defaultAudience()` returns `{ default: "pm" }`** ([`packages/cli/src/gateway/config.ts`](https://github.com/hanfour/pm-workspace-kit/blob/main/packages/cli/src/gateway/config.ts)). `pm` is the middle tier: structural findings without formulas, jargon translated (`AdFormat` → 「廣告版型」, `scope` → 「篩選條件」, `AASM` → 「狀態機」), PM-framed questions back to the user. IT users opt in via explicit per-user override (`/pmk admin audience set <@user> tech` or `pmk gateway audience set <userId> tech`).
+- **Existing installs are unaffected on disk** — the factory only fires when `audience` is missing from `gateway.json`. Upgrading admins who want the new behaviour can either delete the `audience.default` line and reload, or run `pmk gateway audience default pm` to flip it explicitly.
+
+### Tests
+
+`@pmk/cli` 362 → **362** (unchanged). One existing back-fill assertion in `gateway.test.ts` flipped from `default === "tech"` to `default === "pm"` to match the new factory; the assertion's intent was always "legacy configs get back-filled with the default" — the specific value is what changed. All 412 workspace tests still pass.
+
+### Operator note
+
+If you've been running v0.13.0 (or any earlier version) and want non-IT users to get the new behaviour, run on the gateway host:
+
+```bash
+pmk gateway audience default pm
+pmk gateway audience set <YOUR-IT-USER-ID> tech
+# Then restart the gateway so the new config snapshot is in-memory:
+# Ctrl+C the foreground process, or kill -TERM <pid>, then `pmk gateway start`.
+```
+
+The audience field is loaded into memory at adapter construction (the same in-memory snapshot caveat as `escalation`), so a config change requires a restart to bite.
+
+---
+
 ## [v0.13.0] — 2026-05-20 — SlackGateway harness + adapter decomposition + FIFO inflight queue
 
 [GitHub release](https://github.com/hanfour/pm-workspace-kit/releases/tag/v0.13.0)

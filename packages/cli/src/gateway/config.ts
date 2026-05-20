@@ -119,7 +119,14 @@ export function gatewayShutdownMarkerPath(): string {
 }
 
 function defaultAudience(): AudienceConfig {
-  return { default: "tech", users: {}, channels: {} };
+  // v0.13.1: flipped tech → pm. Most stakeholders in a typical
+  // pmk-gateway workspace are non-IT (PM / ops / sales). Defaulting
+  // unknown users to `tech` drowned them in file paths, API names,
+  // and code snippets they couldn't use. `pm` is the middle tier:
+  // structural findings without formulas, jargon translated. IT
+  // users still get full depth by being explicitly listed in
+  // `audience.users` (admin sets via `/pmk admin audience set <@user> tech`).
+  return { default: "pm", users: {}, channels: {} };
 }
 
 function defaultEscalation(): EscalationConfig {
