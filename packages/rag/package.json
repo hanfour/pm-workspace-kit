@@ -1,6 +1,6 @@
 {
   "name": "@pmk/rag",
-  "version": "0.13.1",
+  "version": "0.13.2",
   "description": "RAG engine for pmk — pure-JS TF-IDF retrieval over pm-workspace-kit docs (no native deps)",
   "license": "MIT",
   "main": "dist/index.js",

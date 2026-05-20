@@ -189,9 +189,13 @@ describe("gateway config", () => {
       ),
     );
     const loaded = loadGatewayConfig();
-    // v0.13.1: factory default flipped tech → pm. Most stakeholders
-    // are non-IT; engineers opt-in via per-user override.
-    assert.equal(loaded.audience.default, "pm");
+    // v0.13.2: factory default re-flipped pm → biz. Live verification
+    // of v0.13.1's `pm` default showed PM tier still allows file paths
+    // and code refs (by design — PM tier briefs engineers). For typical
+    // pmk-gateway workspaces where the average unknown user is a true
+    // non-IT stakeholder (sales/ops), `biz` is the right default. PM
+    // and tech tiers stay opt-in via per-user override.
+    assert.equal(loaded.audience.default, "biz");
     assert.deepEqual(loaded.audience.users, {});
     assert.deepEqual(loaded.escalation.default, []);
     assert.deepEqual(loaded.escalation.repos, {});

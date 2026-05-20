@@ -8,6 +8,45 @@ All notable changes to **pm-workspace-kit** are documented here.
 
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Each release also has a longer narrative on [GitHub Releases](https://github.com/hanfour/pm-workspace-kit/releases) with rationale, dogfood notes, and test plans.
 
+## [v0.13.2] — 2026-05-20 — gateway audience: re-flip default pm → biz
+
+[GitHub release](https://github.com/hanfour/pm-workspace-kit/releases/tag/v0.13.2)
+
+### Why
+
+v0.13.1 flipped `defaultAudience()` from `tech` → `pm` on the assumption that PM tier was the right "middle ground" for unknown / non-IT users. Live re-verification on a real workspace (2026-05-20, ~30 min after v0.13.1 shipped) showed the gap between `tech` and `pm` was too narrow for the actual product intent: PM tier still cites file paths (`app/models/ability.rb`), model names (`PlacementRevenue`), and method names — by design, because PM tier is for "PM who briefs engineers later". A true non-IT user (sales / ops / exec-adjacent) still got a code-flavoured reply with a stray Ruby block that the PM prompt's own "no code blocks unless quoting an exact API name or table column" rule was supposed to ban.
+
+`biz` is the actual right default. The BIZ prompt forces jargon translation (`AdFormat` → 「廣告版型」, `scope` → 「篩選條件」, `AASM` → 「狀態機」), bans code blocks unless quoting operational SQL the user must run, and collapses implementation into "想看實作可以再問 IT". For the average pmk-gateway workspace this matches what the operator actually wants: non-IT stakeholders get plain-Chinese answers, IT/PM users opt in to the richer tiers explicitly.
+
+### Fixed
+
+- **`defaultAudience()` returns `{ default: "biz" }`** (`packages/cli/src/gateway/config.ts`). Same factory-only effect as v0.13.1 — existing `gateway.json` files are not modified on upgrade. PMs and engineers opt in via per-user override:
+  ```bash
+  pmk gateway audience set <PM-USER-ID> pm
+  pmk gateway audience set <IT-USER-ID> tech
+  ```
+- **Test assertion follows the factory** — same back-fill test in `gateway.test.ts` flipped from `default === "pm"` to `default === "biz"`; intent unchanged ("legacy configs back-fill with the default").
+
+### Tests
+
+`@pmk/cli` 362 → **362** (unchanged). All 412 workspace tests still pass.
+
+### Operator note
+
+If you're upgrading from v0.13.1 (or any earlier version) and want non-IT users to get BIZ-tier replies:
+
+```bash
+pmk gateway audience default biz
+# Optionally add PM-aware users (will still get file/model refs they can forward):
+pmk gateway audience set <PM-USER-ID> pm
+# Restart gateway so the in-memory config snapshot updates:
+kill -TERM $(cat ~/.pmk/gateway/gateway.pid) && pmk gateway start
+```
+
+The `pm` and `tech` tiers still exist and work — only the *default* changed.
+
+---
+
 ## [v0.13.1] — 2026-05-20 — gateway audience: flip default tech → pm
 
 [GitHub release](https://github.com/hanfour/pm-workspace-kit/releases/tag/v0.13.1)

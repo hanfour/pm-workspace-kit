@@ -119,14 +119,18 @@ export function gatewayShutdownMarkerPath(): string {
 }
 
 function defaultAudience(): AudienceConfig {
-  // v0.13.1: flipped tech → pm. Most stakeholders in a typical
-  // pmk-gateway workspace are non-IT (PM / ops / sales). Defaulting
-  // unknown users to `tech` drowned them in file paths, API names,
-  // and code snippets they couldn't use. `pm` is the middle tier:
-  // structural findings without formulas, jargon translated. IT
-  // users still get full depth by being explicitly listed in
-  // `audience.users` (admin sets via `/pmk admin audience set <@user> tech`).
-  return { default: "pm", users: {}, channels: {} };
+  // v0.13.2: re-flipped pm → biz after live verification. v0.13.1's
+  // `pm` tier still allows file paths and model names (PM tier is
+  // designed for "PM who briefs engineers" — code refs are intentional).
+  // For workspaces where the typical unknown user is a true non-IT
+  // stakeholder (sales / ops / exec-adjacent), `biz` is the right
+  // default: jargon mandatory-translated ("AdFormat" → 「廣告版型」,
+  // "scope" → 「篩選條件」), no code blocks unless quoting a
+  // SQL/API the user must run, implementation collapsed into "想看實作
+  //可以問 IT". Both PM and IT users opt into their richer tier via
+  // explicit per-user override (`/pmk admin audience set <@user> pm`
+  // or `tech`).
+  return { default: "biz", users: {}, channels: {} };
 }
 
 function defaultEscalation(): EscalationConfig {

@@ -1,6 +1,6 @@
 {
   "name": "@pmk/core",
-  "version": "0.13.1",
+  "version": "0.13.2",
   "description": "Core scripts — traceability matrix, Confluence sync, shared utilities",
   "license": "MIT",
   "main": "src/index.js",
