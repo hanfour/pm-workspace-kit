@@ -8,6 +8,41 @@ All notable changes to **pm-workspace-kit** are documented here.
 
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Each release also has a longer narrative on [GitHub Releases](https://github.com/hanfour/pm-workspace-kit/releases) with rationale, dogfood notes, and test plans.
 
+## [v0.13.3] — 2026-05-20 — gateway audience prompts: anti-bleed + BIZ translation table
+
+[GitHub release](https://github.com/hanfour/pm-workspace-kit/releases/tag/v0.13.3)
+
+### Why
+
+v0.13.2 made `biz` the default — verification showed the biz reply was dramatically cleaner than pm (zero code blocks, plain-Chinese structure, business-meaning section). But two follow-ups from the same dogfood round:
+
+1. **PM tier was leaking code blocks.** A 4-line Ruby `def`/loop snippet appeared in the PM-tier reply to "admin 權限的核心邏輯", even though the PM prompt's existing rule said "No code blocks unless quoting an exact API name or table column". Root cause: prior turns in the channel were tech-tier replies with full Ruby blocks; the LLM was tone-matching the conversation history, not strictly following the system prompt.
+2. **BIZ translation cheat-sheet was thin.** Only 3 examples inline (`AdFormat` → 廣告版型, `scope` → 篩選條件, `AASM` → 狀態機). For Rails-stack workspaces the bot will see `Devise` / `Doorkeeper` / `Rolify` / `CanCanCan` / `Sidekiq` / `migration` etc. all the time; without explicit translations the LLM either keeps the English term or invents inconsistent translations across turns.
+
+### Fixed
+
+- **PM prompt: explicit "no multi-line code blocks" rule** (`packages/shared/src/index.ts`). The existing "No code blocks unless quoting an exact API name or table column" stays, but the new wording forces inline-backtick-only for names (`PlacementRevenue`, `app/services/foo.rb`, `is_admin_permission?`) and demands prose description instead of multi-line snippets: "Ability 用 dynamic dispatch — Rolify 表裡的角色名稱被當 method 名稱呼叫" replaces the 4-line Ruby loop.
+- **PM + BIZ: anti-bleed guardrail.** Both prompts now lead with the same first rule: **"Your tier dictates style, not the conversation history. If prior turns in this thread used multi-line Ruby/SQL blocks, do not tone-match — they were for a different reader."** This counters the LLM's default behaviour of mirroring conversation tone when the audience tier silently changes mid-channel.
+- **BIZ: 9-row jargon translation table** (was 3 inline examples). Covers common web-stack terms: `Devise`/`Doorkeeper`/OAuth/JWT → 登入機制 / 第三方授權登入, `Rolify`/role → 角色管理, `CanCanCan`/`ability.rb` → 權限規則, `scope` → 資料篩選條件, `AASM`/state machine → 流程狀態管理, `Sidekiq`/cron → 背景排程, `migration` → 資料表結構變更, `controller`/endpoint → 後台處理動作, `AdFormat`/placement → 廣告版型. Bot is explicitly told to never leave the tech form alone in body text.
+- **BIZ: explicit "對業務的實際意義" section convention.** When the answer has operational implications, the reply ends with a 1–3 bullet section spelling out what the user should know (matches the pattern observed in the v0.13.2 verification round).
+
+### Tests
+
+`@pmk/cli` 362 → **362** (unchanged). Shared package's "audience prompts have distinct bodies (cross-wire regression)" test still passes — the four prompts are still distinct after the edits. All 412 workspace tests still pass.
+
+### Operator note
+
+This is a prompt-only change inside `@pmk/shared`. The gateway picks up new prompts on next start — no config migration needed. To apply on an existing host:
+
+```bash
+git pull && npm run -w @pmk/cli build
+kill -TERM $(cat ~/.pmk/gateway/gateway.pid) && pmk gateway start
+```
+
+The anti-bleed guardrail's effectiveness is measurable: if you observe a PM-tier or BIZ-tier reply that still includes a multi-line code block AFTER this upgrade, file an issue with the Slack thread URL — the prompt isn't strong enough yet and we need another iteration.
+
+---
+
 ## [v0.13.2] — 2026-05-20 — gateway audience: re-flip default pm → biz
 
 [GitHub release](https://github.com/hanfour/pm-workspace-kit/releases/tag/v0.13.2)
