@@ -86,19 +86,32 @@ export class InFlightQueue {
   }
 
   private async drain(key: string): Promise<void> {
-    const queue = this.queues.get(key);
-    while (queue && queue.length > 0) {
-      const work = queue.shift()!;
-      try {
-        await work();
-      } catch (err) {
-        this.onLog(
-          `inflight-queue work failed for ${key}: ${(err as Error).message}`,
-        );
+    try {
+      const queue = this.queues.get(key);
+      while (queue && queue.length > 0) {
+        const work = queue.shift()!;
+        try {
+          await work();
+        } catch (err) {
+          // `onLog` is caller-supplied — wrap in its own try/catch so a
+          // broken logger can't reject the worker promise (which would
+          // poison `waitForAll` and force-fail graceful shutdown).
+          try {
+            this.onLog(
+              `inflight-queue work failed for ${key}: ${(err as Error).message}`,
+            );
+          } catch {
+            /* logger threw; nothing useful to do here */
+          }
+        }
       }
+    } finally {
+      // Cleanup must run even if something above unexpectedly throws —
+      // otherwise the worker dies but `workers`/`queues` still claim
+      // the key as active, locking that user out forever.
+      this.queues.delete(key);
+      this.workers.delete(key);
     }
-    this.queues.delete(key);
-    this.workers.delete(key);
   }
 
   /** Number of items currently QUEUED (not counting the running one). */

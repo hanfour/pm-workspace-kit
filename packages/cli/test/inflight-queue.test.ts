@@ -164,6 +164,31 @@ describe("InFlightQueue: error handling", () => {
     assert.equal(logs.length, 1);
     assert.match(logs[0], /boom/);
   });
+
+  it("a throwing onLog doesn't leak worker/queue state for the key", async () => {
+    // Defends the drain() finally-block invariant — if cleanup ran in
+    // the happy path only, an onLog explosion would leave the key
+    // permanently "busy" and lock the user out forever.
+    const q = new InFlightQueue({
+      onLog: () => {
+        throw new Error("logger blew up");
+      },
+    });
+    q.enqueue("k", async () => {
+      throw new Error("work blew up — triggers onLog");
+    });
+    await q.waitIdle("k");
+    assert.equal(q.busy("k"), false, "worker map cleared even if onLog threw");
+    assert.equal(q.depth("k"), 0, "queue map cleared even if onLog threw");
+    // Subsequent enqueue under the same key must run, not be blocked
+    // by stale `workers.has(key) === true`.
+    let secondRan = false;
+    q.enqueue("k", async () => {
+      secondRan = true;
+    });
+    await q.waitIdle("k");
+    assert.equal(secondRan, true, "post-recovery enqueue runs cleanly");
+  });
 });
 
 describe("InFlightQueue: waitForAll", () => {
