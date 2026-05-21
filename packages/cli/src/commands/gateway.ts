@@ -371,9 +371,18 @@ function audienceUsage(): void {
         "  pmk gateway audience unset <userId>\n" +
         "  pmk gateway audience set-channel <channelId> <tech|pm|biz|exec>\n" +
         "  pmk gateway audience unset-channel <channelId>\n" +
-        "  pmk gateway audience default <tech|pm|biz|exec>",
+        "  pmk gateway audience default <tech|pm|biz|exec>\n" +
+        "  pmk gateway audience example list [biz|pm]\n" +
+        "  pmk gateway audience example add <biz|pm> <techForm> <targetForm...>\n" +
+        "  pmk gateway audience example remove <biz|pm> <techForm>",
     ),
   );
+}
+
+const EXAMPLE_TIERS = ["biz", "pm"] as const;
+type ExampleTier = (typeof EXAMPLE_TIERS)[number];
+function isExampleTier(t: string): t is ExampleTier {
+  return (EXAMPLE_TIERS as readonly string[]).includes(t);
 }
 
 function audienceCmd(rest: string[]): void {
@@ -491,6 +500,103 @@ function audienceCmd(rest: string[]): void {
       saveGatewayConfig(cfg);
       println(chalk.green(`default audience set to ${audience}`));
       return;
+    }
+    case "example": {
+      const examples = cfg.audience.domainExamples ?? { biz: [], pm: [] };
+      cfg.audience.domainExamples = examples;
+      if (!examples.biz) examples.biz = [];
+      if (!examples.pm) examples.pm = [];
+      const [exampleAction, ...exampleArgs] = args;
+      switch (exampleAction) {
+        case undefined:
+        case "list": {
+          const filter = exampleArgs[0];
+          const tiers: ExampleTier[] =
+            filter && isExampleTier(filter) ? [filter] : ["biz", "pm"];
+          println(chalk.bold("\npmk gateway audience example"));
+          for (const tier of tiers) {
+            const rows = examples[tier] ?? [];
+            if (rows.length === 0) {
+              println(chalk.dim(`  ${tier}: (no workspace examples)`));
+            } else {
+              println(chalk.dim(`  ${tier}:`));
+              for (const row of rows) {
+                println(`    ${row.techForm.padEnd(20)} → ${row.targetForm}`);
+              }
+            }
+          }
+          println(
+            chalk.dim(
+              "  applied at prompt-assembly time; gateway restart required for changes to take effect.",
+            ),
+          );
+          return;
+        }
+        case "add": {
+          const [tier, techForm, ...targetParts] = exampleArgs;
+          const targetForm = targetParts.join(" ").trim();
+          if (!tier || !techForm || !targetForm) {
+            audienceUsage();
+            process.exit(1);
+          }
+          if (!isExampleTier(tier)) {
+            println(
+              chalk.red(
+                `invalid tier '${tier}'. Only 'biz' and 'pm' carry translation tables.`,
+              ),
+            );
+            process.exit(1);
+          }
+          const list = examples[tier]!;
+          const existing = list.findIndex((e) => e.techForm === techForm);
+          if (existing >= 0) {
+            list[existing] = { techForm, targetForm };
+            saveGatewayConfig(cfg);
+            println(
+              chalk.green(
+                `updated ${tier} example: ${techForm} → ${targetForm}`,
+              ),
+            );
+          } else {
+            list.push({ techForm, targetForm });
+            saveGatewayConfig(cfg);
+            println(
+              chalk.green(`added ${tier} example: ${techForm} → ${targetForm}`),
+            );
+          }
+          return;
+        }
+        case "remove": {
+          const [tier, techForm] = exampleArgs;
+          if (!tier || !techForm) {
+            audienceUsage();
+            process.exit(1);
+          }
+          if (!isExampleTier(tier)) {
+            println(
+              chalk.red(
+                `invalid tier '${tier}'. Only 'biz' and 'pm' carry translation tables.`,
+              ),
+            );
+            process.exit(1);
+          }
+          const list = examples[tier]!;
+          const idx = list.findIndex((e) => e.techForm === techForm);
+          if (idx < 0) {
+            println(
+              chalk.dim(`(${tier} has no example for '${techForm}'; nothing to do)`),
+            );
+            return;
+          }
+          list.splice(idx, 1);
+          saveGatewayConfig(cfg);
+          println(chalk.green(`removed ${tier} example: ${techForm}`));
+          return;
+        }
+        default:
+          audienceUsage();
+          process.exit(1);
+      }
     }
     default:
       audienceUsage();

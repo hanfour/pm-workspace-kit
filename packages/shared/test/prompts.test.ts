@@ -127,6 +127,69 @@ describe("audience prompts", () => {
     ]);
     assert.equal(bodies.size, 4, "all four audience prompts must be distinct");
   });
+
+  // v0.15.0 — `pickGatewayPrompt` gains an optional `extras` arg so
+  // operators can append workspace-specific translation rows to the
+  // BIZ / PM cheat-sheets without forking the shared package.
+  describe("pickGatewayPrompt(audience, extras)", () => {
+    it("with no extras, returns the base const unchanged (v0.7+ back-compat)", () => {
+      assert.equal(pickGatewayPrompt("biz", undefined), PROMPT_GATEWAY_DM_BIZ);
+      assert.equal(pickGatewayPrompt("biz", {}), PROMPT_GATEWAY_DM_BIZ);
+      assert.equal(
+        pickGatewayPrompt("biz", { biz: [] }),
+        PROMPT_GATEWAY_DM_BIZ,
+      );
+      assert.equal(pickGatewayPrompt("pm", { pm: [] }), PROMPT_GATEWAY_DM_PM);
+    });
+
+    it("biz extras append a Plain-Chinese translation table after the base", () => {
+      const result = pickGatewayPrompt("biz", {
+        biz: [
+          { techForm: "SKU", targetForm: "商品編號 / 商品變體" },
+          { techForm: "tenant", targetForm: "客戶 / 訂閱戶" },
+        ],
+      });
+      assert.ok(result.startsWith(PROMPT_GATEWAY_DM_BIZ), "preserves base prompt prefix");
+      assert.match(result, /Workspace-specific terms/);
+      assert.match(result, /Plain-Chinese form \(USE this\)/);
+      assert.match(result, /`SKU` \| 商品編號 \/ 商品變體/);
+      assert.match(result, /`tenant` \| 客戶 \/ 訂閱戶/);
+    });
+
+    it("pm extras append a PM-question-framing table with PM-specific header", () => {
+      const result = pickGatewayPrompt("pm", {
+        pm: [
+          {
+            techForm: "What's the SKU stock-threshold for low-stock alerts?",
+            targetForm: "存貨多少件以下要觸發補貨提醒？",
+          },
+        ],
+      });
+      assert.ok(result.startsWith(PROMPT_GATEWAY_DM_PM));
+      assert.match(result, /Workspace-specific examples/);
+      assert.match(result, /PM form \(ask this way\)/);
+      assert.match(result, /存貨多少件以下/);
+    });
+
+    it("tech and exec tiers ignore extras (no translation tables in those prompts)", () => {
+      const extras = {
+        biz: [{ techForm: "SKU", targetForm: "商品編號" }],
+        pm: [{ techForm: "tenant", targetForm: "客戶" }],
+      };
+      assert.equal(pickGatewayPrompt("tech", extras), PROMPT_GATEWAY_DM_TECH);
+      assert.equal(pickGatewayPrompt("exec", extras), PROMPT_GATEWAY_DM_EXEC);
+      // Unknown tier falls back to tech, also ignoring extras.
+      assert.equal(pickGatewayPrompt(undefined, extras), PROMPT_GATEWAY_DM_TECH);
+    });
+
+    it("extras for the wrong tier slot are ignored (only the matching tier is appended)", () => {
+      // Asking for biz but only supplying pm extras → biz output is unchanged.
+      const result = pickGatewayPrompt("biz", {
+        pm: [{ techForm: "tenant", targetForm: "客戶" }],
+      });
+      assert.equal(result, PROMPT_GATEWAY_DM_BIZ);
+    });
+  });
 });
 
 describe("verb prompts (PROMPTS map)", () => {

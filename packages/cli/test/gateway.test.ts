@@ -2087,6 +2087,149 @@ describe("Slack admin handler (#31)", () => {
     assert.equal(reload.audience.channels["COLD12345"], undefined);
   });
 
+  // v0.15.0: per-workspace domain examples appended to BIZ / PM
+  // cheat-sheet at prompt-assembly time. Stored under
+  // `cfg.audience.domainExamples`; managed via `/pmk admin audience
+  // example add|remove|list` (Slack) or `pmk gateway audience example
+  // ...` (CLI). Tests cover the Slack admin handler — the CLI handler
+  // shares the same config layer.
+  it("audience example add appends a biz translation row", async () => {
+    const { handleAdminSlash } = await import("../src/gateway/slack/admin");
+    const r = await handleAdminSlash({
+      actor: "U0OWNER",
+      tokens: ["audience", "example", "add", "biz", "SKU", "=", "商品編號"],
+    });
+    assert.match(r.text, /added biz example/);
+    assert.match(r.text, /restart gateway/);
+    const reload = loadGatewayConfig();
+    assert.deepEqual(reload.audience.domainExamples?.biz, [
+      { techForm: "SKU", targetForm: "商品編號" },
+    ]);
+  });
+
+  it("audience example add preserves multi-word target form (split on spaces but rejoined)", async () => {
+    const { handleAdminSlash } = await import("../src/gateway/slack/admin");
+    const r = await handleAdminSlash({
+      actor: "U0OWNER",
+      tokens: [
+        "audience",
+        "example",
+        "add",
+        "biz",
+        "tenant",
+        "=",
+        "客戶",
+        "/",
+        "訂閱戶",
+      ],
+    });
+    assert.match(r.text, /added biz example/);
+    const reload = loadGatewayConfig();
+    const tenant = reload.audience.domainExamples?.biz?.find(
+      (e) => e.techForm === "tenant",
+    );
+    assert.equal(tenant?.targetForm, "客戶 / 訂閱戶");
+  });
+
+  it("audience example add to existing techForm updates instead of duplicating", async () => {
+    const { handleAdminSlash } = await import("../src/gateway/slack/admin");
+    await handleAdminSlash({
+      actor: "U0OWNER",
+      tokens: ["audience", "example", "add", "pm", "tenant", "=", "客戶"],
+    });
+    const r = await handleAdminSlash({
+      actor: "U0OWNER",
+      tokens: ["audience", "example", "add", "pm", "tenant", "=", "訂閱戶"],
+    });
+    assert.match(r.text, /updated pm example/);
+    const reload = loadGatewayConfig();
+    const list = reload.audience.domainExamples?.pm ?? [];
+    const tenantRows = list.filter((e) => e.techForm === "tenant");
+    assert.equal(tenantRows.length, 1, "no duplicates allowed");
+    assert.equal(tenantRows[0].targetForm, "訂閱戶");
+  });
+
+  it("audience example add rejects unsupported tier (tech / exec carry no tables)", async () => {
+    const { handleAdminSlash } = await import("../src/gateway/slack/admin");
+    const r = await handleAdminSlash({
+      actor: "U0OWNER",
+      tokens: ["audience", "example", "add", "tech", "Devise", "=", "登入"],
+    });
+    assert.match(r.text, /^:x: usage/);
+    const reload = loadGatewayConfig();
+    // None of the tiers should have gained anything.
+    assert.equal(reload.audience.domainExamples?.biz?.length ?? 0, 0);
+    assert.equal(reload.audience.domainExamples?.pm?.length ?? 0, 0);
+  });
+
+  it("audience example add rejects missing `=` separator", async () => {
+    const { handleAdminSlash } = await import("../src/gateway/slack/admin");
+    const r = await handleAdminSlash({
+      actor: "U0OWNER",
+      tokens: ["audience", "example", "add", "biz", "SKU", "商品編號"],
+    });
+    assert.match(r.text, /^:x: usage/);
+  });
+
+  it("audience example remove deletes a single tier row by techForm", async () => {
+    const { handleAdminSlash } = await import("../src/gateway/slack/admin");
+    const cfg = loadGatewayConfig();
+    cfg.audience.domainExamples = {
+      biz: [
+        { techForm: "SKU", targetForm: "商品編號" },
+        { techForm: "tenant", targetForm: "客戶" },
+      ],
+      pm: [],
+    };
+    saveGatewayConfig(cfg);
+    const r = await handleAdminSlash({
+      actor: "U0OWNER",
+      tokens: ["audience", "example", "remove", "biz", "SKU"],
+    });
+    assert.match(r.text, /removed biz example/);
+    const reload = loadGatewayConfig();
+    assert.deepEqual(reload.audience.domainExamples?.biz, [
+      { techForm: "tenant", targetForm: "客戶" },
+    ]);
+  });
+
+  it("audience example remove on missing row is idempotent (no-op message)", async () => {
+    const { handleAdminSlash } = await import("../src/gateway/slack/admin");
+    const r = await handleAdminSlash({
+      actor: "U0OWNER",
+      tokens: ["audience", "example", "remove", "pm", "Nonexistent"],
+    });
+    assert.match(r.text, /nothing to do/);
+  });
+
+  it("audience example list renders both tiers + restart caveat", async () => {
+    const { handleAdminSlash } = await import("../src/gateway/slack/admin");
+    const cfg = loadGatewayConfig();
+    cfg.audience.domainExamples = {
+      biz: [{ techForm: "SKU", targetForm: "商品編號" }],
+      pm: [{ techForm: "tenant", targetForm: "客戶 / 訂閱戶" }],
+    };
+    saveGatewayConfig(cfg);
+    const r = await handleAdminSlash({
+      actor: "U0OWNER",
+      tokens: ["audience", "example", "list"],
+    });
+    assert.match(r.text, /biz:/);
+    assert.match(r.text, /pm:/);
+    assert.match(r.text, /`SKU` → 商品編號/);
+    assert.match(r.text, /`tenant` → 客戶 \/ 訂閱戶/);
+    assert.match(r.text, /restart required/);
+  });
+
+  it("loadGatewayConfig back-fills audience.domainExamples for old configs (v0.15)", () => {
+    const cfg = loadGatewayConfig();
+    // Strip the v0.15 field, simulate an older on-disk config.
+    delete (cfg.audience as { domainExamples?: unknown }).domainExamples;
+    saveGatewayConfig(cfg);
+    const reload = loadGatewayConfig();
+    assert.deepEqual(reload.audience.domainExamples, { biz: [], pm: [] });
+  });
+
   it("admins remove blocks last-admin removal", async () => {
     const { handleAdminSlash } = await import("../src/gateway/slack/admin");
     const cfg = loadGatewayConfig();

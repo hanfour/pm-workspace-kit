@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import type { AudienceKey } from "@pmk/shared";
+import type { AudienceDomainExamples, AudienceKey } from "@pmk/shared";
 
 /**
  * Gateway config — what the host configures once, before
@@ -41,6 +41,17 @@ export interface AudienceConfig {
   users: Record<string, AudienceKey>;
   /** Slack channel ID → audience default for the channel (#23). */
   channels: Record<string, AudienceKey>;
+  /**
+   * v0.15.0: per-tier workspace-specific translation rows the operator
+   * registered via `pmk gateway audience example add <tier> ...`.
+   * Appended to the shared BIZ / PM cheat-sheet at prompt-assembly
+   * time. Only `biz` and `pm` are honoured; the schema accepts
+   * future tiers for forward compatibility.
+   *
+   * Same in-memory snapshot caveat as the rest of `audience`:
+   * mutations on disk require a graceful restart to take effect.
+   */
+  domainExamples?: AudienceDomainExamples;
 }
 
 /**
@@ -159,6 +170,9 @@ export function loadGatewayConfig(): GatewayConfig {
   if (!raw.audience) raw.audience = defaultAudience();
   if (!raw.audience.users) raw.audience.users = {};
   if (!raw.audience.channels) raw.audience.channels = {};
+  if (!raw.audience.domainExamples) raw.audience.domainExamples = {};
+  if (!raw.audience.domainExamples.biz) raw.audience.domainExamples.biz = [];
+  if (!raw.audience.domainExamples.pm) raw.audience.domainExamples.pm = [];
   if (!raw.escalation) raw.escalation = defaultEscalation();
   if (!raw.escalation.repos) raw.escalation.repos = {};
   if (!raw.escalation.default) raw.escalation.default = [];

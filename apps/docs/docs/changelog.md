@@ -8,6 +8,46 @@ All notable changes to **pm-workspace-kit** are documented here.
 
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Each release also has a longer narrative on [GitHub Releases](https://github.com/hanfour/pm-workspace-kit/releases) with rationale, dogfood notes, and test plans.
 
+## [v0.15.0] — 2026-05-21 — workspace-configurable audience domain examples
+
+[GitHub release](https://github.com/hanfour/pm-workspace-kit/releases/tag/v0.15.0)
+
+### Why
+
+v0.13.3 expanded the BIZ jargon cheat-sheet to 9 rows + 2026-05-20's v0.14.0 added a meta-rule reframing the cheat-sheet's last row (`AdFormat` / `placement` / `inventory`) and the PM example table (`vCPM` formula, `placement_id`, `PlacementRevenue` vs `AccountPayable`) as "from an ad-tech reference workspace; apply the discipline to your own domain". The reframe stops the bot from inventing ad-tech context unprompted, but it doesn't teach non-ad-tech workspaces what their *own* domain vocabulary should translate to — operators ended up either tolerating English terms in body text or forking the shared package to swap in domain-specific rows.
+
+v0.15.0 closes that loop with a runtime extension point: `cfg.audience.domainExamples.{biz,pm}` carries per-workspace `{ techForm, targetForm }` rows that `pickGatewayPrompt(audience, extras)` appends to the BIZ / PM cheat-sheet at assembly time.
+
+### Added
+
+- **`pickGatewayPrompt(audience, extras?)`** ([`packages/shared/src/index.ts`](https://github.com/hanfour/pm-workspace-kit/blob/main/packages/shared/src/index.ts)) — back-compat default (no extras → returns the base const unchanged for v0.7+ callers). With BIZ extras: appends a `Workspace-specific terms` block + a `Tech form | Plain-Chinese form` table. With PM extras: appends a `Workspace-specific examples` block + `Tech form (don't ask this way) | PM form (ask this way)` table. Tech / exec tiers ignore extras (no translation tables in those prompts).
+- **`AudienceConfig.domainExamples`** ([`packages/cli/src/gateway/config.ts`](https://github.com/hanfour/pm-workspace-kit/blob/main/packages/cli/src/gateway/config.ts)) — `{ biz?: DomainExample[]; pm?: DomainExample[] }`. `loadGatewayConfig` back-fills the field on read so existing v0.7–v0.14 configs upgrade silently.
+- **`pmk gateway audience example add|remove|list`** (CLI) and **`/pmk admin audience example add|remove|list`** (Slack) — admin commands to register translation rows at runtime. Slack syntax uses `=` as the separator so multi-word target forms survive whitespace tokenisation (`/pmk admin audience example add biz tenant = 客戶 / 訂閱戶`). Both surfaces re-key by `techForm` — adding a row that already exists updates instead of duplicating. Audit log records `audience.example.add` / `audience.example.remove` actions.
+- **Wired through** at both prompt-assembly points: `FreeChatTurnRunner` ([`packages/cli/src/gateway/slack/free-chat-turn.ts`](https://github.com/hanfour/pm-workspace-kit/blob/main/packages/cli/src/gateway/slack/free-chat-turn.ts)) and `EscalationCoordinator` ([`packages/cli/src/gateway/slack/escalation.ts`](https://github.com/hanfour/pm-workspace-kit/blob/main/packages/cli/src/gateway/slack/escalation.ts)) now call `pickGatewayPrompt(audience, config.audience.domainExamples)`.
+
+### Tests
+
+- `@pmk/shared` 24 → **29** — `pickGatewayPrompt(audience, extras)` covered for: no-extras back-compat, BIZ table append, PM table append, tech/exec ignore extras, wrong-tier slot ignored.
+- `@pmk/cli` 362 → **371** — Slack admin `audience example add/remove/list` covered for: append, multi-word target rejoin (`= 客戶 / 訂閱戶`), duplicate-techForm update-not-duplicate, unsupported-tier rejection, missing-`=` rejection, remove-not-found idempotency, list render, `loadGatewayConfig` back-fill from old shape.
+- Total: 412 → **426** tests, 100% pass.
+
+### Operator note
+
+Same in-memory snapshot caveat as the rest of `audience`: edits via Slack admin or CLI write through to `~/.pmk/gateway.json`, but the running daemon keeps its in-memory snapshot until graceful restart:
+
+```bash
+kill -TERM $(cat ~/.pmk/gateway/gateway.pid) && pmk gateway start
+```
+
+Within the v0.11 marker window (5 min) the restart stays silent in Slack.
+
+### Out of scope / backlog
+
+- **Per-channel example overrides** — currently examples are workspace-scoped. If a host runs one Slack workspace that spans multiple distinct product domains (e-commerce in `#shop`, ad-tech in `#ads`), there's no way to tier examples by channel yet. Deferred until a real multi-domain workspace surfaces the need.
+- **TECH-tier examples** — the tech prompt has no cheat-sheet to extend; if dogfood shows tech-tier replies also imprinting on ad-tech anchors, the next iteration would add a tech-specific addendum section. Not yet motivated by observed behaviour.
+
+---
+
 ## [v0.14.0] — 2026-05-20 — SlackAdapter tranche 4 + post-v0.13.3 docs/prompt polish
 
 [GitHub release](https://github.com/hanfour/pm-workspace-kit/releases/tag/v0.14.0) · [PR #56](https://github.com/hanfour/pm-workspace-kit/pull/56)

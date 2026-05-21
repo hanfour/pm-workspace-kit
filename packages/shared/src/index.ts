@@ -382,21 +382,76 @@ export const AUDIENCE_KEYS: readonly AudienceKey[] = [
 ] as const;
 
 /**
+ * v0.15.0: a single workspace-specific translation pair an operator
+ * can register via `pmk gateway audience example add <tier> ...`.
+ * Appended to the BIZ / PM cheat-sheet at prompt-assembly time so
+ * non-ad-tech workspaces can teach the bot their own domain vocabulary
+ * without forking the shared package.
+ */
+export type DomainExample = {
+  techForm: string;
+  targetForm: string;
+};
+
+/**
+ * v0.15.0: per-tier extras consumed by `pickGatewayPrompt`. Only
+ * `biz` and `pm` honour examples — the `tech` and `exec` prompts
+ * don't carry translation tables, so extras for those tiers are
+ * ignored (storing them is still allowed at the config layer for
+ * forward compatibility).
+ */
+export type AudienceDomainExamples = {
+  biz?: DomainExample[];
+  pm?: DomainExample[];
+};
+
+/**
  * Pick the gateway-DM prompt for a given audience. Unknown values
  * fall back to tech (the historical default).
+ *
+ * v0.15.0: optional `extras` appends workspace-specific translation
+ * rows to BIZ / PM prompts so operators can teach the bot domain
+ * vocabulary at runtime. With no extras (or extras for an
+ * unsupported tier), the function returns the base const unchanged
+ * — guarantees backward compatibility with v0.7+ callers.
  */
-export function pickGatewayPrompt(audience: AudienceKey | undefined): string {
-  switch (audience) {
-    case "pm":
-      return PROMPT_GATEWAY_DM_PM;
-    case "biz":
-      return PROMPT_GATEWAY_DM_BIZ;
-    case "exec":
-      return PROMPT_GATEWAY_DM_EXEC;
-    case "tech":
-    default:
-      return PROMPT_GATEWAY_DM_TECH;
-  }
+export function pickGatewayPrompt(
+  audience: AudienceKey | undefined,
+  extras?: AudienceDomainExamples,
+): string {
+  const base = (() => {
+    switch (audience) {
+      case "pm":
+        return PROMPT_GATEWAY_DM_PM;
+      case "biz":
+        return PROMPT_GATEWAY_DM_BIZ;
+      case "exec":
+        return PROMPT_GATEWAY_DM_EXEC;
+      case "tech":
+      default:
+        return PROMPT_GATEWAY_DM_TECH;
+    }
+  })();
+
+  const tierExtras =
+    audience === "biz"
+      ? extras?.biz
+      : audience === "pm"
+        ? extras?.pm
+        : undefined;
+  if (!tierExtras?.length) return base;
+
+  // The BIZ table reads as "tech form → plain Chinese", the PM table
+  // reads as "tech form → PM-vocabulary question framing" — header
+  // wording differs by tier so the LLM doesn't mis-apply the lens.
+  const header =
+    audience === "pm"
+      ? "Workspace-specific examples — extend the PM cheat-sheet above with these domain-specific translations:\n\n| Tech form (don't ask this way) | PM form (ask this way) |\n|---|---|"
+      : "Workspace-specific terms — extend the BIZ cheat-sheet above with these domain-specific translations:\n\n| Tech form (DON'T leave as-is) | Plain-Chinese form (USE this) |\n|---|---|";
+  const rows = tierExtras
+    .map((e) => `| \`${e.techForm}\` | ${e.targetForm} |`)
+    .join("\n");
+  return `${base}\n\n${header}\n${rows}\n`;
 }
 
 export const PROMPT_ASK = `${BASE_RULES}

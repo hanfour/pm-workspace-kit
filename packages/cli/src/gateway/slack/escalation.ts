@@ -272,7 +272,10 @@ export class EscalationCoordinator {
     if (!askerUserId) return;
     const { web, config, onLog, llm } = this.opts;
     const audience = pickAudience(config, askerUserId, channelId);
-    const systemPrompt = pickGatewayPrompt(audience);
+    const systemPrompt = pickGatewayPrompt(
+      audience,
+      config.audience.domainExamples,
+    );
     const synthMessage =
       `IT 同事剛在這條 thread 補上了答案，請依以下事實 synthesise 一段回覆給原本提問的同事 <@${askerUserId}>。語氣依你的 audience prompt。\n\n` +
       `原始問題：${atom.question}\n\n` +
