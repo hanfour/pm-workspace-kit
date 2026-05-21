@@ -54,11 +54,11 @@ Within the v0.11 marker window (5 min) the restart stays silent in Slack.
 
 ### Why
 
-Closes out the v0.13 SlackAdapter decomposition arc started in v0.13.0 (tranches 1–3: `presence` / `envelope-dedup` / `concurrency` / `escalation` / `free-chat-turn` / `inflight-queue`). After tranche 3 the adapter shell sat at 1043 lines — over the <800 dispatcher-cleanup target set during v0.13 planning. Tranche 4 ships two more focused coordinators and folds in two small post-v0.13.3 backlog items that surfaced while sweeping for release.
+Closes out the v0.13 SlackAdapter decomposition arc started in v0.13.0 (tranches 1–3: `presence` / `envelope-dedup` / `concurrency` / `escalation` / `free-chat-turn` / `inflight-queue`). After tranche 3 the adapter shell sat at 1043 lines — over the `<800` dispatcher-cleanup target set during v0.13 planning. Tranche 4 ships two more focused coordinators and folds in two small post-v0.13.3 backlog items that surfaced while sweeping for release.
 
 ### Fixed / Refactored
 
-- **`slack/index.ts` 1043 → 734 lines** (closes the <800 target). Adapter shell now == lifecycle (start / waitForPending / stop) + event-routing glue (handleMessage / handleAppMention / handleDmMessage / handleReactionAdded / handleSlashCommandEnvelope) + the ambient Slack-event types. Behavior unchanged; 412 / 412 tests still pass.
+- **`slack/index.ts` 1043 → 734 lines** (closes the `<800` target). Adapter shell now == lifecycle (start / waitForPending / stop) + event-routing glue (handleMessage / handleAppMention / handleDmMessage / handleReactionAdded / handleSlashCommandEnvelope) + the ambient Slack-event types. Behavior unchanged; 412 / 412 tests still pass.
 - **`slack/slash-command.ts` (new, 215 lines)** — `SlashCommandHandler` owns `/pmk <verb>` dispatch (`help` / `open` / `show` / `close` / `cases` / `admin`). Pure-helper `slashCommandArgsFromBody` and `SlashCommandScope` / `SlashCommandArgs` types move with it; `slack/index.ts` re-exports them so existing test imports (`gateway.test.ts`) keep working. Envelope-level glue (ack / dedup / blocklist / error logging) deliberately stays on `SlackAdapter.handleSlashCommandEnvelope` — those concerns are shared with every other Slack event type.
 - **`slack/channel-mention.ts` (new, 180 lines)** — `ChannelMentionHandler` owns channel `app_mention` routing (slash forward / free-chat / case-mode LLM round + tracking summary). `SlashCommandHandler` and `FreeChatTurnRunner` injected via constructor so the dependency graph stays explicit.
 - **`#1 channels-override docs catch-up`** — README quick-start and `lifecycle.md` deep-dive were missing the `set-channel` / `unset-channel` admin surface even though the feature shipped in v0.11.0 (#23) with full CLI + Slack admin coverage and 9 tests. Three small doc patches catch them up; resolution order at turn time now documented inline (per-user → per-channel → workspace default).
@@ -225,7 +225,7 @@ v0.13 closes both: a constructor-injected fake transport + 27-test integration h
   - **Tranche 1** extracts `slack/presence.ts` (146 lines — broadcast fan-out + #44 suppress-on-fast-restart), `slack/envelope-dedup.ts` (45 lines — bounded-LRU dedup), `slack/concurrency.ts` (36 lines — `runWithConcurrency`). Adapter `1708 → 1597` (-111).
   - **Tranche 2** extracts `slack/escalation.ts` (308 lines — outbound `@-mention IT contacts` + inbound IT-reply absorb + asker-synthesis follow-up). Adapter `1640 → 1411` (-229).
   - **Tranche 3** extracts `slack/free-chat-turn.ts` (509 lines — full turn orchestration: seed + retrieval + prune + LLM + mra-ask + escalate + reply) and `slack/inflight-queue.ts` (141 lines — the new FIFO queue). Adapter `1411 → 1010` (-401).
-  - **Net: -698 lines (-41%)** from the v0.12.0 baseline. Tranche 4 (dispatcher cleanup, target <800 lines) is deferred.
+  - **Net: -698 lines (-41%)** from the v0.12.0 baseline. Tranche 4 (dispatcher cleanup, target `<800` lines) is deferred.
 - Behaviour byte-equivalent across all three tranches; the harness's tests pass without modification at every step, which is exactly the safety net tranche 1 promised.
 
 ### Tests
