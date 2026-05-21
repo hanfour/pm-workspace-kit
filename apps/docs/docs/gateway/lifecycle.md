@@ -95,7 +95,7 @@ The system prompt for the LLM call comes from `pickGatewayPrompt(audience)` wher
 | `biz` | Leads with business meaning, translates jargon, defers code questions to IT |
 | `exec` | Strict 結論 / 影響(含風險) / 建議行動 — no code, no API, no file paths |
 
-Configured per user via `pmk gateway audience set <userId> <key>`; default via `pmk gateway audience default <key>`.
+Configured per user via `pmk gateway audience set <userId> <key>`; per channel via `pmk gateway audience set-channel <channelId> <key>` (v0.11, #23); default via `pmk gateway audience default <key>`. Resolution order at turn time: per-user → per-channel → workspace default.
 
 ## 6. mra-ask round (optional)
 
@@ -220,7 +220,7 @@ Subcommands (DM, admin only):
 | Command | Purpose |
 |---|---|
 | `/pmk admin status` | Mra workspace, default ingest, audience default, admin count, escalation pool sizes |
-| `/pmk admin audience set @user <tier>` / `unset @user` / `default <tier>` / `list` | Per-user audience overrides + default. `<tier>` ∈ `tech`, `pm`, `biz`, `exec`. |
+| `/pmk admin audience set @user <tier>` / `unset @user` / `set-channel #channel <tier>` / `unset-channel #channel` / `default <tier>` / `list` | Per-user + per-channel audience overrides + default. `<tier>` ∈ `tech`, `pm`, `biz`, `exec`. Resolution at turn time: per-user → per-channel → default. |
 | `/pmk admin escalation add <repo\|default> @user` / `remove ...` / `list` | IT/domain contact pools |
 | `/pmk admin atoms list [pending\|approved\|all]` / `show <id-prefix>` / `approve ...` / `reject ...` | Same atom moderation as the CLI; **edit** stays CLI-only (pasted content into Slack would land verbatim in retrieval) |
 | `/pmk admin admins list` / `add @user` / `remove @user` | Manage the admin set |

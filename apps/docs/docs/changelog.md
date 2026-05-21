@@ -8,6 +8,50 @@ All notable changes to **pm-workspace-kit** are documented here.
 
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Each release also has a longer narrative on [GitHub Releases](https://github.com/hanfour/pm-workspace-kit/releases) with rationale, dogfood notes, and test plans.
 
+## [v0.14.0] — 2026-05-20 — SlackAdapter tranche 4 + post-v0.13.3 docs/prompt polish
+
+[GitHub release](https://github.com/hanfour/pm-workspace-kit/releases/tag/v0.14.0) · [PR #56](https://github.com/hanfour/pm-workspace-kit/pull/56)
+
+### Why
+
+Closes out the v0.13 SlackAdapter decomposition arc started in v0.13.0 (tranches 1–3: `presence` / `envelope-dedup` / `concurrency` / `escalation` / `free-chat-turn` / `inflight-queue`). After tranche 3 the adapter shell sat at 1043 lines — over the <800 dispatcher-cleanup target set during v0.13 planning. Tranche 4 ships two more focused coordinators and folds in two small post-v0.13.3 backlog items that surfaced while sweeping for release.
+
+### Fixed / Refactored
+
+- **`slack/index.ts` 1043 → 734 lines** (closes the <800 target). Adapter shell now == lifecycle (start / waitForPending / stop) + event-routing glue (handleMessage / handleAppMention / handleDmMessage / handleReactionAdded / handleSlashCommandEnvelope) + the ambient Slack-event types. Behavior unchanged; 412 / 412 tests still pass.
+- **`slack/slash-command.ts` (new, 215 lines)** — `SlashCommandHandler` owns `/pmk <verb>` dispatch (`help` / `open` / `show` / `close` / `cases` / `admin`). Pure-helper `slashCommandArgsFromBody` and `SlashCommandScope` / `SlashCommandArgs` types move with it; `slack/index.ts` re-exports them so existing test imports (`gateway.test.ts`) keep working. Envelope-level glue (ack / dedup / blocklist / error logging) deliberately stays on `SlackAdapter.handleSlashCommandEnvelope` — those concerns are shared with every other Slack event type.
+- **`slack/channel-mention.ts` (new, 180 lines)** — `ChannelMentionHandler` owns channel `app_mention` routing (slash forward / free-chat / case-mode LLM round + tracking summary). `SlashCommandHandler` and `FreeChatTurnRunner` injected via constructor so the dependency graph stays explicit.
+- **`#1 channels-override docs catch-up`** — README quick-start and `lifecycle.md` deep-dive were missing the `set-channel` / `unset-channel` admin surface even though the feature shipped in v0.11.0 (#23) with full CLI + Slack admin coverage and 9 tests. Three small doc patches catch them up; resolution order at turn time now documented inline (per-user → per-channel → workspace default).
+- **`#3 PM/BIZ ad-tech reframe`** — BIZ jargon table (`AdFormat` / `placement` / `inventory`) and PM example table (`vCPM` formula, `placement_id`, `PlacementRevenue` vs `AccountPayable`) were lifted from real OneAD-like dogfood. Both tiers now lead the relevant block with a workspace-context meta-rule: "the examples below are from an ad-tech reference workspace; apply the same translation discipline to your domain's terms — do not cite `AdFormat` / `placement` literally when they don't appear in the workspace." Workspace-configurable domain examples (`cfg.audience.domainExamples`) deferred to v0.14 backlog.
+
+### Tests
+
+`@pmk/cli` 362 → **362** (unchanged — refactor preserves behavior). `@pmk/shared` 24 → **24** including the "audience prompts have distinct bodies (cross-wire regression)" test which still passes after the BIZ + PM meta-rule additions.
+
+### Live-Slack verify
+
+Verified end-to-end on a real Slack workspace before tagging:
+
+1. **DM `/pmk help`** → `handleDmMessage` → `slashCommand.run({scope: user})` — bot reply matches `case "help"` text exactly.
+2. **Channel `@pmk /pmk help`** → `handleAppMention` → `channelMention.run` → slash forward → `slashCommand.run({scope: channel})` — bot reply matches `case "help"` text exactly. Confirms ChannelMentionHandler's `/pmk` forwarding branch.
+3. **Channel `@pmk <free-chat>`** → `channelMention.run` (no slash prefix, no activeCase) → `freeChatTurn.run` — bot answered per prompt; `turn.processed` event emitted (`audience: tech`, `hadMraAsk: false`).
+4. **BIZ-tier reframe** (temporarily removed user override to hit workspace default `biz`) — asked a non-ad-tech permission-control question; bot returned a 3-layer structural answer applying the cheat-sheet translations (`role` → 角色, `scope` → 歸屬關係 二次過濾) with zero ad-tech leak (`AdFormat` / `placement` / `inventory` never appear). Workspace-specific OneAD subsystem names (`ODM`/`OAM`/`SuperDSP`) DID appear because they are real workspace context, which is exactly what the reframe wants — meta-rule blocks unprompted cheat-sheet jargon insertion, not legitimate context references.
+
+### Operator note
+
+This is a refactor + prompt + docs release. No config migration needed. The gateway picks up new code on next graceful restart:
+
+```bash
+git pull && npm run -w @pmk/cli build
+kill -TERM $(cat ~/.pmk/gateway/gateway.pid) && pmk gateway start
+```
+
+### Backlog (deferred to v0.14.x)
+
+- **Workspace-configurable domain examples** — `cfg.audience.domainExamples` carrying per-workspace translation pairs + example questions, injected into BIZ/PM prompts at assembly time. Enables ad-tech workspaces to keep concrete `AdFormat` / `placement` anchors while non-ad-tech workspaces get their own domain vocabulary. Punted from v0.14.0 because the current single-workspace dogfood doesn't justify the new config surface + admin commands yet.
+
+---
+
 ## [v0.13.3] — 2026-05-20 — gateway audience prompts: anti-bleed + BIZ translation table
 
 [GitHub release](https://github.com/hanfour/pm-workspace-kit/releases/tag/v0.13.3)

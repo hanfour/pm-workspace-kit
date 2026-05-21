@@ -1,110 +1,41 @@
 import { SocketModeClient } from "@slack/socket-mode";
 import { WebClient } from "@slack/web-api";
 import type { GatewayConfig } from "../config";
-import { isAdmin } from "../config";
-import { handleAdminSlash } from "./admin";
 import {
-  formatTrackingSummary,
-  markdownToMrkdwn,
-  truncateForSlack,
-} from "../formatters";
-import {
-  channelCasesDir,
-  loadChannelMeta,
   loadUserSession,
-  saveChannelMeta,
   saveUserSession,
-  userCasesDir,
 } from "../session-store";
-import {
-  appendChannelTurns,
-  entriesToMessages,
-  loadChannelTurns,
-  type ChannelLogEntry,
-} from "../channel-log";
+import { ChannelMentionHandler } from "./channel-mention";
 import { EnvelopeDedup } from "./envelope-dedup";
 import { EscalationCoordinator } from "./escalation";
-import {
-  FreeChatTurnRunner,
-  type FreeChatSession,
-} from "./free-chat-turn";
+import { FreeChatTurnRunner } from "./free-chat-turn";
 import {
   InFlightQueue,
   QueueFullError,
 } from "./inflight-queue";
 import { PresenceBroadcaster } from "./presence";
-
-// v0.13: re-exported so existing test imports (`gateway.test.ts`) keep
-// working after the extraction to `./concurrency`.
-export { runWithConcurrency } from "./concurrency";
+import { SlashCommandHandler, slashCommandArgsFromBody } from "./slash-command";
 import { resolveProvider, type LlmProvider } from "../../llm";
 import { loadConfig as loadCliConfig } from "../../config";
-import { PROMPT_CASE } from "../../prompts";
-import {
-  applyCaseUpdate,
-  caseExists,
-  loadCase,
-  newCase,
-  parseCaseUpdate,
-  renderCaseMarkdown,
-  saveCase,
-  stripCaseUpdateBlock,
-} from "../../case";
 import {
   mraDoctor as mraDoctorImpl,
   runMraAsk as runMraAskImpl,
 } from "../../adapters/mra";
-import { appendGatewayEvent } from "../events";
-import { approxTokensFor } from "../messaging";
 import {
   approveAtom,
   findAtomByApprovalMessage,
   rejectAtom,
 } from "../knowledge";
-import * as path from "node:path";
-import * as fs from "node:fs";
 
-// `FreeChatSession` type moved alongside its owner in
-// `./free-chat-turn.ts` (v0.13 tranche 3 extraction). It is re-exported
-// from there for the channel-log saveSession closure to construct an
-// in-memory session that satisfies the runner's generic.
-
-export type SlashCommandScope =
-  | { kind: "user"; userId: string }
-  | { kind: "channel"; channelId: string };
-
-export interface SlashCommandArgs {
-  channelId: string;
-  userId: string;
-  rest: string;
-  scope: SlashCommandScope;
-}
-
-/**
- * v0.9.1 (#39): pure translation of a Slack `slash_commands` envelope
- * body into the `handleSlashCommand` arg shape. Exported for tests so
- * the rest/scope decision is verifiable without spinning up a
- * SlackAdapter (which needs real Slack tokens to construct).
- *
- * Returns null when the body lacks the minimum fields the handler
- * needs — caller should drop the envelope.
- */
-export function slashCommandArgsFromBody(
-  body: { user_id?: string; channel_id?: string; text?: string } | undefined,
-): SlashCommandArgs | null {
-  if (!body) return null;
-  const userId = body.user_id;
-  const channelId = body.channel_id;
-  if (!userId || !channelId) return null;
-  // Empty body text (user typed just `/pmk`) routes to the help surface
-  // rather than a "未知指令" reply, so first-time users discover the
-  // command list.
-  const rest = (body.text ?? "").trim() || "help";
-  const scope: SlashCommandScope = channelId.startsWith("D")
-    ? { kind: "user", userId }
-    : { kind: "channel", channelId };
-  return { channelId, userId, rest, scope };
-}
+// v0.13: re-exported so existing test imports (`gateway.test.ts`) keep
+// working after the extractions to `./concurrency` (tranche 1) and
+// `./slash-command` (tranche 4).
+export { runWithConcurrency } from "./concurrency";
+export {
+  slashCommandArgsFromBody,
+  type SlashCommandScope,
+  type SlashCommandArgs,
+} from "./slash-command";
 
 export interface SlackBotInfo {
   botUserId: string;
@@ -174,10 +105,14 @@ export class SlackAdapter {
   private readonly dedup: EnvelopeDedup;
   /** Online/offline broadcast fan-out (#44). */
   private readonly presence: PresenceBroadcaster;
+  /** `/pmk <verb>` dispatcher (case CRUD + admin delegation). */
+  private readonly slashCommand: SlashCommandHandler;
   /** Outbound escalate + inbound absorb + asker-synthesis follow-up. */
   private readonly escalation: EscalationCoordinator;
   /** End-to-end free-chat turn: seed + retrieval + LLM + mra-ask + escalate + reply. */
   private readonly freeChatTurn: FreeChatTurnRunner;
+  /** Channel @mention dispatcher (slash / free-chat / case-mode). */
+  private readonly channelMention: ChannelMentionHandler;
 
   constructor(opts: SlackAdapterOptions) {
     // v0.13: token guard only fires on the prod construction path.
@@ -228,6 +163,10 @@ export class SlackAdapter {
       offlineDurationMs: this.offlineDurationMs,
       gracefulShutdown: this.gracefulShutdown,
     });
+    this.slashCommand = new SlashCommandHandler({
+      web: this.web,
+      config: this.config,
+    });
     this.escalation = new EscalationCoordinator({
       web: this.web,
       config: this.config,
@@ -242,6 +181,12 @@ export class SlackAdapter {
       mraDoctor: this.mraDoctor,
       runMraAsk: this.runMraAsk,
       escalation: this.escalation,
+    });
+    this.channelMention = new ChannelMentionHandler({
+      web: this.web,
+      llm: this.llm,
+      freeChatTurn: this.freeChatTurn,
+      slashCommand: this.slashCommand,
     });
     this.queue = new InFlightQueue({ onLog: this.onLog });
   }
@@ -506,7 +451,7 @@ export class SlackAdapter {
           answerText: text,
         });
         if (absorbed) return;
-        await this.handleChannelMention({
+        await this.channelMention.run({
           channelId,
           userId,
           text,
@@ -567,7 +512,7 @@ export class SlackAdapter {
 
     if (text.startsWith("/pmk ")) {
       const rest = text.slice(5).trim();
-      await this.handleSlashCommand({
+      await this.slashCommand.run({
         channelId,
         threadTs,
         userId,
@@ -667,136 +612,18 @@ export class SlackAdapter {
 
 
 
-  // ────────────────────────── channel logic ──────────────────────────
-
-  private async handleChannelMention(args: {
-    channelId: string;
-    userId: string;
-    text: string;
-    threadTs: string;
-    sessionThreadTs?: string;
-  }): Promise<void> {
-    const { channelId, userId, text, threadTs, sessionThreadTs } = args;
-
-    if (text.startsWith("/pmk ")) {
-      const rest = text.slice(5).trim();
-      await this.handleSlashCommand({
-        channelId,
-        threadTs,
-        userId,
-        rest,
-        scope: { kind: "channel", channelId },
-      });
-      return;
-    }
-
-    const meta = loadChannelMeta(channelId);
-    if (!meta.activeCase) {
-      // No active case → behave like a DM: free chat with PKB grounding,
-      // per-thread session (top-level mentions share one "main" session,
-      // each Slack thread gets an isolated session). Users who want
-      // bug-tracking semantics explicitly run `/pmk open <name>`.
-      //
-      // v0.13: switched from `ChannelChatSession` (read-modify-write
-      // `chat-session.json`) to append-only `channel-log.ts`. The legacy
-      // model raced when parallel @-mentions in the same channel both
-      // load → push → save (last write wins). The append-only log uses
-      // atomic `fs.appendFileSync` so two writers both land; the
-      // saveSession closure here only appends entries new since this
-      // turn's load, filtered by `(role, content)` so prune-trimmed
-      // history (local to this request's LLM context) is NOT
-      // re-appended.
-      const loadedEntries = loadChannelTurns(channelId, sessionThreadTs);
-      const initialMessages = entriesToMessages(loadedEntries);
-      const initialKeys = new Set(
-        initialMessages.map((m) => `${m.role} ${m.content}`),
-      );
-      const session: FreeChatSession = {
-        messages: [...initialMessages],
-        turns: loadedEntries.filter(
-          (e) => e.role === "user" && e.userId !== undefined,
-        ).length,
-        approxTokens: approxTokensFor(initialMessages),
-      };
-      await this.freeChatTurn.run({
-        channelId,
-        threadTs,
-        text,
-        userId,
-        session,
-        saveSession: (s) => {
-          const newMessages = s.messages.filter(
-            (m) => !initialKeys.has(`${m.role} ${m.content}`),
-          );
-          if (newMessages.length === 0) return;
-          const now = new Date().toISOString();
-          const entries: ChannelLogEntry[] = newMessages.map((m) => ({
-            ts: now,
-            role: m.role,
-            content: m.content,
-            // Only the message whose content matches the turn's prompt
-            // is attributed to the calling user; seed and mra-result
-            // user-role messages stay unattributed.
-            ...(m.role === "user" && m.content === text
-              ? { userId }
-              : {}),
-          }));
-          appendChannelTurns(channelId, sessionThreadTs, entries);
-        },
-      });
-      // Touch channel meta so listRecentChannels picks it up for the
-      // offline / online broadcast list.
-      saveChannelMeta(meta);
-      return;
-    }
-
-    const dir = channelCasesDir(channelId);
-    const c = loadCase(meta.activeCase, dir);
-    c.messages.push({ role: "user", content: text });
-    saveCase(c, dir);
-
-    const placeholder = await this.web.chat.postMessage({
-      channel: channelId,
-      thread_ts: threadTs,
-      text: ":hourglass_flowing_sand: thinking…",
-    });
-
-    const response = await this.llm.chat(PROMPT_CASE, c.messages, {
-      onToken: () => {},
-    });
-    const visible = stripCaseUpdateBlock(response);
-    c.messages.push({ role: "assistant", content: visible });
-
-    const { actions } = parseCaseUpdate(response);
-    const summaries = applyCaseUpdate(c, actions);
-    saveCase(c, dir);
-    saveChannelMeta(meta);
-
-    await this.web.chat.update({
-      channel: channelId,
-      ts: String(placeholder.ts),
-      text: truncateForSlack(markdownToMrkdwn(visible)),
-    });
-
-    const summary = formatTrackingSummary(summaries);
-    if (summary) {
-      await this.web.chat.postMessage({
-        channel: channelId,
-        thread_ts: threadTs,
-        text: summary,
-      });
-    }
-  }
-
   // ─────────────────────────── slash commands ───────────────────────────
 
   /**
    * v0.9.1 (#39): handle real Slack slash-command envelopes (e.g. user
    * typed `/pmk admin help` in Slack and Slack delivered a
    * `slash_commands` envelope because we registered `/pmk` on the app
-   * side). Distinct from the legacy text-message path in
-   * `handleDmMessage` / `handleChannelMention` which fires when users
-   * type ` /pmk admin help` (leading space) as a regular message.
+   * side). Distinct from the legacy text-message path: `handleDmMessage`
+   * (here) and `ChannelMentionHandler.run` (in `./channel-mention.ts`)
+   * both forward to `SlashCommandHandler.run` when the user posts a
+   * regular message whose trimmed text starts with `/pmk ` (originally
+   * a leading-space workaround pre-v0.9.1; still works since `text` is
+   * `.trim()`-ed before the prefix check).
    *
    * Envelope shape (via @slack/socket-mode):
    *   payload.body = {
@@ -827,7 +654,7 @@ export class SlackAdapter {
     this.dedup.remember(payload.envelope_id);
 
     try {
-      await this.handleSlashCommand(args);
+      await this.slashCommand.run(args);
     } catch (err) {
       this.onLog(
         `error handling slash command from ${args.userId}: ${(err as Error).message}`,
@@ -835,140 +662,6 @@ export class SlackAdapter {
     }
   }
 
-  private async handleSlashCommand(args: {
-    channelId: string;
-    /**
-     * v0.9.1 (#39): optional. Omitted when invoked via the real Slack
-     * `slash_commands` envelope, since slash commands have no anchoring
-     * message to thread under. Present when invoked via the legacy
-     * leading-space `/pmk` text-message path (Phase 11 backwards compat).
-     */
-    threadTs?: string;
-    userId: string;
-    rest: string;
-    scope:
-      | { kind: "user"; userId: string }
-      | { kind: "channel"; channelId: string };
-  }): Promise<void> {
-    const { channelId, threadTs, rest, scope } = args;
-    const [cmd, ...tokens] = rest.split(/\s+/);
-    const arg = tokens.join(" ").trim();
-    const dir =
-      scope.kind === "user"
-        ? userCasesDir(scope.userId)
-        : channelCasesDir(scope.channelId);
-
-    const reply = (text: string) =>
-      this.web.chat.postMessage({
-        channel: channelId,
-        ...(threadTs ? { thread_ts: threadTs } : {}),
-        text,
-      });
-
-    switch (cmd) {
-      case "help":
-        await reply(
-          "*pmk slash commands*\n" +
-            "• `/pmk open <name>` — 建立 / 開啟 case\n" +
-            "• `/pmk show <name>` — 顯示 case 全貌\n" +
-            "• `/pmk close <name> [reason]` — 結案\n" +
-            "• `/pmk cases` — 列出此 scope 的 cases\n" +
-            "• `/pmk help` — 這份說明",
-        );
-        return;
-
-      case "open": {
-        if (!arg) return void (await reply("usage: `/pmk open <name>`"));
-        if (caseExists(arg, dir)) {
-          if (scope.kind === "channel") {
-            const meta = loadChannelMeta(scope.channelId);
-            meta.activeCase = arg;
-            saveChannelMeta(meta);
-          }
-          await reply(
-            `已切換 active case 為 \`${arg}\`。直接 @pmk 講話即可，pmk 會自動追蹤。`,
-          );
-          return;
-        }
-        const c = newCase({
-          name: arg,
-          title: arg.replace(/-/g, " "),
-          ingest: this.config.defaultIngest ? [this.config.defaultIngest] : [],
-        });
-        saveCase(c, dir);
-        if (scope.kind === "channel") {
-          const meta = loadChannelMeta(scope.channelId);
-          meta.activeCase = arg;
-          saveChannelMeta(meta);
-        }
-        await reply(`新 case \`${arg}\` 建立完成。`);
-        return;
-      }
-
-      case "show": {
-        const target =
-          arg ||
-          (scope.kind === "channel"
-            ? loadChannelMeta(scope.channelId).activeCase
-            : undefined);
-        if (!target) return void (await reply("usage: `/pmk show <name>`"));
-        if (!caseExists(target, dir))
-          return void (await reply(`找不到 case \`${target}\`。`));
-        const c = loadCase(target, dir);
-        await reply("```" + renderCaseMarkdown(c).slice(0, 3500) + "```");
-        return;
-      }
-
-      case "close": {
-        if (!arg)
-          return void (await reply("usage: `/pmk close <name> [reason]`"));
-        const [name, ...reasonParts] = arg.split(/\s+/);
-        if (!caseExists(name, dir))
-          return void (await reply(`找不到 case \`${name}\`。`));
-        const c = loadCase(name, dir);
-        c.status = "closed";
-        if (reasonParts.length) c.resolution = reasonParts.join(" ");
-        saveCase(c, dir);
-        await reply(`case \`${name}\` 已結案。`);
-        return;
-      }
-
-      case "cases": {
-        const files = fs.existsSync(dir)
-          ? fs.readdirSync(dir).filter((f) => f.endsWith(".json"))
-          : [];
-        if (files.length === 0)
-          return void (await reply("(此 scope 還沒有 case)"));
-        const lines = files.map((f) => `• \`${path.basename(f, ".json")}\``);
-        await reply(["*Cases*", ...lines].join("\n"));
-        return;
-      }
-
-      // v0.9.0 (#31): admin-restricted, DM-only gateway-config mutations.
-      // Bootstrap (the very first admin) requires terminal access via
-      // `pmk gateway admin add` — there is no Slack path to grant
-      // yourself admin, by design.
-      case "admin": {
-        if (scope.kind !== "user") {
-          await reply(":no_entry_sign: `/pmk admin` 只能在 DM 使用。");
-          return;
-        }
-        if (!isAdmin(this.config, args.userId)) {
-          await reply(":lock: 此命令限管理員使用。");
-          return;
-        }
-        const result = await handleAdminSlash({
-          actor: args.userId,
-          tokens,
-        });
-        await reply(result.text);
-        return;
-      }
-
-      default:
-        await reply(`未知指令 \`${cmd}\`。試試 \`/pmk help\`。`);
-    }
-  }
 
 }
 
