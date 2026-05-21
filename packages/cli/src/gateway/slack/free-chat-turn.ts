@@ -175,7 +175,10 @@ export class FreeChatTurnRunner {
     });
 
     const audience = pickAudience(config, userId, channelId);
-    const systemPrompt = pickGatewayPrompt(audience);
+    const systemPrompt = pickGatewayPrompt(
+      audience,
+      config.audience.domainExamples,
+    );
 
     // T11: wrap llm.chat in the context-too-long retry helper. The
     // buildMessages closure includes the new user turn at the tail so

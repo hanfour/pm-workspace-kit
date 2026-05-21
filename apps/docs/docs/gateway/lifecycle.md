@@ -97,6 +97,8 @@ The system prompt for the LLM call comes from `pickGatewayPrompt(audience)` wher
 
 Configured per user via `pmk gateway audience set <userId> <key>`; per channel via `pmk gateway audience set-channel <channelId> <key>` (v0.11, #23); default via `pmk gateway audience default <key>`. Resolution order at turn time: per-user → per-channel → workspace default.
 
+**v0.15.0 — workspace-specific cheat-sheet additions.** The BIZ and PM tier prompts carry built-in jargon translation tables anchored on an ad-tech reference workspace (`AdFormat` → 廣告版型, `vCPM` formula → 廣告主成本 vs 媒體分潤, etc.). Non-ad-tech workspaces extend the table at runtime via `pmk gateway audience example add <biz|pm> <techForm> <targetForm...>` (CLI) or `/pmk admin audience example add <biz|pm> <techForm> = <targetForm>` (Slack). Extras live in `cfg.audience.domainExamples.{biz,pm}` and are appended at `pickGatewayPrompt(audience, examples)` time. Tech and exec tiers ignore extras (no translation tables in those prompts). Same in-memory snapshot caveat as `audience` itself — restart required for changes to bite.
+
 ## 6. mra-ask round (optional)
 
 When PKB summaries don't cover the question (specific implementation, scope blocks, ability rules, exact column lists), the model emits a fenced directive:
@@ -221,6 +223,7 @@ Subcommands (DM, admin only):
 |---|---|
 | `/pmk admin status` | Mra workspace, default ingest, audience default, admin count, escalation pool sizes |
 | `/pmk admin audience set @user <tier>` / `unset @user` / `set-channel #channel <tier>` / `unset-channel #channel` / `default <tier>` / `list` | Per-user + per-channel audience overrides + default. `<tier>` ∈ `tech`, `pm`, `biz`, `exec`. Resolution at turn time: per-user → per-channel → default. |
+| `/pmk admin audience example add <biz\|pm> <techForm> = <targetForm>` / `remove <biz\|pm> <techForm>` / `list [biz\|pm]` | (v0.15) workspace-specific cheat-sheet additions appended to the BIZ / PM prompts at assembly time. Restart required to apply. |
 | `/pmk admin escalation add <repo\|default> @user` / `remove ...` / `list` | IT/domain contact pools |
 | `/pmk admin atoms list [pending\|approved\|all]` / `show <id-prefix>` / `approve ...` / `reject ...` | Same atom moderation as the CLI; **edit** stays CLI-only (pasted content into Slack would land verbatim in retrieval) |
 | `/pmk admin admins list` / `add @user` / `remove @user` | Manage the admin set |
