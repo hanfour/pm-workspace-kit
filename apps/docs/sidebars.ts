@@ -90,6 +90,7 @@ const sidebars: SidebarsConfig = {
         "gateway/lifecycle",
         "adr/pmk-gateway-slack",
         "prds/2026-04-27-pmk-gateway-prd",
+        "prds/2026-05-gateway-onboarding-prd",
       ],
     },
     {
