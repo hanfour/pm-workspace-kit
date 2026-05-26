@@ -130,8 +130,11 @@ Baseline 由 P1 第一輪內部 host 計時取得；目標數字在 baseline 量
   - app-level token scope：`connections:write`
 - `pmk gateway init` 第一步改成印 manifest URL 與貼上路徑，**不再**逐條
   唸 scope。
-- Manifest 加版號註解（`_manifest_version: "2026-05"`），未來新增 scope
-  時 doctor 比對 host 端與倉內版本。
+- Manifest 版本資訊維護在
+  `packages/cli/src/gateway/slack/manifest-version.ts` 的 `MANIFEST_VERSION`
+  常數（**不**寫入 manifest JSON，避免污染 Slack manifest schema 帶來
+  上傳失敗風險）；doctor 與 `expectedScopes()` 共用該常數。未來新增
+  scope 時在同一個 PR 內 bump 它。
 
 ### FR2 — `pmk gateway doctor`
 
@@ -198,8 +201,9 @@ Baseline 由 P1 第一輪內部 host 計時取得；目標數字在 baseline 量
 Slack 端新增 scope / event 時，倉內 manifest template 可能滯後，新 host
 拿舊 template 上傳會缺新功能（如 reaction-based approval）。
 **緩解：** doctor 中加入 manifest 版本對齊檢查（FR2 最後一項）；
-每次新增 scope 時，**同一個 PR** 改 manifest + bump `_manifest_version` +
-更新 doctor 的 expected scope 清單。
+每次新增 scope 時，**同一個 PR** 改 manifest template + bump
+`MANIFEST_VERSION`（在 `manifest-version.ts`）+ 更新 doctor 的
+expected scope 清單。
 
 ### Risk 2 — Doctor 變成「假安心」
 

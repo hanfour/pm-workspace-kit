@@ -56,8 +56,8 @@ PRD: [PRD-2026-0006](../prds/2026-05-gateway-onboarding-prd.md)。
 ## M0 — 起手準備（半天）
 
 - [ ] 開 branch `feat/gateway-onboarding-v0.16`，從 `main` 切。
-- [ ] 確認 PRD-2026-0006 與本 plan 在 traceability matrix 中連通：
-      `npm run traceability:check` 6/7 → 7/8 pass。
+- [ ] 確認 `npm run traceability:check` 通過（PR-58 已建立的 baseline：
+      7 primary docs / 8 virtual / 21 edges）。如有不對先修文件再進實作。
 - [ ] 在 `packages/cli/test/__fixtures__/gateway/` 開新目錄，準備之後 M2
       / M3 / M4 共用的 fixture（fake Slack token、fake mra workspace tree
       等）。
@@ -69,9 +69,11 @@ PRD: [PRD-2026-0006](../prds/2026-05-gateway-onboarding-prd.md)。
 - [ ] **Test**（`gateway-manifest.test.ts`）：載入 manifest template、
       assert 包含所需 scope 與 event subscription 三項。
 - [ ] **Impl**：`manifest.template.json` 帶入 PRD FR1 列出的全部 scope
-      與 events。檔頭 `_manifest_version: "2026-05"`。
-- [ ] **Impl**：`manifest-version.ts` 匯出 `MANIFEST_VERSION` 與
-      `expectedScopes()`、`expectedEvents()`，供 M2 doctor 比對。
+      與 events。**不**在 JSON 內加自訂欄位（避免 Slack manifest schema
+      reject 上傳）。
+- [ ] **Impl**：`manifest-version.ts` 匯出 `MANIFEST_VERSION = "2026-05"`
+      與 `expectedScopes()`、`expectedEvents()`，供 M2 doctor 比對。
+      版本資訊與 manifest JSON 在同一資料夾、但**不**寫入 manifest 內。
 - [ ] **Impl**：`gateway init` 啟動文字改為印 manifest 路徑與
       `https://api.slack.com/apps?new_app=1` 連結，不再逐條唸 scope。
 - [ ] **Verify**：手動上傳 manifest 到 api.slack.com 一次，確認 Slack
@@ -187,7 +189,7 @@ PRD: [PRD-2026-0006](../prds/2026-05-gateway-onboarding-prd.md)。
 
 | Risk | 緩解 |
 |---|---|
-| Slack 端新增 scope / event 時 manifest 滯後 | M1 引入 `_manifest_version`；M2 doctor 比對 → 不對齊時印 hint。每次新增 scope 必須在**同一 PR** bump version。 |
+| Slack 端新增 scope / event 時 manifest 滯後 | M1 引入 `MANIFEST_VERSION`（在 `manifest-version.ts`，**不**在 manifest JSON 內）；M2 doctor 比對 → 不對齊時印 hint。每次新增 scope 必須在**同一 PR** bump 它。 |
 | Doctor 變成假安心（漏 check） | M6 trial 強制故意製造 4 種失敗，每次回報新 failure mode 必須補 check 才能 close issue。 |
 | Dry-run 漏寫攔截 | M3 在最外層 wrapper 攔，不靠各 caller 自律。違反此原則的 caller 不該存在。 |
 | 30 分鐘目標太樂觀 | M6 量到 baseline 後，若中位數 > 30 min，先檢視是 Slack 教學還是 pmk 端可省步驟；**不要**為了硬達 30 min 而省 doctor 檢查。 |

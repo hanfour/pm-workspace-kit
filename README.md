@@ -110,7 +110,7 @@ The fastest way to feel the value follows a time-ordered path. The early steps d
 
 - **Day 1** — `pmk propose` writes a real PRD into `docs/prds/`. Same-day output, no infra needed.
 - **Day 2–3** — Author a second PRD. `traceability.js` now has links to validate; the dependency graph and orphan report start earning their keep. Drop [`.github/workflows/traceability-check.yml`](./.github/workflows/traceability-check.yml) into CI to keep them honest.
-- **Week 1** — Stand up the Slack gateway against one channel. `pmk gateway init` walks tokens; the eventual `pmk gateway doctor` and `--dry-run` (sprint plan in [`docs/plans/2026-05-gateway-onboarding-sprint-plan.md`](./apps/docs/docs/plans/2026-05-gateway-onboarding-sprint-plan.md)) make the first install verifiable before live traffic.
+- **Week 1** — Stand up the Slack gateway against one channel. `pmk gateway init` walks tokens; `pmk gateway doctor` and `gateway start --dry-run` will land in v0.16 (planned) to make the first install verifiable before live traffic.
 - **Week 2** — Run the full knowledge loop end-to-end: ask → `mra-ask` → escalation → absorb → reuse. The second person to ask a previously-escalated question gets the cached answer.
 
 You don't have to take the whole monorepo. If you want to cherry-pick:
