@@ -44,7 +44,7 @@ export async function gatewayCommand(
     case "init":
       return await initCmd();
     case "start":
-      return await startCmd();
+      return await startCmd(rest);
     case "status":
       return statusCmd();
     case "stats":
@@ -279,7 +279,8 @@ async function initCmd(): Promise<void> {
   }
 }
 
-async function startCmd(): Promise<void> {
+async function startCmd(rest: string[] = []): Promise<void> {
+  const dryRun = rest.includes("--dry-run");
   const existing = gatewayRunningPid();
   if (existing) {
     println(
@@ -290,7 +291,7 @@ async function startCmd(): Promise<void> {
     process.exit(1);
   }
   try {
-    await runGateway();
+    await runGateway({ dryRun });
   } catch (err) {
     println(chalk.red(`[pmk] ${(err as Error).message}`));
     process.exit(1);

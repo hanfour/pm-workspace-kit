@@ -199,6 +199,17 @@ const VALID_TYPES: ReadonlySet<string> = new Set([
 ]);
 
 /**
+ * v0.16 (M3): events partition switches to `dryrun-events-YYYY-MM.log`
+ * when `PMK_DRY_RUN=1` so a dry-run session doesn't pollute the real
+ * audit log. The env var is process-local; reads from a separate CLI
+ * process (e.g., `pmk gateway audit`) see the production partition
+ * unless explicitly run with the env var set.
+ */
+function eventsPrefix(): string {
+  return process.env.PMK_DRY_RUN === "1" ? "dryrun-events" : "events";
+}
+
+/**
  * Path to the current month's events partition. Exposed for tests
  * that inject synthetic / malformed lines and for operators tailing
  * the live feed (e.g., `tail -f $(pmk debug events-path)`). The
@@ -206,7 +217,7 @@ const VALID_TYPES: ReadonlySet<string> = new Set([
  * specific month should compute it themselves via `monthlyPath`.
  */
 export function gatewayEventsPath(): string {
-  return monthlyPath(gatewayDir(), "events");
+  return monthlyPath(gatewayDir(), eventsPrefix());
 }
 
 /**
@@ -215,7 +226,7 @@ export function gatewayEventsPath(): string {
  * be worse than the missing line. Mirrors {@link appendAdminLog}.
  */
 export function appendGatewayEvent(event: GatewayEvent): void {
-  appendJsonl(gatewayDir(), "events", event);
+  appendJsonl(gatewayDir(), eventsPrefix(), event);
 }
 
 export interface ReadGatewayEventsOptions {
@@ -233,7 +244,7 @@ export interface ReadGatewayEventsOptions {
 export function readGatewayEvents(
   opts: ReadGatewayEventsOptions = {},
 ): StoredGatewayEvent[] {
-  const all = readJsonl(gatewayDir(), "events", isStoredGatewayEvent, {
+  const all = readJsonl(gatewayDir(), eventsPrefix(), isStoredGatewayEvent, {
     sinceMs: opts.sinceMs,
   });
   if (opts.limit !== undefined && opts.limit >= 0 && all.length > opts.limit) {
