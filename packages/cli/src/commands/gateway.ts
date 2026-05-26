@@ -34,6 +34,10 @@ import {
   runDoctor,
 } from "../gateway/doctor";
 import { DEFAULT_CHECKS } from "../gateway/doctor-checks";
+import {
+  seedDemoAtom,
+  unseedDemoAtoms,
+} from "../gateway/demo-seed";
 import { spawnSync } from "node:child_process";
 
 export async function gatewayCommand(
@@ -61,12 +65,69 @@ export async function gatewayCommand(
       return auditCmd(rest);
     case "doctor":
       return await doctorCmd(rest);
+    case "demo":
+      return demoCmd(rest);
     default:
       println(
         chalk.yellow(
-          "usage: pmk gateway <init|start|status|stats|audience|escalation|atoms|admin|audit|doctor>",
+          "usage: pmk gateway <init|start|status|stats|audience|escalation|atoms|admin|audit|doctor|demo>",
         ),
       );
+      process.exit(1);
+  }
+}
+
+/**
+ * `pmk gateway demo <seed|unseed>` — smoke-test data for onboarding.
+ *
+ * `seed`   writes one KnowledgeAtom tagged `demo-seed` so a new host
+ *          can verify the retrieval path immediately after install.
+ *          Idempotent: re-running doesn't duplicate.
+ * `unseed` removes every atom tagged `demo-seed`. Never touches real
+ *          atoms; safe to run as the last step of an onboarding
+ *          rehearsal.
+ *
+ * Polished AcmeAds demo bundle (multi-PRD, walkthrough script,
+ * recorded run) is priorities-plan P5, NOT this command.
+ */
+function demoCmd(rest: string[]): void {
+  const action = rest[0];
+  switch (action) {
+    case "seed": {
+      const r = seedDemoAtom();
+      if (r.written) {
+        println(chalk.green(`✓ wrote demo atom: ${r.atomId}`));
+        println(chalk.dim(`  file: ${r.filePath}`));
+      } else {
+        println(
+          chalk.yellow(
+            `demo atom already present (id=${r.atomId}); no changes written.`,
+          ),
+        );
+        println(chalk.dim(`  file: ${r.filePath}`));
+      }
+      println("");
+      println(chalk.bold("next step (smoke test):"));
+      println(`  1. start the gateway:  pmk gateway start`);
+      println(`  2. in Slack, DM the bot or @-mention it with:`);
+      println(chalk.cyan(`       ${r.question}`));
+      println("  3. you should see the bot quote the demo answer.");
+      println("");
+      println(chalk.dim("clean up later with: pmk gateway demo unseed"));
+      return;
+    }
+    case "unseed": {
+      const r = unseedDemoAtoms();
+      if (r.removed.length === 0) {
+        println(chalk.yellow("no demo atoms found; nothing to remove."));
+      } else {
+        println(chalk.green(`✓ removed ${r.removed.length} demo atom(s):`));
+        for (const id of r.removed) println(chalk.dim(`    - ${id}`));
+      }
+      return;
+    }
+    default:
+      println(chalk.yellow("usage: pmk gateway demo <seed|unseed>"));
       process.exit(1);
   }
 }
