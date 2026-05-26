@@ -98,7 +98,9 @@ PRD: [PRD-2026-0006](../prds/2026-05-gateway-onboarding-prd.md)。
   - `mra-workspace.ts`：路徑存在 + `mra list` 能列出 ≥ 1 repo。
   - `pkb-content.ts`：`mra:--all` ingest 或 `defaultIngest` 結果 ≥ 1 atom 來源。
   - `channel-acl.ts`：至少 1 個 allowed channel 或 `allowDM=true`。
-  - `manifest-version.ts`：比對 host 端 manifest 版本與倉內 template。
+  - `manifest-alignment.ts`：比對 host 端 manifest 版本與倉內 template。
+        刻意與 `slack/manifest-version.ts`（常數模組）區隔命名，避免 grep
+        / IDE search 兩檔混淆。
 - [ ] **Impl**：`doctor.ts` 收集所有 check，按 PASS / WARN / FAIL 分類排序輸出。
 - [ ] **Impl**：在 `gateway.ts` 加 `case "doctor": return doctorCmd(rest)`。
 - [ ] **Verify**：手動造 4 種失敗（過期 token、刪 mra workspace、空
@@ -154,7 +156,8 @@ PRD: [PRD-2026-0006](../prds/2026-05-gateway-onboarding-prd.md)。
   - 與 README、`gateway/lifecycle.md` 雙向 cross-link。
 - [ ] **Doc**：`README.md` 第 B 區（CLI gateway 段）插入三個新 verb：
       `gateway doctor`、`gateway start --dry-run`、`gateway demo seed`。
-      **不**改節結構、**不**重寫 Quick start；P3 重寫已在另一個 PR 處理。
+      **不**改節結構、**不**重寫 Quick start；P3 結構性重寫已隨 PR-58
+      （與本 sprint plan 同 PR）落地，到 v0.16 實作時 main 上已有新結構。
 - [ ] **Doc**：`gateway/lifecycle.md` 在「初次設定」段加 cross-link 到
       onboarding.md。
 - [ ] **Doc**：sidebar 在 Gateway 分類加 `gateway/onboarding`。

@@ -262,7 +262,8 @@ expected scope 清單。
 1. 一位沒看過 source code 的 host（找 1 名內部同事），用 README +
    onboarding.md 完成第一次裝機，計時並記錄 baseline。
 2. Doctor 對所有故意製造的失敗（rotate 過期 token、把 mra workspace
-   設成不存在路徑、刪掉 PKB 內容）都印出可操作 hint。
+   設成不存在路徑、刪掉 PKB 內容、退回舊版 manifest template）都印出
+   可操作 hint。
 3. Dry-run 跑過整條 retrieval → escalation 路徑，事後在真實模式重跑
    同樣 prompt 沒有 surprise failure。
 4. `gateway demo seed` + `unseed` 對稱、不留殘留 atom。
