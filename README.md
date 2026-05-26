@@ -12,16 +12,24 @@ This kit is what we used to plan a monolith → TypeScript migration of an 11-mo
 
 ## What's in here
 
-The repo is a monorepo with three product surfaces sharing one set of templates and one traceability core.
+The repo has three product surfaces backed by one templates + traceability core. The first two carry the value today; the third is an early shell.
 
-| Surface | What it does | Location |
-|---|---|---|
-| **Docs site** | Docusaurus, EN + zh-TW; templates, ADRs, concepts, guides | [`apps/docs/`](./apps/docs/) → [hanfour.github.io/pm-workspace-kit](https://hanfour.github.io/pm-workspace-kit/) |
-| **`pmk` CLI** | propose / ingest / apply / discuss / ask / debug / index / resume / worktree / tdd / explore / case / **gateway** | [`packages/cli/`](./packages/cli/) |
-| **Desktop app** | Electron GUI over the same CLI surface (chat panel + worktree manager) | [`apps/desktop/`](./apps/desktop/) |
-| **Traceability + Confluence sync core** | Front-matter validation, Mermaid graph, orphan detection, Confluence comment + label sync | [`packages/core/`](./packages/core/) |
-| **Methodology ADRs + handoff templates** | Strangler Fig, Dev Harness, Product Decision Log; PR / review / runbook / dashboard / readiness | [`apps/docs/docs/adr/`](./apps/docs/docs/adr/), [`apps/docs/docs/handoff/`](./apps/docs/docs/handoff/) |
-| **Worked example** | Fictional ad-tech company (AcmeAds) using the kit end-to-end | [`examples/acme-ads/`](./examples/acme-ads/) |
+| Surface | What it does |
+|---|---|
+| **Local doc/code workflow** (`pmk` CLI + templates + traceability core) | PM verbs as named conversations (`propose`, `ingest`, `apply`, `ask`, `case`, …) on top of a markdown front-matter schema, Mermaid dependency graph, Strangler Fig migration playbook, MADR ADR template, and a 5-doc handoff kit. Source: [`packages/cli/`](./packages/cli/), [`packages/core/`](./packages/core/), [`apps/docs/docs/`](./apps/docs/docs/). |
+| **Slack gateway** | The differentiated surface. Host runs the bridge; stakeholders DM or `@`-mention the bot. Closed knowledge loop: retrieval → auto `mra-ask` → human escalation → absorb → approval → future hit. Source: [`packages/cli/src/gateway/`](./packages/cli/src/gateway/). |
+| **Desktop app** _(secondary)_ | Electron GUI over the same CLI surface. Still an early shell pending [Desktop PRD](https://hanfour.github.io/pm-workspace-kit/docs/prds/2026-04-24-desktop-app-prd) parity; CLI + gateway carry the core experience today. Source: [`apps/desktop/`](./apps/desktop/). |
+
+Docs ship as a Docusaurus site (EN + zh-TW): [hanfour.github.io/pm-workspace-kit](https://hanfour.github.io/pm-workspace-kit/). A worked AcmeAds example lives in [`examples/acme-ads/`](./examples/acme-ads/).
+
+### Base value vs. mra-enhanced value
+
+PMK does two distinct things depending on whether [`multi-repo-agent`](https://github.com/hanfour/multi-repo-agent) (mra) is installed.
+
+- **Base value** (no mra): traceable PM docs, PRD authoring with `pmk propose`, RAG over your `docs/`, Slack gateway answering from your markdown + PKB.
+- **mra-enhanced value** (with mra): the above, plus answers grounded in real module / endpoint names from your repos, and the gateway can auto-`mra-ask` before tagging a human contact.
+
+The gateway degrades gracefully when mra isn't present — `mra-ask` becomes a no-op and the model falls back to PKB-only.
 
 ## Quick start
 
@@ -98,11 +106,18 @@ npm run desktop:build              # packaged app bundles
 
 ## Adopting the kit for your project
 
-You don't have to take the whole monorepo. Pick the layer that matches your need:
+The fastest way to feel the value follows a time-ordered path. The early steps don't need mra; mra-enhanced value comes online in Week 2.
 
-1. **Just the templates + traceability** — copy [`apps/docs/docs/handoff/`](./apps/docs/docs/handoff/), [`apps/docs/docs/templates/`](./apps/docs/docs/templates/), [`apps/docs/docs/adr/`](./apps/docs/docs/adr/), and [`packages/core/`](./packages/core/) into your repo, then drop [`.github/workflows/traceability-check.yml`](./.github/workflows/traceability-check.yml) into your `.github/workflows/`.
-2. **+ the CLI** — install `@pmk/cli` from the workspace, run `pmk propose` / `pmk ask` / `pmk case` against your existing docs.
-3. **+ the gateway** — `pmk gateway init` to wire a Slack app for your team; stakeholders DM the bot, channel `@mention`s create case files.
+- **Day 1** — `pmk propose` writes a real PRD into `docs/prds/`. Same-day output, no infra needed.
+- **Day 2–3** — Author a second PRD. `traceability.js` now has links to validate; the dependency graph and orphan report start earning their keep. Drop [`.github/workflows/traceability-check.yml`](./.github/workflows/traceability-check.yml) into CI to keep them honest.
+- **Week 1** — Stand up the Slack gateway against one channel. `pmk gateway init` walks tokens; the eventual `pmk gateway doctor` and `--dry-run` (sprint plan in [`docs/plans/2026-05-gateway-onboarding-sprint-plan.md`](./apps/docs/docs/plans/2026-05-gateway-onboarding-sprint-plan.md)) make the first install verifiable before live traffic.
+- **Week 2** — Run the full knowledge loop end-to-end: ask → `mra-ask` → escalation → absorb → reuse. The second person to ask a previously-escalated question gets the cached answer.
+
+You don't have to take the whole monorepo. If you want to cherry-pick:
+
+- **Just templates + traceability** — copy [`apps/docs/docs/handoff/`](./apps/docs/docs/handoff/), [`apps/docs/docs/templates/`](./apps/docs/docs/templates/), [`apps/docs/docs/adr/`](./apps/docs/docs/adr/), and [`packages/core/`](./packages/core/) into your repo.
+- **+ the CLI** — install `@pmk/cli` from the workspace, run `pmk propose` / `pmk ask` / `pmk case` against your existing docs.
+- **+ the gateway** — `pmk gateway init` to wire a Slack app for your team.
 
 Read [Getting Started](https://hanfour.github.io/pm-workspace-kit/docs/getting-started) to set up front-matter on your first PRD; the [Confluence sync guide](https://hanfour.github.io/pm-workspace-kit/docs/guides/confluence-sync) covers the Confluence loop.
 
