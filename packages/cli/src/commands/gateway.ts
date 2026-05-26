@@ -28,6 +28,12 @@ import {
 import { appendAdminLog, cliActor } from "../gateway/admin-log";
 import { buildAuditReport } from "../gateway/audit";
 import { formatAuditReport } from "../gateway/audit-format";
+import {
+  buildDoctorContext,
+  formatDoctorReport,
+  runDoctor,
+} from "../gateway/doctor";
+import { DEFAULT_CHECKS } from "../gateway/doctor-checks";
 import { spawnSync } from "node:child_process";
 
 export async function gatewayCommand(
@@ -53,13 +59,32 @@ export async function gatewayCommand(
       return adminBootstrapCmd(rest);
     case "audit":
       return auditCmd(rest);
+    case "doctor":
+      return await doctorCmd(rest);
     default:
       println(
         chalk.yellow(
-          "usage: pmk gateway <init|start|status|stats|audience|escalation|atoms|admin|audit>",
+          "usage: pmk gateway <init|start|status|stats|audience|escalation|atoms|admin|audit|doctor>",
         ),
       );
       process.exit(1);
+  }
+}
+
+/**
+ * `pmk gateway doctor [--json]` — pre-flight check before runtime.
+ * Read-only: never writes config, never posts to Slack. Exit code 1
+ * if any check FAILs, 0 otherwise (WARNs are non-fatal).
+ *
+ * --json emits the structured report for CI / hooks.
+ */
+async function doctorCmd(rest: string[]): Promise<void> {
+  const json = rest.includes("--json");
+  const ctx = buildDoctorContext();
+  const report = await runDoctor(ctx, DEFAULT_CHECKS);
+  println(formatDoctorReport(report, { json }));
+  if (report.failed > 0) {
+    process.exit(1);
   }
 }
 
