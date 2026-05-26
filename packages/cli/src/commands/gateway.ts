@@ -115,35 +115,31 @@ async function initCmd(): Promise<void> {
     ),
   );
   println("");
-  println(chalk.dim("  Steps to get the tokens (one-time, ~5 min):"));
+  println(chalk.dim("  Slack app setup (one-time, ~5 min):"));
   println(
     chalk.dim(
-      "    1. https://api.slack.com/apps → Create New App → From scratch",
+      "    1. Open https://api.slack.com/apps?new_app=1 → 'From a manifest'",
     ),
   );
-  println(chalk.dim("    2. Socket Mode → Enable → generate App-Level Token"));
+  println(chalk.dim("    2. Paste the contents of:"));
   println(
     chalk.dim(
-      "       Scopes: connections:write — copy the `xapp-...` value when prompted.",
+      "         packages/cli/src/gateway/slack/manifest.template.json",
     ),
   );
+  println(chalk.dim("       (or use the raw URL:"));
   println(
     chalk.dim(
-      "    3. Event Subscriptions → Enable; subscribe to:  message.im, app_mention, reaction_added (v0.8.5+)",
+      "         https://raw.githubusercontent.com/hanfour/pm-workspace-kit/main/packages/cli/src/gateway/slack/manifest.template.json )",
     ),
   );
-  println(chalk.dim("    4. OAuth & Permissions → Scopes (Bot Token):"));
+  println(chalk.dim("    3. Install to Workspace, then copy:"));
   println(
     chalk.dim(
-      "         app_mentions:read, chat:write, im:history, im:read, im:write, users:read,\n" +
-        "         reactions:read (v0.8.5+; enables ✅/❌ atom approval on the bot's pending notice)",
+      "         - App-Level Token (xapp-...)  — auto-generated for Socket Mode",
     ),
   );
-  println(
-    chalk.dim(
-      "    5. Install to Workspace → copy `xoxb-...` Bot User OAuth Token.",
-    ),
-  );
+  println(chalk.dim("         - Bot User OAuth Token (xoxb-...)"));
   println("");
 
   const rl = readline.createInterface({
