@@ -76,6 +76,9 @@ npx pmk case open prod-checkout-503          # long-lived bug investigation file
 
 # Slack gateway (v0.7+) — host-run bridge so PMs/stakeholders DM pmk in Slack
 npx pmk gateway init                          # one-time: paste Slack tokens + mra workspace path
+npx pmk gateway doctor                        # (v0.16) read-only pre-flight: tokens, key, mra, PKB, ACL, manifest
+npx pmk gateway demo seed                     # (v0.16) write one smoke-test atom; `demo unseed` to remove
+npx pmk gateway start --dry-run               # (v0.16) exercise the full path with zero Slack writes
 npx pmk gateway start                         # run the bridge (foreground)
 npx pmk gateway status                        # configured? running? mra workspace ok?
 npx pmk gateway admin add <userId>            # (v0.9) bootstrap first Slack admin — required for /pmk admin

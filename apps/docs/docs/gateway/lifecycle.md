@@ -6,6 +6,8 @@ sidebar_position: 1
 
 How a single Slack DM walks through `pmk gateway` end-to-end. This page is the integrated story; the design rationale lives in [ADR-0006](../adr/0006-pmk-gateway-slack.md) and the v0.7.0 surface contract in [PRD-2026-0005](../prds/2026-04-27-pmk-gateway-prd.md). Each numbered phase in the diagram below is described in the section of the same name.
 
+> First time setting this up? Start with the [30-minute onboarding guide](./onboarding.md) — manifest → tokens → `init` → `doctor` → dry-run → first message. This page explains what happens *after* the bot is live.
+
 ## The flow
 
 ```mermaid
@@ -303,7 +305,9 @@ No `caffeinate` / launchd hacks ship by default — accepting bounded availabili
 
 ## See also
 
+- [Gateway onboarding (30 minutes)](./onboarding.md) — host-side install rail
 - [ADR-0006: pmk gateway — Slack/LINE bot, not SaaS](../adr/0006-pmk-gateway-slack.md)
 - [PRD-2026-0005: pmk gateway v0.7.0 surface](../prds/2026-04-27-pmk-gateway-prd.md)
+- [PRD-2026-0006: 30-minute host onboarding](../prds/2026-05-gateway-onboarding-prd.md)
 - [v0.7.0–v0.9.0 release notes on GitHub](https://github.com/hanfour/pm-workspace-kit/releases)
 - [Changelog](../changelog.md) — release-by-release summary
