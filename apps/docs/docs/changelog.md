@@ -27,6 +27,7 @@ Through v0.15 the gateway worked, but standing one up meant reading the source: 
 ### Hardened (M6 trial finding)
 
 - **`pkb-content` now FAILs on an empty PKB whose source can't fill it.** The M6 four-failure trial found the empty-PKB mode slipped through: the check only inspected config *shape*, so a gateway pointed at an mra workspace with 0 repos passed as a soft WARN and `doctor` exited 0. It now counts approved atoms on disk (read-only, new `atomCount` runner defaulting to `approvedAtomCount()`) and FAILs only when the source provably can't seed it (mra source with 0 repos / unreachable workspace, or `mra:` ingest with no `mraWorkspace`). A fresh-but-viable install (0 atoms, repos ≥ 1) stays a WARN — no false positive on clean installs.
+- **`llm-provider` check (was `anthropic-key`) recognizes the claude-agent OAuth path.** The check tested only a raw Anthropic API key and FAILed (exit 1) when none was set — but `resolveProvider` falls back to the local `claude` login (claude-agent SDK / OAuth) when no key is present, so doctor was **false-FAILing a valid OAuth-only host** and blocking startup. It now mirrors the runtime resolution (`PMK_PROVIDER` → CLI `config.provider` → `auto`): in auto mode a key wins (echo-verified), else a present `claude` binary PASSes, else FAIL. New `claudeCli` runner + `llmProvider` on `DoctorContext`.
 
 ### M6 baseline (PRD-2026-0006 §9 quality gate)
 
@@ -39,13 +40,13 @@ The four runtime-blocking failures the gate demands we deliberately provoke — 
 | Empty PKB (0 atoms, 0 repos) | FAIL `pkb-content` | 1 | register repos, re-run doctor |
 | Stale manifest (missing scope) | FAIL `manifest-alignment` | 1 | add the named scope to `oauth_config.scopes.bot` |
 
-- **Doctor coverage: 4/4 (100%).** Pre-hardening it was 3/4 — empty PKB was the gap, now closed.
-- **Live preflight, real environment.** `pmk gateway doctor` run against the maintainer's actual setup validated real Slack tokens (team `slack-webhook`), listed **63 mra repos**, and reported `PKB has 1 approved atom` — the new atom-count path PASSing correctly on a populated store, with `anthropic-key` FAILing as expected when no key is set.
+- **Doctor coverage: 4/4 (100%).** Pre-hardening it was 3/4 — empty PKB was the gap, now closed. The trial also surfaced (and fixed) the `llm-provider` OAuth false-FAIL above.
+- **Live preflight, real environment → ready, exit 0.** `pmk gateway doctor` run against the maintainer's actual OAuth-only setup: real Slack tokens (team `slack-webhook`), **63 mra repos**, `PKB has 1 approved atom`, and `llm-provider` PASS — *"no API key set — will use local claude login (claude-agent SDK)"*. **7 pass / 1 warn (DM-only) / 0 fail.** No `ANTHROPIC_API_KEY` needed: the gateway runs on the host's existing `claude` login.
 - **Time-to-first-message: deferred, not faked.** The metric measures how long a *fresh operator who hasn't seen the source* takes — a number neither the maintainer (knows it cold) nor an automated agent (unrealistically fast, non-representative) can produce honestly. Baseline is deferred to the first real external onboarding rather than recording a misleading figure. See the PRD metrics note.
 
 ### Tests
 
-- `@pmk/cli`: 371 → **442**, 100% pass. New / extended suites: `gateway-manifest`, `gateway-doctor` (every check PASS + FAIL path, including the new empty-PKB atom-count branches), `gateway-dry-run`, `gateway-demo-seed`.
+- `@pmk/cli`: 371 → **446**, 100% pass. New / extended suites: `gateway-manifest`, `gateway-doctor` (every check PASS + FAIL path, including the new empty-PKB atom-count branches and the llm-provider auto/anthropic-api/claude-agent matrix), `gateway-dry-run`, `gateway-demo-seed`.
 
 ### Out of scope / backlog
 
