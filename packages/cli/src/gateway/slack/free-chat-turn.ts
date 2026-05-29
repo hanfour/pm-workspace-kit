@@ -59,6 +59,7 @@ import {
   searchAtoms,
   formatAtomsForInjection,
 } from "../knowledge";
+import { bumpReuse, bumpQuestioned } from "../atom-telemetry";
 import {
   markdownToMrkdwn,
   truncateForSlack,
@@ -257,6 +258,11 @@ export class FreeChatTurnRunner {
       }
     }
 
+    // Hoist atomIds so it can be shared between the escalate block
+    // (bumpQuestioned) and the success path (bumpReuse / turn.processed)
+    // without mapping the same array twice.
+    const atomIds = retrieved.map((a) => a.id);
+
     // If the model asked to escalate to a human IT/domain expert, fan
     // out the @-mention before showing the placeholder reply, and
     // remember the thread so the next IT reply gets absorbed. The
@@ -270,6 +276,16 @@ export class FreeChatTurnRunner {
         askerUserId: userId,
         request: escReq,
       });
+      // Escalate-after-citation: the model still needed a human despite
+      // the atoms we injected → mark those atoms questioned. Done
+      // in-place (atomIds + replyTs in hand) to avoid the event-ordering
+      // gap where turn.processed isn't on disk yet at escalate time.
+      if (retrieved.length > 0) {
+        bumpQuestioned(
+          atomIds,
+          `escalate:${channelId}:${threadTs}:${String(placeholder.ts)}`,
+        );
+      }
     }
 
     const visible = stripEscalateBlock(
@@ -280,12 +296,19 @@ export class FreeChatTurnRunner {
 
     saveSession(session);
 
+    // Reuse bump at success (here, not right after searchAtoms) so a
+    // failed LLM call never counts an atom as reused.
+    bumpReuse(atomIds);
     appendGatewayEvent({
       type: "turn.processed",
       actor: userId,
       audience,
       hadMraAsk: askReq !== undefined,
       atomsInjected: retrieved.length,
+      atomIds,
+      channelId,
+      threadTs,
+      replyTs: String(placeholder.ts),
     });
 
     await web.chat.update({

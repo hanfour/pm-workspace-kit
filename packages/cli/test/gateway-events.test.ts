@@ -414,6 +414,28 @@ describe("gateway events log (#24)", () => {
     assert.ok(types.includes("token.usage"));
   });
 
+  it("turn.processed round-trips the optional citation fields", async () => {
+    const { appendGatewayEvent, readGatewayEvents } =
+      await import("../src/gateway/events");
+    appendGatewayEvent({
+      type: "turn.processed",
+      actor: "U_X",
+      audience: "tech",
+      hadMraAsk: false,
+      atomsInjected: 2,
+      atomIds: ["a1", "a2"],
+      channelId: "D1",
+      threadTs: "171.1",
+      replyTs: "172.2",
+    });
+    const e = readGatewayEvents().at(-1)!;
+    assert.equal(e.type, "turn.processed");
+    if (e.type === "turn.processed") {
+      assert.deepEqual(e.atomIds, ["a1", "a2"]);
+      assert.equal(e.replyTs, "172.2");
+    }
+  });
+
   it("legacy events.log with mixed valid + malformed lines: malformed are skipped, valid still parse", async () => {
     const { readGatewayEvents } = await import("../src/gateway/events");
     const gatewayDir = path.join(tmpHome, ".pmk", "gateway");

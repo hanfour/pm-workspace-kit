@@ -20,6 +20,8 @@ import {
   rejectAtom,
   searchAtoms,
 } from "../gateway/knowledge";
+import type { KnowledgeAtom } from "../gateway/knowledge";
+import { loadTelemetry, type AtomTelemetryStore } from "../gateway/atom-telemetry";
 import {
   approvedAtomCount,
   ATOM_RANKED_THRESHOLD,
@@ -796,6 +798,50 @@ function escalationCmd(rest: string[]): void {
   }
 }
 
+export interface AtomTelemetryRow {
+  id: string;
+  question: string;
+  scope: string;
+  createdAt: number;
+  reuseCount: number;
+  lastRetrievedAt: string | null;
+  questionedCount: number;
+  lastQuestionedAt: string | null;
+  deadWeight: boolean;
+  loadBearing: boolean;
+}
+
+const LOAD_BEARING_MIN_REUSE = 5;
+
+export function buildAtomTelemetryReport(
+  atoms: KnowledgeAtom[],
+  store: AtomTelemetryStore,
+): AtomTelemetryRow[] {
+  const rows = atoms.map((a) => {
+    const t = store.atoms[a.id];
+    const reuseCount = t?.reuseCount ?? 0;
+    const questionedCount = t?.questionedCount ?? 0;
+    return {
+      id: a.id,
+      question: a.question,
+      scope: a.scope,
+      createdAt: a.createdAt,
+      reuseCount,
+      lastRetrievedAt: t?.lastRetrievedAt ?? null,
+      questionedCount,
+      lastQuestionedAt: t?.lastQuestionedAt ?? null,
+      deadWeight: reuseCount === 0,
+      loadBearing: reuseCount >= LOAD_BEARING_MIN_REUSE && questionedCount === 0,
+    };
+  });
+  // Weakest first: lowest reuse, then oldest lastRetrievedAt.
+  return rows.sort(
+    (x, y) =>
+      x.reuseCount - y.reuseCount ||
+      (x.lastRetrievedAt ?? "").localeCompare(y.lastRetrievedAt ?? ""),
+  );
+}
+
 function atomsUsage(): void {
   println(
     chalk.yellow(
@@ -806,7 +852,8 @@ function atomsUsage(): void {
         "  pmk gateway atoms edit <id-or-prefix>\n" +
         "  pmk gateway atoms approve <id-or-prefix>\n" +
         "  pmk gateway atoms reject <id-or-prefix>\n" +
-        "  pmk gateway atoms reindex [--scope <name>]",
+        "  pmk gateway atoms reindex [--scope <name>]\n" +
+        "  pmk gateway atoms telemetry [--json]",
     ),
   );
 }
@@ -1090,6 +1137,38 @@ function atomsCmd(rest: string[]): void {
             `(${before >= ATOM_RANKED_THRESHOLD ? "BM25 active" : "still using keyword scoring"})`,
         ),
       );
+      return;
+    }
+    case "telemetry": {
+      const json = args.includes("--json");
+      const scopeIdx = args.indexOf("--scope");
+      const scope = scopeIdx >= 0 ? args[scopeIdx + 1] : undefined;
+      const atoms = loadAtoms({ scope }).filter(
+        (a) => a.status === "approved" || a.status === undefined,
+      );
+      const rows = buildAtomTelemetryReport(atoms, loadTelemetry());
+      if (json) {
+        println(JSON.stringify(rows, null, 2));
+        return;
+      }
+      println(chalk.bold("\npmk gateway atoms telemetry"));
+      if (rows.length === 0) {
+        println(chalk.dim("  (no approved atoms)"));
+        return;
+      }
+      println(chalk.dim("  reuse  questioned   age  id-prefix             question"));
+      for (const r of rows) {
+        const flag = r.deadWeight
+          ? chalk.yellow(" dead")
+          : r.loadBearing
+            ? chalk.green(" load")
+            : "     ";
+        const ageDays = Math.floor((Date.now() - r.createdAt) / 86_400_000);
+        const age = `${ageDays}d`;
+        println(
+          `  ${String(r.reuseCount).padStart(5)}  ${String(r.questionedCount).padStart(10)}  ${age.padStart(4)} ${flag} ${r.id.slice(0, 20).padEnd(20)} ${r.question.slice(0, 50)}`,
+        );
+      }
       return;
     }
     default:

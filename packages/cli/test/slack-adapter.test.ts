@@ -36,7 +36,8 @@ import {
   saveAtom,
   type KnowledgeAtom,
 } from "../src/gateway/knowledge";
-import { readGatewayEvents } from "../src/gateway/events";
+import { readGatewayEvents, appendGatewayEvent } from "../src/gateway/events";
+import { loadTelemetry } from "../src/gateway/atom-telemetry";
 import { saveUserSession } from "../src/gateway/session-store";
 import { loadChannelTurns } from "../src/gateway/channel-log";
 import { PmkContextTooLongError } from "../src/llm/claude-agent";
@@ -577,6 +578,48 @@ describe("SlackAdapter integration: reaction-based atom approval", () => {
     assert.match(replies[0].text ?? "", /捨棄/);
   });
 
+  it("thumbsdown on a pending-atom approval anchor must NOT reject the atom (regression)", async () => {
+    const channelId = "C-OPS";
+    const messageTs = "1700000450.000450";
+    const contributor = "U-IT";
+
+    seedPendingAtom({ channelId, messageTs, contributorUserId: contributor });
+
+    await h.adapter.start();
+    await h.socket.emit(
+      "reaction_added",
+      reactionAddedPayload({
+        user: contributor,
+        reaction: "thumbsdown",
+        itemChannel: channelId,
+        itemTs: messageTs,
+        // item_user is the bot — makes the anchor lookup fire.
+        itemUser: "UBOTID",
+      }),
+    );
+    await h.flush();
+
+    // Atom must still exist and stay pending — thumbsdown is not a
+    // reject signal on an approval anchor.
+    const after = loadAtoms({ promote: false });
+    assert.equal(after.length, 1, "atom must not be deleted by thumbsdown");
+    assert.equal(
+      after[0].status,
+      "pending",
+      "atom status must stay pending — thumbsdown must not act as a reject",
+    );
+
+    // No rejection confirmation posted.
+    const replies = h.web
+      .postsTo(channelId)
+      .filter((p) => p.thread_ts === messageTs);
+    assert.equal(
+      replies.length,
+      0,
+      "no reply should be posted for a thumbsdown on an approval anchor",
+    );
+  });
+
   it("non-contributor reaction is ignored — atom stays pending", async () => {
     const channelId = "C-OPS";
     const messageTs = "1700000500.000500";
@@ -633,6 +676,105 @@ describe("SlackAdapter integration: reaction-based atom approval", () => {
     assert.equal(
       findAtomByApprovalMessage("C-ANYWHERE", "1700000999.999999"),
       undefined,
+    );
+  });
+});
+
+describe("SlackAdapter integration: 👎 on cited reply marks atoms questioned", () => {
+  let h: Harness;
+
+  beforeEach(() => {
+    h = buildHarness();
+  });
+
+  afterEach(() => {
+    h.cleanup();
+  });
+
+  it("thumbsdown on a cited bot reply bumps questionedCount and dedupes", async () => {
+    const channelId = "D1";
+    const replyTs = "999.1";
+    const atomId = "a1";
+
+    // Seed a turn.processed event that links this reply to an atom.
+    appendGatewayEvent({
+      type: "turn.processed",
+      actor: "U-ANY",
+      audience: "biz",
+      hadMraAsk: false,
+      atomsInjected: 1,
+      atomIds: [atomId],
+      channelId,
+      replyTs,
+    });
+
+    await h.adapter.start();
+
+    const payload = reactionAddedPayload({
+      user: "U-any",
+      reaction: "-1",
+      itemChannel: channelId,
+      itemTs: replyTs,
+      // item_user must be the bot so the handler doesn't early-return
+      itemUser: "UBOTID",
+    });
+
+    // First reaction: bumps questionedCount to 1.
+    await h.socket.emit("reaction_added", payload);
+    await h.flush();
+
+    assert.equal(
+      loadTelemetry().atoms[atomId]?.questionedCount,
+      1,
+      "first 👎 should increment questionedCount to 1",
+    );
+
+    // Same payload again: dedupe key prevents double-counting.
+    await h.socket.emit("reaction_added", payload);
+    await h.flush();
+
+    assert.equal(
+      loadTelemetry().atoms[atomId]?.questionedCount,
+      1,
+      "duplicate reaction must be deduped; questionedCount stays 1",
+    );
+  });
+
+  it(":x: on the same cited reply does NOT trigger citation-questioned", async () => {
+    const channelId = "D1";
+    const replyTs = "999.2";
+    const atomId = "a2";
+
+    appendGatewayEvent({
+      type: "turn.processed",
+      actor: "U-ANY",
+      audience: "biz",
+      hadMraAsk: false,
+      atomsInjected: 1,
+      atomIds: [atomId],
+      channelId,
+      replyTs,
+    });
+
+    await h.adapter.start();
+
+    await h.socket.emit(
+      "reaction_added",
+      reactionAddedPayload({
+        user: "U-any",
+        reaction: "x",
+        itemChannel: channelId,
+        itemTs: replyTs,
+        itemUser: "UBOTID",
+      }),
+    );
+    await h.flush();
+
+    const entry = loadTelemetry().atoms[atomId];
+    assert.equal(
+      entry?.questionedCount ?? 0,
+      0,
+      ":x: must not trigger citation-questioned (it is reserved for approval-reject)",
     );
   });
 });

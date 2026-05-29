@@ -61,6 +61,14 @@ export interface TurnProcessedEvent {
   hadMraAsk: boolean;
   /** Number of approved knowledge atoms injected via retrieval. */
   atomsInjected: number;
+  /** IDs of the atoms injected this turn (citation linkage for telemetry). */
+  atomIds?: string[];
+  /** Slack channel/DM the turn ran in. */
+  channelId?: string;
+  /** Thread anchor, if the turn ran in a thread. */
+  threadTs?: string;
+  /** Slack ts of the bot reply this turn produced. */
+  replyTs?: string;
 }
 
 export interface EscalateTriggeredEvent {

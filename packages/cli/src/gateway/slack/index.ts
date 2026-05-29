@@ -32,6 +32,8 @@ import {
   findAtomByApprovalMessage,
   rejectAtom,
 } from "../knowledge";
+import { bumpQuestioned } from "../atom-telemetry";
+import { readGatewayEvents } from "../events";
 
 // v0.13: re-exported so existing test imports (`gateway.test.ts`) keep
 // working after the extractions to `./concurrency` (tranche 1) and
@@ -585,7 +587,10 @@ export class SlackAdapter {
       reaction === "heavy_check_mark" ||
       reaction === "+1";
     const isReject = reaction === "x" || reaction === "-1";
-    if (!isApprove && !isReject) return;
+    // `thumbsdown` is not an approval-reject reaction but is used for
+    // citation feedback in the !found branch below.
+    const isCitationFeedback = reaction === "thumbsdown";
+    if (!isApprove && !isReject && !isCitationFeedback) return;
 
     const channelId = event.item?.channel;
     const messageTs = event.item?.ts;
@@ -594,7 +599,29 @@ export class SlackAdapter {
 
     const found = findAtomByApprovalMessage(channelId, messageTs);
     if (!found) {
-      // Reaction on some other bot message — not an atom-pending one.
+      // Not an approval anchor. If this is a 👎 on a cited bot reply,
+      // mark the cited atoms questioned. `x` stays reserved for
+      // approval-reject; only -1/thumbsdown means "citation questioned".
+      if (reaction === "-1" || reaction === "thumbsdown") {
+        // A 👎 reaction always lands on a recent reply, so scanning
+        // the last 30 days is safe and avoids a full-partition scan.
+        const turn = readGatewayEvents({ sinceMs: Date.now() - 30 * 24 * 60 * 60 * 1000 })
+          .filter(
+            (e) =>
+              e.type === "turn.processed" &&
+              e.channelId === channelId &&
+              e.replyTs === messageTs &&
+              Array.isArray(e.atomIds) &&
+              e.atomIds.length > 0,
+          )
+          .at(-1);
+        if (turn && turn.type === "turn.processed" && turn.atomIds) {
+          bumpQuestioned(
+            turn.atomIds,
+            `reaction:${channelId}:${messageTs}:${reactorUserId}:${reaction}`,
+          );
+        }
+      }
       return;
     }
 
@@ -604,6 +631,10 @@ export class SlackAdapter {
       );
       return;
     }
+
+    // thumbsdown is citation-feedback only; it must never act as an
+    // approval-reject on a pending-atom anchor.
+    if (!isApprove && !isReject) return;
 
     if (isApprove) {
       const promoted = approveAtom(found.atom.id);
