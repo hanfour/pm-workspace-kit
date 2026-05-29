@@ -44,6 +44,9 @@ function makeOkRunners(): DoctorRunners {
     // Default: PKB already has content so pkb-content PASSes unless a
     // test overrides atomCount to 0 to exercise the empty-PKB paths.
     atomCount: async () => 7,
+    // Default: local `claude` present, so the OAuth/claude-agent path
+    // is available when no API key is set.
+    claudeCli: async () => ({ available: true, path: "/usr/local/bin/claude" }),
   };
 }
 
@@ -69,6 +72,7 @@ function makeCtx(overrides: Partial<DoctorContext> = {}): DoctorContext {
     config: makeConfig(),
     configFileStat: { exists: true, mode: 0o600 },
     envAnthropicKey: undefined,
+    llmProvider: "auto",
     manifestRepoPath: REPO_MANIFEST,
     runners: makeOkRunners(),
     ...overrides,
@@ -162,16 +166,33 @@ describe("doctor — slack-bot-token check (FR2 #3)", () => {
   });
 });
 
-describe("doctor — anthropic-key check (FR2 #4)", () => {
-  it("FAILs when neither env nor config has key", async () => {
+describe("doctor — llm-provider check (FR2 #4)", () => {
+  // v0.16: mirrors resolveProvider — the runtime falls back to the
+  // local `claude` login (claude-agent SDK) when no API key is set,
+  // so doctor must NOT FAIL an OAuth-only host.
+  it("PASSes (auto) with no key but local claude available — OAuth path", async () => {
     const r = await anthropicKeyCheck(
       makeCtx({ config: makeConfig({ apiKey: undefined }) }),
     );
-    assert.equal(r.severity, "fail");
-    assert.match(r.message, /no Anthropic API key/);
+    assert.equal(r.severity, "pass");
+    assert.match(r.message, /claude login|claude-agent/i);
   });
 
-  it("FAILs when Anthropic rejects the key", async () => {
+  it("FAILs (auto) only when no key AND no local claude", async () => {
+    const r = await anthropicKeyCheck(
+      makeCtx({
+        config: makeConfig({ apiKey: undefined }),
+        runners: {
+          ...makeOkRunners(),
+          claudeCli: async () => ({ available: false }),
+        },
+      }),
+    );
+    assert.equal(r.severity, "fail");
+    assert.match(r.message, /no LLM provider/i);
+  });
+
+  it("FAILs (auto) when key present but Anthropic rejects it", async () => {
     const r = await anthropicKeyCheck(
       makeCtx({
         runners: {
@@ -184,7 +205,7 @@ describe("doctor — anthropic-key check (FR2 #4)", () => {
     assert.match(r.message, /401/);
   });
 
-  it("PASSes with env key (env source preferred)", async () => {
+  it("PASSes (auto) with env key (env source preferred)", async () => {
     const r = await anthropicKeyCheck(
       makeCtx({ envAnthropicKey: "sk-ant-env" }),
     );
@@ -192,10 +213,46 @@ describe("doctor — anthropic-key check (FR2 #4)", () => {
     assert.match(r.message, /env ANTHROPIC_API_KEY/);
   });
 
-  it("PASSes with config-only key", async () => {
+  it("PASSes (auto) with config-only key", async () => {
     const r = await anthropicKeyCheck(makeCtx());
     assert.equal(r.severity, "pass");
     assert.match(r.message, /gateway\.json apiKey/);
+  });
+
+  it("FAILs when provider=anthropic-api but no key", async () => {
+    const r = await anthropicKeyCheck(
+      makeCtx({
+        llmProvider: "anthropic-api",
+        config: makeConfig({ apiKey: undefined }),
+      }),
+    );
+    assert.equal(r.severity, "fail");
+    assert.match(r.message, /anthropic-api/);
+  });
+
+  it("PASSes when provider=claude-agent and claude on PATH (key irrelevant)", async () => {
+    const r = await anthropicKeyCheck(
+      makeCtx({
+        llmProvider: "claude-agent",
+        config: makeConfig({ apiKey: undefined }),
+      }),
+    );
+    assert.equal(r.severity, "pass");
+    assert.match(r.message, /claude/i);
+  });
+
+  it("FAILs when provider=claude-agent but claude not on PATH", async () => {
+    const r = await anthropicKeyCheck(
+      makeCtx({
+        llmProvider: "claude-agent",
+        runners: {
+          ...makeOkRunners(),
+          claudeCli: async () => ({ available: false }),
+        },
+      }),
+    );
+    assert.equal(r.severity, "fail");
+    assert.match(r.message, /not on PATH|claude/i);
   });
 });
 

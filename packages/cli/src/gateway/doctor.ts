@@ -12,6 +12,8 @@ import { WebClient } from "@slack/web-api";
 
 import { type GatewayConfig, gatewayConfigPath, loadGatewayConfig } from "./config";
 import { approvedAtomCount } from "./atom-index";
+import { loadConfig } from "../config";
+import { findClaudeExecutable } from "../llm/resolver";
 
 export type DoctorSeverity = "pass" | "warn" | "fail";
 
@@ -45,6 +47,10 @@ export interface DoctorRunners {
   // pkb-content check distinguish a populated PKB from a configured-
   // but-empty one without running ingest.
   atomCount: (scope?: string) => Promise<number>;
+  // Whether the local `claude` CLI is on PATH. The runtime falls back
+  // to it (claude-agent SDK / OAuth) when no API key is set, so the
+  // llm-provider check must know about it to avoid a false FAIL.
+  claudeCli: () => Promise<{ available: boolean; path?: string }>;
 }
 
 export interface DoctorContext {
@@ -53,6 +59,9 @@ export interface DoctorContext {
   config: GatewayConfig | null;
   configFileStat: { exists: boolean; mode?: number };
   envAnthropicKey?: string;
+  // Effective LLM provider, resolved the same way the runtime does:
+  // PMK_PROVIDER env → CLI config.provider → "auto".
+  llmProvider: string;
   manifestRepoPath: string;
   runners: DoctorRunners;
 }
@@ -167,6 +176,7 @@ export function buildDoctorContext(opts: {
     anthropicEcho: opts.runners?.anthropicEcho ?? defaultAnthropicEcho,
     mraList: opts.runners?.mraList ?? defaultMraList,
     atomCount: opts.runners?.atomCount ?? defaultAtomCount,
+    claudeCli: opts.runners?.claudeCli ?? defaultClaudeCli,
   };
   return {
     home,
@@ -174,11 +184,24 @@ export function buildDoctorContext(opts: {
     config,
     configFileStat: { exists, mode },
     envAnthropicKey: process.env.ANTHROPIC_API_KEY,
+    llmProvider: resolveEffectiveProvider(),
     manifestRepoPath:
       opts.manifestRepoPath ??
       path.resolve(__dirname, "slack", "manifest.template.json"),
     runners,
   };
+}
+
+// Mirror resolveProvider's source order so the llm-provider check
+// reflects what the daemon will actually do: PMK_PROVIDER env wins,
+// then the CLI config's provider field, then "auto".
+function resolveEffectiveProvider(): string {
+  if (process.env.PMK_PROVIDER) return process.env.PMK_PROVIDER;
+  try {
+    return loadConfig().provider ?? "auto";
+  } catch {
+    return "auto";
+  }
 }
 
 async function defaultSlackAppAuth(
@@ -300,5 +323,17 @@ async function defaultAtomCount(scope?: string): Promise<number> {
     return approvedAtomCount(scope);
   } catch {
     return 0;
+  }
+}
+
+async function defaultClaudeCli(): Promise<{
+  available: boolean;
+  path?: string;
+}> {
+  try {
+    const found = findClaudeExecutable();
+    return found ? { available: true, path: found } : { available: false };
+  } catch {
+    return { available: false };
   }
 }
