@@ -73,13 +73,17 @@ host 能讓 gateway 回完一個訊息**。對應
 
 ### Metrics
 
-| Metric | 量法 | 目標 |
-|---|---|---|
-| Time-to-first-message | 從 `git clone` 計時，到 host 自己 @bot 收到回覆 | ≤ 30 min（baseline 後設目標） |
-| Doctor coverage | 已知 runtime failure 在 doctor 中有 check 的比例 | 100%（每次新 failure mode 都補 check） |
-| Dry-run 真實度 | dry-run 跑過後，再切真實模式時新增的 surprise failure 數 | 0（每多 1 個 = doctor 漏） |
+| Metric | 量法 | 目標 | v0.16 baseline |
+|---|---|---|---|
+| Time-to-first-message | 從 `git clone` 計時，到 host 自己 @bot 收到回覆 | ≤ 30 min | 未量（defer，見下方說明） |
+| Doctor coverage | 已知 runtime failure 在 doctor 中有 check 的比例 | 100% | **4/4（100%）** |
+| Dry-run 真實度 | dry-run 跑過後，再切真實模式時新增的 surprise failure 數 | 0 | 未量（需真實 LLM key 跑完整 turn） |
 
-Baseline 由 P1 第一輪內部 host 計時取得；目標數字在 baseline 量到後填入。
+**v0.16 M6 baseline note：**
+
+- **Doctor coverage 已達 100%。** 4 種已知 runtime failure（過期 App Token、不存在 mra workspace、空 PKB、舊版 manifest）皆 FAIL + exit 1 + 印可操作 hint；trial 中發現空 PKB 原本只給 WARN（3/4），已補 `pkb-content` atom-count check 升為 FAIL，補滿至 4/4。trial 另抓到並修掉一個 **false-FAIL**：`anthropic-key` check 只認 raw API key，對走 claude-agent OAuth 的 host 誤報 FAIL 擋啟動；已改成 `llm-provider` check 對齊 runtime `resolveProvider`（auto 下沒 key 但有本地 `claude` → PASS）。對真實 OAuth-only 環境跑真 `doctor` 結果：Slack team `slack-webhook`、63 個 mra repo、1 顆 PKB atom、`llm-provider` PASS（本地 claude login）→ **7 pass / 1 warn / 0 fail，exit 0，不需任何 secret**。
+- **Time-to-first-message 刻意 defer，不填假數字。** 此 metric 量的是「沒看過 source 的新手」耗時——由 maintainer 自計會是被污染的樂觀下限，由自動化 agent 跑則速度不具代表性，兩者都無法誠實回答。Baseline defer 至首位真實外部 host onboard 時量測；屆時若中位數 > 30 min，依本文件 Risk 4（30 分鐘目標太樂觀）先判斷是 Slack 教學還是 pmk 端可省步驟，不為硬達 30 min 而省 doctor 檢查。
+- **Dry-run 真實度需真實 Anthropic key** 跑完整 retrieval → LLM → escalation turn 才能量，留待同一輪外部 onboard 一併取得。
 
 ## 4. Non-Goals
 

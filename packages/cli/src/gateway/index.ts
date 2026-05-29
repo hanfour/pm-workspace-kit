@@ -1,6 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { SlackAdapter } from "./slack";
+import { createDryRunStats } from "./slack/dry-run-wrapper";
 import {
   gatewayPidPath,
   hasValidSlackTokens,
@@ -16,6 +17,15 @@ import {
 export interface GatewayRunOptions {
   /** Called for each one-line breadcrumb. Defaults to console.log. */
   onLog?: (msg: string) => void;
+  /**
+   * v0.16 (M3 / FR3): when true, sets PMK_DRY_RUN=1 so all Slack
+   * writes are stubbed at the outermost WebClient wrapper and events
+   * are written to `dryrun-events-YYYY-MM.log`. Read methods + the
+   * underlying SocketMode connection still run normally; the gateway
+   * fully exercises the retrieval → LLM → escalation path but emits
+   * zero Slack side effects.
+   */
+  dryRun?: boolean;
 }
 
 /**
@@ -27,6 +37,16 @@ export interface GatewayRunOptions {
  */
 export async function runGateway(opts: GatewayRunOptions = {}): Promise<void> {
   const log = opts.onLog ?? ((m: string) => console.log(`[pmk-gw] ${m}`));
+  if (opts.dryRun) {
+    process.env.PMK_DRY_RUN = "1";
+    log("");
+    log("============================================================");
+    log("  DRY-RUN MODE — no Slack writes will be sent.");
+    log("  Events partition: dryrun-events-YYYY-MM.log");
+    log("  Exit with Ctrl+C to see session metrics.");
+    log("============================================================");
+    log("");
+  }
   const cfg = loadGatewayConfig();
   if (!hasValidSlackTokens(cfg)) {
     throw new Error(
@@ -62,6 +82,7 @@ export async function runGateway(opts: GatewayRunOptions = {}): Promise<void> {
   }
   log(`heartbeat ticking every ${HEARTBEAT_INTERVAL_MS / 1000}s`);
 
+  const dryRunStats = opts.dryRun ? createDryRunStats() : undefined;
   const adapter = new SlackAdapter({
     config: cfg,
     onLog: log,
@@ -69,6 +90,8 @@ export async function runGateway(opts: GatewayRunOptions = {}): Promise<void> {
     lastSeenAt: hb.lastSeenAt,
     offlineDurationMs: hb.offlineDurationMs,
     gracefulShutdown: hb.gracefulShutdown,
+    dryRun: opts.dryRun,
+    dryRunOpts: dryRunStats ? { stats: dryRunStats } : undefined,
   });
 
   writePidFile();
@@ -97,6 +120,17 @@ export async function runGateway(opts: GatewayRunOptions = {}): Promise<void> {
       await adapter.stop({ drainTimeoutMs: 25_000 });
     } catch (err) {
       log(`adapter stop error: ${(err as Error).message}`);
+    }
+    if (dryRunStats) {
+      log("");
+      log("=== dry-run session metrics ===");
+      log(`  chat.postMessage stubbed:   ${dryRunStats.postMessage}`);
+      log(`  chat.postEphemeral stubbed: ${dryRunStats.postEphemeral}`);
+      log(`  reactions.add stubbed:      ${dryRunStats.reactionAdd}`);
+      log(`  other writes stubbed:       ${dryRunStats.otherWrites}`);
+      log(
+        "  (retrieval / LLM token / escalation counters live in dryrun-events-YYYY-MM.log)",
+      );
     }
     removePidFile();
     process.exit(0);

@@ -15,6 +15,12 @@ import {
 } from "./inflight-queue";
 import { PresenceBroadcaster } from "./presence";
 import { SlashCommandHandler, slashCommandArgsFromBody } from "./slash-command";
+import {
+  isDryRunActive,
+  wrapWebClientForDryRun,
+  type DryRunStats,
+  type DryRunStubLogger,
+} from "./dry-run-wrapper";
 import { resolveProvider, type LlmProvider } from "../../llm";
 import { loadConfig as loadCliConfig } from "../../config";
 import {
@@ -78,6 +84,15 @@ export interface SlackAdapterOptions {
    */
   mraDoctor?: typeof mraDoctorImpl;
   runMraAsk?: typeof runMraAskImpl;
+  /**
+   * v0.16 (M3 / FR3): when true (or when `PMK_DRY_RUN=1` is set in the
+   * env), the constructed WebClient is wrapped by
+   * `wrapWebClientForDryRun` so all Slack writes are stubbed. Read
+   * methods still go through to the real client. Pass `dryRunOpts` to
+   * inject stats counters / a custom stub logger for tests.
+   */
+  dryRun?: boolean;
+  dryRunOpts?: { stats?: DryRunStats; log?: DryRunStubLogger };
 }
 
 export class SlackAdapter {
@@ -139,7 +154,15 @@ export class SlackAdapter {
         logLevel: "warn" as never, // Avoid noisy stdout in normal operation.
       });
     }
-    this.web = opts.web ?? new WebClient(opts.config.slack.botToken!);
+    const rawWeb = opts.web ?? new WebClient(opts.config.slack.botToken!);
+    // v0.16 (M3): when `PMK_DRY_RUN=1` (or the explicit dryRun opt is
+    // set), wrap the WebClient so every Slack write is stubbed at the
+    // outermost layer. Per PRD-2026-0006 Risk 3, individual call sites
+    // do NOT branch on dry-run — the proxy is the single source of
+    // truth. Read methods (auth.test, users.info, etc.) still pass
+    // through to the real client.
+    const dryRun = opts.dryRun ?? isDryRunActive();
+    this.web = dryRun ? wrapWebClientForDryRun(rawWeb, opts.dryRunOpts) : rawWeb;
     if (opts.llm) {
       this.llm = opts.llm;
     } else {

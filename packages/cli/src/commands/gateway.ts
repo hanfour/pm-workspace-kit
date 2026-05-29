@@ -28,6 +28,16 @@ import {
 import { appendAdminLog, cliActor } from "../gateway/admin-log";
 import { buildAuditReport } from "../gateway/audit";
 import { formatAuditReport } from "../gateway/audit-format";
+import {
+  buildDoctorContext,
+  formatDoctorReport,
+  runDoctor,
+} from "../gateway/doctor";
+import { DEFAULT_CHECKS } from "../gateway/doctor-checks";
+import {
+  seedDemoAtom,
+  unseedDemoAtoms,
+} from "../gateway/demo-seed";
 import { spawnSync } from "node:child_process";
 
 export async function gatewayCommand(
@@ -38,7 +48,7 @@ export async function gatewayCommand(
     case "init":
       return await initCmd();
     case "start":
-      return await startCmd();
+      return await startCmd(rest);
     case "status":
       return statusCmd();
     case "stats":
@@ -53,13 +63,89 @@ export async function gatewayCommand(
       return adminBootstrapCmd(rest);
     case "audit":
       return auditCmd(rest);
+    case "doctor":
+      return await doctorCmd(rest);
+    case "demo":
+      return demoCmd(rest);
     default:
       println(
         chalk.yellow(
-          "usage: pmk gateway <init|start|status|stats|audience|escalation|atoms|admin|audit>",
+          "usage: pmk gateway <init|start|status|stats|audience|escalation|atoms|admin|audit|doctor|demo>",
         ),
       );
       process.exit(1);
+  }
+}
+
+/**
+ * `pmk gateway demo <seed|unseed>` — smoke-test data for onboarding.
+ *
+ * `seed`   writes one KnowledgeAtom tagged `demo-seed` so a new host
+ *          can verify the retrieval path immediately after install.
+ *          Idempotent: re-running doesn't duplicate.
+ * `unseed` removes every atom tagged `demo-seed`. Never touches real
+ *          atoms; safe to run as the last step of an onboarding
+ *          rehearsal.
+ *
+ * Polished AcmeAds demo bundle (multi-PRD, walkthrough script,
+ * recorded run) is priorities-plan P5, NOT this command.
+ */
+function demoCmd(rest: string[]): void {
+  const action = rest[0];
+  switch (action) {
+    case "seed": {
+      const r = seedDemoAtom();
+      if (r.written) {
+        println(chalk.green(`✓ wrote demo atom: ${r.atomId}`));
+        println(chalk.dim(`  file: ${r.filePath}`));
+      } else {
+        println(
+          chalk.yellow(
+            `demo atom already present (id=${r.atomId}); no changes written.`,
+          ),
+        );
+        println(chalk.dim(`  file: ${r.filePath}`));
+      }
+      println("");
+      println(chalk.bold("next step (smoke test):"));
+      println(`  1. start the gateway:  pmk gateway start`);
+      println(`  2. in Slack, DM the bot or @-mention it with:`);
+      println(chalk.cyan(`       ${r.question}`));
+      println("  3. you should see the bot quote the demo answer.");
+      println("");
+      println(chalk.dim("clean up later with: pmk gateway demo unseed"));
+      return;
+    }
+    case "unseed": {
+      const r = unseedDemoAtoms();
+      if (r.removed.length === 0) {
+        println(chalk.yellow("no demo atoms found; nothing to remove."));
+      } else {
+        println(chalk.green(`✓ removed ${r.removed.length} demo atom(s):`));
+        for (const id of r.removed) println(chalk.dim(`    - ${id}`));
+      }
+      return;
+    }
+    default:
+      println(chalk.yellow("usage: pmk gateway demo <seed|unseed>"));
+      process.exit(1);
+  }
+}
+
+/**
+ * `pmk gateway doctor [--json]` — pre-flight check before runtime.
+ * Read-only: never writes config, never posts to Slack. Exit code 1
+ * if any check FAILs, 0 otherwise (WARNs are non-fatal).
+ *
+ * --json emits the structured report for CI / hooks.
+ */
+async function doctorCmd(rest: string[]): Promise<void> {
+  const json = rest.includes("--json");
+  const ctx = buildDoctorContext();
+  const report = await runDoctor(ctx, DEFAULT_CHECKS);
+  println(formatDoctorReport(report, { json }));
+  if (report.failed > 0) {
+    process.exit(1);
   }
 }
 
@@ -115,35 +201,31 @@ async function initCmd(): Promise<void> {
     ),
   );
   println("");
-  println(chalk.dim("  Steps to get the tokens (one-time, ~5 min):"));
+  println(chalk.dim("  Slack app setup (one-time, ~5 min):"));
   println(
     chalk.dim(
-      "    1. https://api.slack.com/apps → Create New App → From scratch",
+      "    1. Open https://api.slack.com/apps?new_app=1 → 'From a manifest'",
     ),
   );
-  println(chalk.dim("    2. Socket Mode → Enable → generate App-Level Token"));
+  println(chalk.dim("    2. Paste the contents of:"));
   println(
     chalk.dim(
-      "       Scopes: connections:write — copy the `xapp-...` value when prompted.",
+      "         packages/cli/src/gateway/slack/manifest.template.json",
     ),
   );
+  println(chalk.dim("       (or use the raw URL:"));
   println(
     chalk.dim(
-      "    3. Event Subscriptions → Enable; subscribe to:  message.im, app_mention, reaction_added (v0.8.5+)",
+      "         https://raw.githubusercontent.com/hanfour/pm-workspace-kit/main/packages/cli/src/gateway/slack/manifest.template.json )",
     ),
   );
-  println(chalk.dim("    4. OAuth & Permissions → Scopes (Bot Token):"));
+  println(chalk.dim("    3. Install to Workspace, then copy:"));
   println(
     chalk.dim(
-      "         app_mentions:read, chat:write, im:history, im:read, im:write, users:read,\n" +
-        "         reactions:read (v0.8.5+; enables ✅/❌ atom approval on the bot's pending notice)",
+      "         - App-Level Token (xapp-...)  — auto-generated for Socket Mode",
     ),
   );
-  println(
-    chalk.dim(
-      "    5. Install to Workspace → copy `xoxb-...` Bot User OAuth Token.",
-    ),
-  );
+  println(chalk.dim("         - Bot User OAuth Token (xoxb-...)"));
   println("");
 
   const rl = readline.createInterface({
@@ -258,7 +340,8 @@ async function initCmd(): Promise<void> {
   }
 }
 
-async function startCmd(): Promise<void> {
+async function startCmd(rest: string[] = []): Promise<void> {
+  const dryRun = rest.includes("--dry-run");
   const existing = gatewayRunningPid();
   if (existing) {
     println(
@@ -269,7 +352,7 @@ async function startCmd(): Promise<void> {
     process.exit(1);
   }
   try {
-    await runGateway();
+    await runGateway({ dryRun });
   } catch (err) {
     println(chalk.red(`[pmk] ${(err as Error).message}`));
     process.exit(1);

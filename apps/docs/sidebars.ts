@@ -88,6 +88,7 @@ const sidebars: SidebarsConfig = {
       collapsed: false,
       items: [
         "gateway/lifecycle",
+        "gateway/onboarding",
         "adr/pmk-gateway-slack",
         "prds/2026-04-27-pmk-gateway-prd",
         "prds/2026-05-gateway-onboarding-prd",
