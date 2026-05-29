@@ -8,6 +8,53 @@ All notable changes to **pm-workspace-kit** are documented here.
 
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Each release also has a longer narrative on [GitHub Releases](https://github.com/hanfour/pm-workspace-kit/releases) with rationale, dogfood notes, and test plans.
 
+## [v0.16.0] — 2026-05-29 — gateway onboarding (manifest · doctor · dry-run · demo seed)
+
+[GitHub release](https://github.com/hanfour/pm-workspace-kit/releases/tag/v0.16.0) · [PR #59](https://github.com/hanfour/pm-workspace-kit/pull/59)
+
+### Why
+
+Through v0.15 the gateway worked, but standing one up meant reading the source: `init` recited OAuth scopes line by line, there was no way to tell whether tokens / keys / mra workspace were actually wired before the daemon hit Slack, and the only way to test the retrieval → LLM → escalation path was to post real messages into a real channel. [PRD-2026-0006](./prds/2026-05-gateway-onboarding-prd.md) reframes the goal to one sentence: *a clean machine, without reading source, gets a bot answering in ~30 minutes.* v0.16 ships the five onboarding surfaces (FR1–FR5) plus the M6 baseline trial that the PRD's quality gate requires.
+
+### Added
+
+- **Slack app manifest** (FR1) — [`packages/cli/src/gateway/slack/manifest.template.json`](https://github.com/hanfour/pm-workspace-kit/blob/main/packages/cli/src/gateway/slack/manifest.template.json) carries every required bot scope + event subscription. `MANIFEST_VERSION = "2026-05"` lives in [`manifest-version.ts`](https://github.com/hanfour/pm-workspace-kit/blob/main/packages/cli/src/gateway/slack/manifest-version.ts) (deliberately **not** inside the JSON, so Slack's schema doesn't reject the upload). `gateway init` now prints the manifest path + `api.slack.com/apps?new_app=1` instead of reciting scopes.
+- **`pmk gateway doctor`** (FR2) — 8 read-only preflight checks (config-file mode 0600, Slack app + bot tokens via live `auth.test` / `apps.connections.open`, Anthropic echo, mra workspace, PKB content, channel ACL, manifest alignment). FAIL → exit 1; `--json` for CI / hooks. Each check is its own sub-module under [`doctor-checks/`](https://github.com/hanfour/pm-workspace-kit/tree/main/packages/cli/src/gateway/doctor-checks) so new failure modes add a file, not a branch.
+- **`pmk gateway start --dry-run`** (FR3) — wraps the Slack `WebClient` at the outermost layer ([`dry-run-wrapper.ts`](https://github.com/hanfour/pm-workspace-kit/blob/main/packages/cli/src/gateway/slack/dry-run-wrapper.ts)); every write (`chat.postMessage` / `postEphemeral` / `reactions.add`) is intercepted, logged as a stub, and never sent. Events route to `dryrun-events-YYYY-MM.log`; Ctrl+C prints session metrics. Interception is centralized so no caller can forget to skip.
+- **`pmk gateway demo seed|unseed`** (FR4) — seeds one `source: "demo-seed"` atom + a `demo-onboarding` channel allowlist entry so a new host can smoke-test the full retrieval chain, then `unseed` removes exactly what it added (symmetric, no residue).
+- **Onboarding guide** (FR5) — [`gateway/onboarding.md`](https://github.com/hanfour/pm-workspace-kit/blob/main/apps/docs/docs/gateway/onboarding.md): a 30-minute sequence (manifest → tokens → init → doctor → demo seed + dry-run → go live), cross-linked with the README and `gateway/lifecycle.md`.
+
+### Hardened (M6 trial finding)
+
+- **`pkb-content` now FAILs on an empty PKB whose source can't fill it.** The M6 four-failure trial found the empty-PKB mode slipped through: the check only inspected config *shape*, so a gateway pointed at an mra workspace with 0 repos passed as a soft WARN and `doctor` exited 0. It now counts approved atoms on disk (read-only, new `atomCount` runner defaulting to `approvedAtomCount()`) and FAILs only when the source provably can't seed it (mra source with 0 repos / unreachable workspace, or `mra:` ingest with no `mraWorkspace`). A fresh-but-viable install (0 atoms, repos ≥ 1) stays a WARN — no false positive on clean installs.
+
+### M6 baseline (PRD-2026-0006 §9 quality gate)
+
+The four runtime-blocking failures the gate demands we deliberately provoke — expired App-Level Token, nonexistent mra workspace, empty PKB, stale manifest — were each driven through `runDoctor` against the real checks:
+
+| Failure mode | doctor verdict | exit | actionable hint |
+|---|---|---|---|
+| Expired App-Level Token | FAIL `slack-app-token` | 1 | regenerate at api.slack.com → App-Level Tokens |
+| Nonexistent mra workspace | FAIL `mra-workspace` | 1 | verify path + `.collab/repos.json` |
+| Empty PKB (0 atoms, 0 repos) | FAIL `pkb-content` | 1 | register repos, re-run doctor |
+| Stale manifest (missing scope) | FAIL `manifest-alignment` | 1 | add the named scope to `oauth_config.scopes.bot` |
+
+- **Doctor coverage: 4/4 (100%).** Pre-hardening it was 3/4 — empty PKB was the gap, now closed.
+- **Live preflight, real environment.** `pmk gateway doctor` run against the maintainer's actual setup validated real Slack tokens (team `slack-webhook`), listed **63 mra repos**, and reported `PKB has 1 approved atom` — the new atom-count path PASSing correctly on a populated store, with `anthropic-key` FAILing as expected when no key is set.
+- **Time-to-first-message: deferred, not faked.** The metric measures how long a *fresh operator who hasn't seen the source* takes — a number neither the maintainer (knows it cold) nor an automated agent (unrealistically fast, non-representative) can produce honestly. Baseline is deferred to the first real external onboarding rather than recording a misleading figure. See the PRD metrics note.
+
+### Tests
+
+- `@pmk/cli`: 371 → **442**, 100% pass. New / extended suites: `gateway-manifest`, `gateway-doctor` (every check PASS + FAIL path, including the new empty-PKB atom-count branches), `gateway-dry-run`, `gateway-demo-seed`.
+
+### Out of scope / backlog
+
+- **Polished AcmeAds demo bundle** — priorities-plan P5. M4 ships only a smoke-test seed.
+- **Atom quality rubric / telemetry** — priorities-plan P2, gated on this baseline.
+- **Doctor auto-fix** — PRD §4 non-goal; doctor stays read-only forever.
+
+---
+
 ## [v0.15.0] — 2026-05-21 — workspace-configurable audience domain examples
 
 [GitHub release](https://github.com/hanfour/pm-workspace-kit/releases/tag/v0.15.0)
