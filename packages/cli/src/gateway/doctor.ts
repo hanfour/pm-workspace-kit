@@ -11,6 +11,7 @@ import * as path from "node:path";
 import { WebClient } from "@slack/web-api";
 
 import { type GatewayConfig, gatewayConfigPath, loadGatewayConfig } from "./config";
+import { approvedAtomCount } from "./atom-index";
 
 export type DoctorSeverity = "pass" | "warn" | "fail";
 
@@ -40,6 +41,10 @@ export interface DoctorRunners {
   mraList: (
     workspace: string,
   ) => Promise<{ ok: boolean; repos: string[]; error?: string }>;
+  // Count of approved atoms already on disk. Read-only — lets the
+  // pkb-content check distinguish a populated PKB from a configured-
+  // but-empty one without running ingest.
+  atomCount: (scope?: string) => Promise<number>;
 }
 
 export interface DoctorContext {
@@ -161,6 +166,7 @@ export function buildDoctorContext(opts: {
     slackBotAuth: opts.runners?.slackBotAuth ?? defaultSlackBotAuth,
     anthropicEcho: opts.runners?.anthropicEcho ?? defaultAnthropicEcho,
     mraList: opts.runners?.mraList ?? defaultMraList,
+    atomCount: opts.runners?.atomCount ?? defaultAtomCount,
   };
   return {
     home,
@@ -283,5 +289,16 @@ async function defaultMraList(
       repos: [],
       error: err instanceof Error ? err.message : String(err),
     };
+  }
+}
+
+async function defaultAtomCount(scope?: string): Promise<number> {
+  // Read-only count of approved atoms on disk. A missing knowledge
+  // root yields 0 rather than throwing — an unseeded PKB is 0 atoms,
+  // not a doctor crash.
+  try {
+    return approvedAtomCount(scope);
+  } catch {
+    return 0;
   }
 }

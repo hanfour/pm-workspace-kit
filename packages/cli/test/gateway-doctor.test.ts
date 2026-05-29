@@ -41,6 +41,9 @@ function makeOkRunners(): DoctorRunners {
     slackBotAuth: async () => ({ ok: true, team: "T123", user: "pmk" }),
     anthropicEcho: async () => ({ ok: true }),
     mraList: async () => ({ ok: true, repos: ["repo-a", "repo-b"] }),
+    // Default: PKB already has content so pkb-content PASSes unless a
+    // test overrides atomCount to 0 to exercise the empty-PKB paths.
+    atomCount: async () => 7,
   };
 }
 
@@ -247,33 +250,108 @@ describe("doctor — pkb-content check (FR2 #6)", () => {
       }),
     );
     assert.equal(r.severity, "fail");
+    assert.match(r.message, /no PKB source/);
   });
 
-  it("WARNs when defaultIngest uses mra: but no mraWorkspace set", async () => {
+  it("PASSes when the PKB already has approved atoms on disk", async () => {
+    const r = await pkbContentCheck(
+      makeCtx({
+        runners: { ...makeOkRunners(), atomCount: async () => 12 },
+      }),
+    );
+    assert.equal(r.severity, "pass");
+    assert.match(r.message, /12 approved atom/);
+  });
+
+  // v0.16 hardening: an empty PKB whose mra source has no repos can
+  // never be seeded — this used to slip through as a soft WARN.
+  it("FAILs when PKB empty AND mra source has 0 repos (M6 empty-PKB)", async () => {
+    const r = await pkbContentCheck(
+      makeCtx({
+        runners: {
+          ...makeOkRunners(),
+          atomCount: async () => 0,
+          mraList: async () => ({ ok: true, repos: [] }),
+        },
+      }),
+    );
+    assert.equal(r.severity, "fail");
+    assert.match(r.message, /empty/);
+    assert.match(r.hint ?? "", /register repos/);
+  });
+
+  it("FAILs when PKB empty AND mra workspace is unreachable", async () => {
+    const r = await pkbContentCheck(
+      makeCtx({
+        runners: {
+          ...makeOkRunners(),
+          atomCount: async () => 0,
+          mraList: async () => ({
+            ok: false,
+            repos: [],
+            error: "workspace not found",
+          }),
+        },
+      }),
+    );
+    assert.equal(r.severity, "fail");
+  });
+
+  it("WARNs when PKB empty but mra source has repos (fresh, will seed)", async () => {
+    const r = await pkbContentCheck(
+      makeCtx({
+        runners: {
+          ...makeOkRunners(),
+          atomCount: async () => 0,
+          mraList: async () => ({ ok: true, repos: ["repo-a"] }),
+        },
+      }),
+    );
+    assert.equal(r.severity, "warn");
+    assert.match(r.message, /will seed/);
+  });
+
+  it("FAILs when defaultIngest uses mra: but no mraWorkspace and PKB empty", async () => {
     const r = await pkbContentCheck(
       makeCtx({
         config: makeConfig({
           defaultIngest: "mra:--all",
           mraWorkspace: undefined,
         }),
+        runners: { ...makeOkRunners(), atomCount: async () => 0 },
       }),
     );
-    assert.equal(r.severity, "warn");
-    assert.match(r.message, /no mraWorkspace set/);
+    assert.equal(r.severity, "fail");
+    assert.match(r.message, /mraWorkspace/);
   });
 
-  it("WARNs when mraWorkspace set but no defaultIngest", async () => {
+  it("WARNs when mraWorkspace set, no defaultIngest, empty PKB, repos present", async () => {
     const r = await pkbContentCheck(
       makeCtx({
         config: makeConfig({ defaultIngest: undefined }),
+        runners: {
+          ...makeOkRunners(),
+          atomCount: async () => 0,
+          mraList: async () => ({ ok: true, repos: ["repo-a"] }),
+        },
       }),
     );
     assert.equal(r.severity, "warn");
+    assert.match(r.hint ?? "", /defaultIngest/);
   });
 
-  it("PASSes with both defaultIngest and mraWorkspace", async () => {
-    const r = await pkbContentCheck(makeCtx());
-    assert.equal(r.severity, "pass");
+  it("WARNs when PKB empty and ingest spec is non-mra (unverifiable)", async () => {
+    const r = await pkbContentCheck(
+      makeCtx({
+        config: makeConfig({
+          defaultIngest: "file:/some/path",
+          mraWorkspace: undefined,
+        }),
+        runners: { ...makeOkRunners(), atomCount: async () => 0 },
+      }),
+    );
+    assert.equal(r.severity, "warn");
+    assert.match(r.message, /non-mra/);
   });
 });
 
