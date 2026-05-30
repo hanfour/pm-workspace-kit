@@ -59,7 +59,7 @@ The fastest way to feel the value is to follow this order. The earliest steps do
 
 - **Day 1** — `pmk propose` produces a real PRD in `docs/prds/`. Same-day output, no infra needed.
 - **Day 2–3** — Author a second PRD. `traceability.js` now has links to validate; the dependency graph and orphan report start earning their keep.
-- **Week 1** — Stand up the Slack gateway against one channel. Today's flow lives in the [gateway lifecycle](./gateway/lifecycle.md) deep-dive; the v0.16-planned `pmk gateway doctor` + `--dry-run` will make the first install verifiable before live traffic. Seed your existing PKB.
+- **Week 1** — Stand up the Slack gateway against one channel. Today's flow lives in the [gateway lifecycle](./gateway/lifecycle.md) deep-dive, with a 30-minute walkthrough in the [onboarding guide](./gateway/onboarding.md); `pmk gateway doctor` + `gateway start --dry-run` make the first install verifiable before live traffic. Seed your existing PKB.
 - **Week 2** — Run the full knowledge loop end-to-end: ask → `mra-ask` → escalation → absorb → reuse. By this point, the second PM who asks a previously-escalated question gets the cached answer without anyone re-typing.
 
 ## What you don't get
