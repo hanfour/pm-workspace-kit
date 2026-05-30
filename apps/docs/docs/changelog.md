@@ -8,6 +8,35 @@ All notable changes to **pm-workspace-kit** are documented here.
 
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Each release also has a longer narrative on [GitHub Releases](https://github.com/hanfour/pm-workspace-kit/releases) with rationale, dogfood notes, and test plans.
 
+## [v0.17.0] — 2026-05-30 — atom usage telemetry (P2a)
+
+[GitHub release](https://github.com/hanfour/pm-workspace-kit/releases/tag/v0.17.0)
+
+### Why
+
+As the PKB grows, approved atoms need to stay high-signal and low-signal atoms need to become visible and removable (priorities-plan P2). That judgment can't be made without data on which atoms actually get reused and which get questioned after they're cited. v0.17.0 ships the **telemetry instrumentation** — the measurable foundation. The approver rubric + quarterly audit playbook (P2b) are deliberately deferred until real telemetry accumulates, so the rubric isn't written in a vacuum.
+
+### Added
+
+- **Atom telemetry sidecar** — [`packages/cli/src/gateway/atom-telemetry.ts`](https://github.com/hanfour/pm-workspace-kit/blob/main/packages/cli/src/gateway/atom-telemetry.ts). `~/.pmk/gateway/atom-telemetry.json` is the authoritative per-atom counter store (`reuseCount`, `lastRetrievedAt`, `questionedCount`, `lastQuestionedAt`). Bumps are **synchronous** (race-free under the daemon's parallel turns — a sync load-modify-save runs to completion before any other callback interleaves) and **crash-safe** (temp-file + rename), and are failure-isolated so telemetry can never break a turn or a reaction. The dedupe ledger is bounded (`QUESTIONED_KEYS_CAP`).
+- **Citation linkage on `turn.processed`** — the event now carries optional `atomIds` / `channelId` / `threadTs` / `replyTs`, so a later 👎 or escalation can be mapped back to the atoms a reply cited. Atom `.md` files are never touched (the BM25 mtime index is never invalidated by telemetry).
+- **`pmk gateway atoms telemetry [--json]`** — joins the sidecar with the approved corpus, lists each atom's reuse/questioned counts + age, sorted weakest-first, flagging **dead-weight** (never reused) and **load-bearing** (high reuse, no questions). Kept separate from `gateway audit` (runtime-health window) on purpose.
+
+### Instrumentation
+
+- **Reuse** is bumped at LLM success (next to the `turn.processed` emit), never on a failed turn.
+- **Questioned** is bumped from a 👎 (`-1`/`thumbsdown`) on a cited reply (`x` stays reserved for pending-atom approval-reject) and from an escalation in a turn that injected atoms. Both paths dedupe (`reaction:…` / `escalate:…` keys) against Slack retries / re-reactions.
+
+### Tests
+
+- `@pmk/cli`: 446 → **459**, 100% pass. New `gateway-atom-telemetry` suite (sidecar, dedupe, cap eviction, runner wiring, report builder) + reaction/event coverage. Verified live on the host daemon: a cited DM bumped `reuseCount` to 1 and surfaced in `atoms telemetry`.
+
+### Deferred (P2b)
+
+- Approver rubric ADR + quarterly atom audit playbook — gated on accumulated real telemetry. `questionedKeys` pruning, telemetry-as-ranking-input, and a `gateway audit` summary line are future work.
+
+---
+
 ## [v0.16.0] — 2026-05-29 — gateway onboarding (manifest · doctor · dry-run · demo seed)
 
 [GitHub release](https://github.com/hanfour/pm-workspace-kit/releases/tag/v0.16.0) · [PR #59](https://github.com/hanfour/pm-workspace-kit/pull/59)
