@@ -68,11 +68,14 @@ Top-level `pmk demo <subcommand>`:
    and capture `demoUserId` (the poster's Slack user id) for reply correlation.
 3. **Channel resolved:** `--channel <id>` or `PMK_DEMO_CHANNEL`. Call
    `conversations.info` to learn the channel **type** (`im` / public / private)
-   and confirm the gateway **bot** is a member (for non-DM) — and surface which
-   history scope the user token needs (`im:history` for a DM, `channels:history`
-   for public, `groups:history` for private). If `conversations.info` /
-   membership fails, abort with the specific missing scope/permission, not a
-   mid-run error.
+   and confirm the gateway **bot** is a member (for non-DM). The history scope
+   needed to read replies belongs to the **bot** token, not the user token —
+   reply-reading uses `botWeb.conversations.replies` (`im:history` for a DM,
+   `channels:history` for public, `groups:history` for private), and the bot was
+   already granted these during onboarding. The **user token needs only
+   `chat:write`** (it is used solely for `auth.test` + `chat.postMessage`). If
+   `conversations.info` / membership fails, abort with the specific missing
+   bot-side scope/permission, not a mid-run error.
 4. **Bot identity:** resolve `botUserId` via the gateway **bot** token
    (`auth.test`) — needed to @-mention in non-DM channels (see below).
 
