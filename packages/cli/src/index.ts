@@ -16,6 +16,7 @@ import { exploreCommand } from "./commands/explore";
 import { caseCommand } from "./commands/case";
 import { gatewayCommand } from "./commands/gateway";
 import { adoptionCommand } from "./commands/adoption";
+import { demoCommand } from "./commands/demo";
 import { recordFirstRun } from "./run-markers";
 
 dotenv.config({ quiet: true });
@@ -195,6 +196,16 @@ program
   )
   .action(async (words?: string[]) => {
     await tddCommand(words?.join(" "));
+  });
+
+program
+  .command("demo [subcommand]")
+  .description("AcmeAds vertical demo — seed | unseed | run")
+  .option("--channel <id>", "Slack channel/DM id for `run`")
+  .option("--dry-run", "preview what `run` would post, without posting")
+  .option("--timeout <sec>", "per-question reply timeout (default 120)")
+  .action(async (subcommand: string | undefined, opts: { channel?: string; dryRun?: boolean; timeout?: string }) => {
+    await demoCommand(subcommand, opts);
   });
 
 program
