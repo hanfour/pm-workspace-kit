@@ -80,7 +80,7 @@ const sidebars: SidebarsConfig = {
     {
       type: "category",
       label: "Example: AcmeAds",
-      items: ["examples/acme-ads"],
+      items: ["examples/acme-ads", "examples/acme-ads-demo"],
     },
     {
       type: "category",

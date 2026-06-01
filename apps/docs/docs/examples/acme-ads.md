@@ -61,13 +61,14 @@ Run `npm run traceability:matrix` against the example directory to see the graph
 
 ## Running the example
 
+`--cwd` ships today — check or regenerate this example's traceability directly:
+
 ```bash
-cd examples/acme-ads
-# The top-level script scans the kit's docs by default.
-# To run it against the example, temporarily adjust SCAN_DIRS in scripts/traceability.js.
+node packages/core/src/traceability.js check --cwd=examples/acme-ads
+node packages/core/src/traceability.js matrix --cwd=examples/acme-ads
 ```
 
-A future kit version will take a `--cwd` flag so you can point the scripts at any sub-repo without editing them.
+The repo's `npm run traceability:check` targets `apps/docs`; use the explicit `--cwd` above for this example.
 
 ## What this example doesn't show
 
