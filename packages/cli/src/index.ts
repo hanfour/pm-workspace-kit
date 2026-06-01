@@ -15,8 +15,12 @@ import { tddCommand } from "./commands/tdd";
 import { exploreCommand } from "./commands/explore";
 import { caseCommand } from "./commands/case";
 import { gatewayCommand } from "./commands/gateway";
+import { adoptionCommand } from "./commands/adoption";
+import { recordFirstRun } from "./run-markers";
 
 dotenv.config({ quiet: true });
+// P4: stamp the first-ever pmk run (write-if-absent, failure-isolated).
+recordFirstRun();
 
 const program = new Command();
 
@@ -191,6 +195,15 @@ program
   )
   .action(async (words?: string[]) => {
     await tddCommand(words?.join(" "));
+  });
+
+program
+  .command("adoption")
+  .description("adoption metrics — is anyone using this?")
+  .option("--days <n>", "lookback window in days (default 7)")
+  .option("--json", "emit the structured AdoptionReport")
+  .action((opts: { days?: string; json?: boolean }) => {
+    adoptionCommand(opts);
   });
 
 program.parseAsync(process.argv).catch((err) => {

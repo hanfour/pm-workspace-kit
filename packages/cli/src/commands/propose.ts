@@ -7,6 +7,7 @@ import { Session } from "../session";
 import { PROMPT_DRAFT_PRD, PROMPT_PROPOSE } from "../prompts";
 import { println, repl, writeToken } from "../io";
 import { extractPrdBody, nextPrdId, writePrd } from "../frontmatter";
+import { recordFirstPrd } from "../run-markers";
 
 export interface ProposeOptions {
   from?: string;
@@ -201,5 +202,7 @@ async function maybeSavePrd(
   const saved = writePrd(stamped, title, docsDir);
   println(chalk.green(`\nPRD saved → ${path.relative(process.cwd(), saved)}`));
   println(chalk.dim(`  doc_id: ${id}`));
+  // P4: stamp the first PRD ever written (write-if-absent, failure-isolated).
+  recordFirstPrd();
   return true;
 }
