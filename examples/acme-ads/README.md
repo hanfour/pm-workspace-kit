@@ -10,10 +10,22 @@ Fictional ad-tech company demonstrating the kit end-to-end. Read the companion [
 | `docs/prds/2026-Q2-customer-onboarding-prd.md` | PRD front-matter in practice; cites REQ / ADR / module |
 | `docs/architecture/modules/crm-customer-migration.md` | Full 12-section module playbook with module-specific overrides |
 | `docs/adr/0004-go-monolith.md` | Sample **technical** ADR (after the 0001-0003 methodology ADRs) |
+| `docs/prds/2026-Q2-placement-dashboard-prd.md` | PRD-2026-0002 — placement performance dashboard (vCPM / PlacementRevenue) |
+| `docs/prds/2026-Q2-onboarding-dedup-prd.md` | PRD-2026-0003 — customer dedup for self-service onboarding |
 
 ## Running traceability against this example
 
-The top-level `scripts/traceability.js` scans the kit's own `docs/` by default. To point it at this example, `cd` into the repo root and edit `SCAN_DIRS` temporarily, or wait for the `--cwd` flag coming in a future release.
+`--cwd` ships today, so you can check this example directly:
+
+```bash
+node packages/core/src/traceability.js check --cwd=examples/acme-ads
+```
+
+The repo's `npm run traceability:check` still targets `apps/docs` only, so the
+example is validated via the explicit `--cwd` invocation above.
+
+> Gateway demo atoms for this example are **not** files here — they live in the
+> CLI seed module `packages/cli/src/gateway/acme-ads-seed.ts` (`seedAcmeAdsAtoms()`).
 
 ## Not real companies
 
