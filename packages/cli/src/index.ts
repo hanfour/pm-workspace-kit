@@ -202,9 +202,10 @@ program
   .command("demo [subcommand]")
   .description("AcmeAds vertical demo — seed | unseed | run")
   .option("--channel <id>", "Slack channel/DM id for `run`")
+  .option("--dm", "force `run` into the bot DM (ignores --channel / PMK_DEMO_CHANNEL)")
   .option("--dry-run", "preview what `run` would post, without posting")
   .option("--timeout <sec>", "per-question reply timeout (default 120)")
-  .action(async (subcommand: string | undefined, opts: { channel?: string; dryRun?: boolean; timeout?: string }) => {
+  .action(async (subcommand: string | undefined, opts: { channel?: string; dm?: boolean; dryRun?: boolean; timeout?: string }) => {
     await demoCommand(subcommand, opts);
   });
 

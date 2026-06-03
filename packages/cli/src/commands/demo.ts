@@ -38,7 +38,7 @@ export function renderTranscript(t: DemoTranscript): string {
 
 export async function demoCommand(
   sub: string | undefined,
-  opts: { channel?: string; dryRun?: boolean; timeout?: string },
+  opts: { channel?: string; dm?: boolean; dryRun?: boolean; timeout?: string },
 ): Promise<void> {
   if (sub === "seed") {
     const r = seedAcmeAdsAtoms();
@@ -59,11 +59,10 @@ export async function demoCommand(
     println(chalk.red("gateway is not running — start it first: pmk gateway start"));
     process.exit(1);
   }
-  const channelId = opts.channel ?? process.env.PMK_DEMO_CHANNEL;
-  if (!channelId) {
-    println(chalk.red("no channel — pass --channel <id> or set PMK_DEMO_CHANNEL"));
-    process.exit(1);
-  }
+  // Resolved below: without --channel/env (or with --dm) we auto-open the
+  // demo user's DM with the bot (needs botUserId first), so it's zero-config.
+  // --dm forces the DM path regardless of a sticky PMK_DEMO_CHANNEL.
+  let channelId = opts.dm ? undefined : (opts.channel ?? process.env.PMK_DEMO_CHANNEL);
   const userToken = process.env.PMK_DEMO_USER_TOKEN;
   if (!userToken || !userToken.startsWith("xoxp-")) {
     println(chalk.red("set PMK_DEMO_USER_TOKEN to a Slack user OAuth token (xoxp-…)"));
@@ -88,14 +87,38 @@ export async function demoCommand(
   }
   const botUserId = String(botAuth.user_id);
 
-  const info = await botWeb.conversations.info({ channel: channelId }).catch(() => null);
-  if (!info) {
-    println(chalk.dim(`  (could not read channel info — proceeding assuming a non-DM channel; ensure the bot can read ${channelId})`));
-  }
-  const isDm = (info?.channel as { is_im?: boolean } | undefined)?.is_im === true;
-  if (info && !isDm && (info.channel as { is_member?: boolean }).is_member === false) {
-    println(chalk.red(`the bot is not a member of ${channelId} — invite it, or use a DM channel`));
-    process.exit(1);
+  let isDm: boolean;
+  if (!channelId) {
+    // Zero-config default: open the demo user's DM with the bot. Either
+    // party's token can open it, so we try the user token first (it "is"
+    // the user) then the bot — a single im:write on either side suffices.
+    // The bot already has im:history, so reply-readback works here without
+    // the channels:history a public channel would require.
+    const openDm = async (web: WebClient, users: string): Promise<string | null> =>
+      web.conversations.open({ users }).then(
+        (r) => (r.channel as { id?: string } | undefined)?.id ?? null,
+        () => null,
+      );
+    const opened = (await openDm(userWeb, botUserId)) ?? (await openDm(botWeb, demoUserId));
+    if (!opened) {
+      println(chalk.red(
+        "could not open a DM with the bot — grant im:write to the user or bot token, or pass --channel <id>",
+      ));
+      process.exit(1);
+    }
+    channelId = opened;
+    isDm = true;
+    println(chalk.dim(`  (auto-opened DM ${channelId} with the bot)`));
+  } else {
+    const info = await botWeb.conversations.info({ channel: channelId }).catch(() => null);
+    if (!info) {
+      println(chalk.dim(`  (could not read channel info — proceeding assuming a non-DM channel; ensure the bot can read ${channelId})`));
+    }
+    isDm = (info?.channel as { is_im?: boolean } | undefined)?.is_im === true;
+    if (info && !isDm && (info.channel as { is_member?: boolean }).is_member === false) {
+      println(chalk.red(`the bot is not a member of ${channelId} — invite it, or use a DM channel`));
+      process.exit(1);
+    }
   }
 
   println(chalk.bold(`\npmk demo run`));
@@ -135,15 +158,24 @@ export async function demoCommand(
       const deadline = Date.now() + Math.min(timeoutMs, READ_REPLY_CAP_CEIL_MS);
       let last = "";
       let stableSince = 0;
+      // Surface (don't swallow) the reply-read failure: a missing bot scope
+      // (e.g. channels:history for a public channel) makes conversations.replies
+      // throw, and a silent null here is indistinguishable from "no final
+      // answer yet" — which sends the operator chasing the wrong layer.
+      let readErr = "";
       while (Date.now() < deadline) {
         const res = await botWeb.conversations
           .replies({ channel: channelId, ts: parentTs, limit: 200 })
-          .catch(() => null);
+          .catch((e: unknown) => {
+            readErr = e instanceof Error ? e.message : String(e);
+            return null;
+          });
         const text = pickReplyText(
           (res?.messages ?? []) as ReadonlyArray<{ ts?: string; text?: string }>,
           replyTs,
         );
         if (isFinalAnswerText(text)) {
+          readErr = "";
           if (text === last) {
             if (stableSince && Date.now() - stableSince >= STABILITY_WINDOW_MS) return text;
             // else: still within the stability window — keep waiting
@@ -157,7 +189,10 @@ export async function demoCommand(
         }
         await sleep(READ_REPLY_POLL_MS);
       }
-      return last || "(answer did not stabilise)";
+      if (last) return last;
+      return readErr
+        ? `(could not read replies: ${readErr})`
+        : "(answer did not stabilise)";
     },
   });
 
