@@ -40,7 +40,7 @@ Three new small units plus watchdog wiring in the existing `SlackAdapter` / `run
 - **Default flags `-is`** (prevent idle **system** sleep + system sleep on AC) — deliberately *not* `-dimsu`. `-d` would hold the **display** awake, a real battery/screen cost over a long-running gateway. `-is` targets the actual failure (system idle/sleep throttling the backgrounded process) without that cost. The full `-dimsu` set is the **empirically verified-working** escalation (the incident fix); it is available via override, not forced as the default.
 - **Override:** `PMK_GATEWAY_CAFFEINATE_FLAGS` env lets the operator escalate (e.g. to `-dimsu`) if `-is` proves insufficient on their machine. `-w <pid>` is always appended by the code.
 - On any other platform: no-op (returns a handle whose `stop()` does nothing).
-- **Child handling:** spawn with `stdio: "ignore"` and `child.unref()` (the keep-awake child must not keep the event loop alive or inherit pipes); attach an `error` listener (async spawn failures — e.g. `caffeinate` missing — surface there, not as a throw) in addition to a try/catch around the spawn call.
+- **Child handling:** spawn with `stdio: "ignore"` and `child.unref()` (the keep-awake child must not keep the event loop alive or inherit pipes). Cover all three failure shapes: a try/catch around the spawn call (sync throw), an `error` listener (async spawn failure — e.g. `caffeinate` missing), **and** an `exit`/`close` listener — invalid flags or `caffeinate` self-exiting usually surface as a non-zero exit, not an `error`. If the child exits while the gateway did NOT intentionally `stop()` it, log a warning (keep-awake has silently dropped, leaving the process unprotected) rather than letting it vanish unnoticed.
 - The spawn function is injectable (default `child_process.spawn`) so tests assert behaviour without spawning real processes.
 - Failure-isolated: a spawn throw or async `error` logs a warning and continues — keep-awake is best-effort and must never prevent the gateway from starting.
 
@@ -49,13 +49,13 @@ Three new small units plus watchdog wiring in the existing `SlackAdapter` / `run
 A **pure** `SocketHealth` tracker — no I/O, no timers, no clock of its own (all times passed in).
 
 - `recordPongTimeout(nowMs)` — appends a pong/ping-timeout timestamp.
-- `recordConnState(state, nowMs)` — records connection-lifecycle transitions (`connecting` / `connected` / `disconnected` / `reconnecting`).
+- `recordConnState(state, nowMs)` — records connection-lifecycle transitions. `state` is one of the five SDK states `connecting` / `connected` / `reconnecting` / `disconnecting` / `disconnected` (matches the wiring + the SDK `State` enum).
 - `assess(nowMs) → "healthy" | "unhealthy"`:
   - **unhealthy** if ≥ `PONG_TIMEOUT_THRESHOLD` (N=3) pong-timeouts fall within the trailing `PONG_TIMEOUT_WINDOW_MS` (W=60s); **or**
   - the client has not been in a stable `connected` state for longer than `UNSTABLE_CONN_LIMIT_MS` (T=60s) (i.e. disconnect/reconnect churn or a never-completing connect).
   - otherwise **healthy**.
-- `reset(nowMs)` — clears the rolling **evidence** (pong-timeout timestamps + conn-state history used by `assess`) after a forced reconnect, so post-reconnect health is judged on fresh evidence. This is distinct from the watchdog's **attempt counter** (see wiring): resetting evidence must NOT reset the attempt counter, or a flapping socket (reconnect → `hello` → pong-timeout 30–60 s later, repeat) would never escalate.
-- `lastStableConnectedSince(nowMs) → number | null` — the timestamp since which the client has been continuously `connected` with **no** pong-timeout; `null` if not currently in such a stable stretch. Used to gate the attempt-counter reset on *sustained* health, not a momentary successful `start()`.
+- `reset(nowMs)` — clears **only the pong-timeout evidence** (the rolling pong-timeout timestamps), so the pong-flood window starts fresh after a forced reconnect. It must **NOT** clear the connection-state machine — that is event-driven and, right after a successful `socket.start()`, already holds the fresh `connected`-since anchor that `lastStableConnectedSince` needs. Wiping it would leave `lastStableConnectedSince` without a start point and could misjudge a healthy socket as unstable. (Reset is also distinct from the watchdog's **failed-reconnect counter**, which lives in the wiring and is never touched here — see Wiring.)
+- `lastStableConnectedSince(nowMs) → number | null` — **null** unless the client is *currently* in the `connected` state; otherwise the later of {the timestamp it entered `connected`, the most recent pong-timeout}. After `reset` clears pong-timeouts, this is simply the `connected`-since timestamp, giving a clean anchor for the sustained-stability gate. Returns `null` the moment a pong-timeout or a non-`connected` state interrupts the stretch.
 - Old timestamps outside the window are pruned in `assess`/`record` so memory stays bounded.
 
 ### Unit C — custom Socket-Mode logger
@@ -66,11 +66,17 @@ A thin logger injected into `new SocketModeClient({ …, logger })` that interce
 
 - **Connection-lifecycle:** the SDK's `SocketModeClient` emits state events `connecting` / `connected` / `reconnecting` / `disconnecting` / `disconnected` (NOT `reconnect` — the adapter's current `"reconnect"` listener at `slack/index.ts:253` is a dead listener and is corrected here). Register `health.recordConnState(state, now())` on each of those five.
 - **Evaluation cadence:** evaluate on the existing 30s heartbeat cadence — reuse the heartbeat tick if `startHeartbeat` exposes an on-tick hook, otherwise a single dedicated `setInterval` at the same 30s period (no proliferation of timers either way). Each tick calls `health.assess(now())`.
-- **Single-flight guard:** a reconnect-in-progress flag. The SDK auto-reconnects on its own, so a watchdog-triggered `disconnect()`/`start()` must not race the SDK's own reconnect nor a second heartbeat tick. While a watchdog reconnect is in flight, subsequent ticks skip the recovery branch.
-- **Escalating recovery** on `unhealthy` (and not already reconnecting):
-  1. **In-process reconnect** — set the in-flight flag, `await socket.disconnect()` then `await socket.start()` (rebuild the connection), `health.reset(now())`, **increment** the attempt counter, clear the flag. (`health.reset` clears rolling evidence; it does NOT touch the attempt counter.)
-  2. If the attempt counter reaches `REUNHEALTHY_ATTEMPTS` (M=3) without an intervening sustained-stable reset, perform a **loud exit** (see Loud exit below).
-- **Attempt-counter reset — gated on *sustained* stability, not a successful `start()`:** on each tick, if `health.lastStableConnectedSince(now())` shows ≥ `STABLE_CONNECTED_RESET_MS` (default 180_000 = 3 min) of continuous `connected` with no pong-timeout, reset the attempt counter to 0. A socket that flaps (reconnect succeeds, then pong-timeouts again within the window) never clears 3 minutes of stability, so it correctly marches to loud exit rather than resetting every cycle.
+- **Single-flight guard — only the watchdog's *own* reconnect.** The flag (`watchdogReconnectInFlight`) is set strictly while the watchdog's own `disconnect()`→`start()` is awaiting, so two heartbeat ticks can't launch concurrent reconnects. It must **NOT** be conflated with the SDK's auto-reconnect: a tick where the SDK is merely in `connecting`/`reconnecting` is **not** skipped. That is exactly the incident's mode (the SDK reconnects forever but never gets healthy) — `assess` already flags it unhealthy via `UNSTABLE_CONN_LIMIT_MS` (the SDK's own reconnect effectively gets that window as grace), after which the watchdog takes over with a force `disconnect()`/`start()`.
+
+- **Watchdog state (in the wiring):** `failedReconnects` counter + `watchdogReconnectInFlight` flag + `pendingEvaluation` flag (a watchdog reconnect completed and is awaiting its stability verdict).
+
+- **Per-tick logic** (after `health.assess(now())`):
+  - **healthy** → if `lastStableConnectedSince(now())` is non-null and `now − it ≥ STABLE_CONNECTED_RESET_MS` (3 min), the last reconnect *succeeded*: set `failedReconnects = 0`, clear `pendingEvaluation`. Otherwise do nothing (still proving stability). Never exits on a healthy tick.
+  - **unhealthy** and `watchdogReconnectInFlight` → skip (our reconnect is mid-flight).
+  - **unhealthy** otherwise:
+    1. If `pendingEvaluation` (a prior watchdog reconnect went unhealthy again before reaching 3 min stable) → that reconnect **failed**: `failedReconnects += 1`, clear `pendingEvaluation`.
+    2. If `failedReconnects ≥ REUNHEALTHY_ATTEMPTS` (M=3) → **loud exit** (see below). Exit therefore happens on an *unhealthy* tick after M confirmed failures — never immediately after a `start()` that just succeeded.
+    3. Else → **force reconnect**: set in-flight, `await socket.disconnect()` then `await socket.start()`, `health.reset(now())`, set `pendingEvaluation`, clear in-flight in a `finally`. A `start()`/`disconnect()` **throw** counts as an immediate failed reconnect (`failedReconnects += 1`, `pendingEvaluation` cleared) — and if that reaches M, the next unhealthy tick exits.
 - All collaborators are injectable (socket, `now()` clock, `exit` fn, alert fn) so the escalation is unit-testable without a real socket or process exit.
 
 ### Loud exit (operator alert, not a stakeholder broadcast)
@@ -91,7 +97,7 @@ The watchdog failure is an **operator alert**, not a presence notice — it must
 | `PONG_TIMEOUT_WINDOW_MS` | 60_000 | rolling window for counting pong-timeouts |
 | `PONG_TIMEOUT_THRESHOLD` | 3 | pong-timeouts within the window → unhealthy |
 | `UNSTABLE_CONN_LIMIT_MS` | 60_000 | max time un-`connected` before unhealthy |
-| `REUNHEALTHY_ATTEMPTS` | 3 | consecutive failed watchdog reconnects before loud exit |
+| `REUNHEALTHY_ATTEMPTS` | 3 | confirmed-failed reconnects (each went unhealthy again before `STABLE_CONNECTED_RESET_MS`, or its `start()` threw) before loud exit on the next unhealthy tick |
 | `STABLE_CONNECTED_RESET_MS` | 180_000 | continuous `connected` + no pong-timeout required to reset the attempt counter |
 
 All live in one place near the watchdog wiring for easy tuning against real data. The default keep-awake flags (`-is`) and override env (`PMK_GATEWAY_CAFFEINATE_FLAGS`) live with the keep-awake unit.
@@ -106,8 +112,15 @@ All live in one place near the watchdog wiring for easy tuning against real data
 ## Testing
 
 - **`socket-health.test.ts`** (pure): pong-flood crosses threshold → unhealthy; isolated single timeout → healthy; sustained churn beyond `UNSTABLE_CONN_LIMIT_MS` → unhealthy; stable `connected` → healthy; `reset` clears prior evidence; `lastStableConnectedSince` returns `null` when a pong-timeout interrupts a connected stretch and a timestamp once continuously stable; window pruning bounds state.
-- **`keep-awake.test.ts`**: injected fake spawn — on `darwin` spawns `caffeinate` with the default `-is` and `-w <pid>`; `PMK_GATEWAY_CAFFEINATE_FLAGS` override is honoured (e.g. `-dimsu`) with `-w <pid>` still appended; spawned with `stdio:"ignore"` + `unref()`; on non-darwin spawns nothing; `stop()` kills the child; a sync spawn throw AND an async `error` event are both swallowed (start still returns a handle).
-- **watchdog wiring test**: injected socket + clock + exit + alert — `unhealthy` → reconnect; **flapping** (reconnect succeeds then pong-timeouts again before `STABLE_CONNECTED_RESET_MS`) reaches `M` and triggers loud exit (admin DM sent + offline event + `exit(1)`); a reconnect followed by ≥ `STABLE_CONNECTED_RESET_MS` of stable `connected` resets the attempt counter (no exit); empty `cfg.admins` → offline event + exit, no broadcast; single-flight guard prevents a second tick from starting a concurrent reconnect.
+- **`keep-awake.test.ts`**: injected fake spawn — on `darwin` spawns `caffeinate` with the default `-is` and `-w <pid>`; `PMK_GATEWAY_CAFFEINATE_FLAGS` override is honoured (e.g. `-dimsu`) with `-w <pid>` still appended; spawned with `stdio:"ignore"` + `unref()`; on non-darwin spawns nothing; `stop()` kills the child; all three failure shapes are swallowed-with-warning (sync spawn throw, async `error`, and an unexpected child `exit`/`close` while not intentionally stopped) and `start` still returns a handle.
+- **watchdog wiring test**: injected socket + clock + exit + alert —
+  - `unhealthy` → one force reconnect (sets/clears in-flight);
+  - **successful recovery**: reconnect, then ≥ `STABLE_CONNECTED_RESET_MS` of stable `connected` → `failedReconnects` resets to 0, no exit;
+  - **flapping**: reconnect succeeds then goes unhealthy again before 3 min, repeated → counts 3 confirmed failures → loud exit on the next unhealthy tick (admin DM sent + offline event + `exit(1)`), and crucially **does not** exit on the tick where a `start()` had just succeeded;
+  - **`start()` throw** → immediate failed reconnect; three such → loud exit;
+  - **SDK churn**: client stuck `reconnecting` past `UNSTABLE_CONN_LIMIT_MS` is assessed unhealthy and the watchdog force-acts (not skipped);
+  - empty `cfg.admins` → offline event + terminal log + exit, no broadcast;
+  - single-flight guard prevents a second tick from starting a concurrent reconnect while one is in flight.
 - Full `@pmk/cli` suite stays green; new units keep the suite ≥ current 483.
 
 ## Out of scope / future
