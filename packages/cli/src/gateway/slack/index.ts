@@ -21,6 +21,13 @@ import {
   type DryRunStats,
   type DryRunStubLogger,
 } from "./dry-run-wrapper";
+import { SocketHealth, type ConnState } from "../socket-health";
+import { createPongTapLogger } from "./socket-logger";
+import {
+  SocketWatchdog,
+  WATCHDOG_ALERT_TIMEOUT_MS,
+  REUNHEALTHY_ATTEMPTS,
+} from "./socket-watchdog";
 import { resolveProvider, type LlmProvider } from "../../llm";
 import { loadConfig as loadCliConfig } from "../../config";
 import {
@@ -130,6 +137,12 @@ export class SlackAdapter {
   private readonly freeChatTurn: FreeChatTurnRunner;
   /** Channel @mention dispatcher (slash / free-chat / case-mode). */
   private readonly channelMention: ChannelMentionHandler;
+  /** Socket-Mode health tracker (fed by the pong-tap logger + conn-state events). */
+  private readonly health: SocketHealth;
+  /** True when a real Slack socket is in use (not the test fake-transport). */
+  private readonly realTransport: boolean;
+  /** Self-heal watchdog; started in start(), stopped in stop(). */
+  private watchdog?: SocketWatchdog;
 
   constructor(opts: SlackAdapterOptions) {
     // v0.13: token guard only fires on the prod construction path.
@@ -148,13 +161,17 @@ export class SlackAdapter {
     this.lastSeenAt = opts.lastSeenAt;
     this.offlineDurationMs = opts.offlineDurationMs;
     this.gracefulShutdown = opts.gracefulShutdown ?? false;
+    this.realTransport = !useFakeTransport;
+    this.health = new SocketHealth(Date.now());
     if (opts.socket) {
       this.socket = opts.socket;
     } else {
       this.socket = new SocketModeClient({
         appToken: opts.config.slack.appToken!,
-        logLevel: "warn" as never, // Avoid noisy stdout in normal operation.
-      });
+        // Tap pong/ping-timeout WARN lines into the health tracker; logs
+        // still print as before (level warn).
+        logger: createPongTapLogger(() => this.health.recordPongTimeout(Date.now())),
+      } as never);
     }
     const rawWeb = opts.web ?? new WebClient(opts.config.slack.botToken!);
     // v0.16 (M3): when `PMK_DRY_RUN=1` (or the explicit dryRun opt is
@@ -247,10 +264,40 @@ export class SlackAdapter {
     this.socket.on("slash_commands", (event) =>
       this.handleSlashCommandEnvelope(event),
     );
-    this.socket.on("disconnected", () =>
-      this.onLog("slack socket disconnected"),
-    );
-    this.socket.on("reconnect", () => this.onLog("slack socket reconnected"));
+    const CONN_STATES: ConnState[] = [
+      "connecting",
+      "connected",
+      "reconnecting",
+      "disconnecting",
+      "disconnected",
+    ];
+    for (const st of CONN_STATES) {
+      this.socket.on(st as never, () => this.health.recordConnState(st, Date.now()));
+    }
+    this.socket.on("connected" as never, () => this.onLog("slack socket connected"));
+    this.socket.on("disconnected" as never, () => this.onLog("slack socket disconnected"));
+
+    // Self-heal watchdog: detect a wedged socket → in-process reconnect →
+    // loud exit if unrecoverable. Skipped under fake transport (tests).
+    if (this.realTransport) {
+      this.watchdog = new SocketWatchdog({
+        health: this.health,
+        reconnect: async () => {
+          await this.socket.disconnect();
+          await this.socket.start();
+        },
+        terminate: () =>
+          this.presence.watchdogTerminate({
+            adminIds: this.config.admins,
+            attempts: REUNHEALTHY_ATTEMPTS,
+            alertTimeoutMs: WATCHDOG_ALERT_TIMEOUT_MS,
+          }),
+        exit: (code) => process.exit(code),
+        now: () => Date.now(),
+        onLog: this.onLog,
+      });
+      this.watchdog.start();
+    }
     await this.socket.start();
 
     // #44: always invoke presence.backOnline so the audit captures
@@ -283,6 +330,7 @@ export class SlackAdapter {
    * posting/saving reply if we don't await here).
    */
   async stop(opts: { drainTimeoutMs?: number } = {}): Promise<void> {
+    this.watchdog?.stop();
     try {
       await this.socket.disconnect();
     } catch {
