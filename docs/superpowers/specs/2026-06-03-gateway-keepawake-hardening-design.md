@@ -84,12 +84,12 @@ A thin logger injected into `new SocketModeClient({ …, logger })` that interce
 
 ### Loud exit (operator alert, not a stakeholder broadcast)
 
-The watchdog failure is an **operator alert**, not a presence notice — it must NOT reuse `PresenceBroadcaster` (which fans out to DMs/channels active in the last 24 h — too noisy and it would leak internal ops state to stakeholders). On loud exit:
+The watchdog failure is an **operator alert**, not a presence notice — it must NOT reuse `PresenceBroadcaster`'s fan-out (which targets DMs/channels active in the last 24 h — too noisy and it would leak internal ops state to stakeholders). The loud exit runs in a strict order so that **a hung Slack call can never delay the exit**:
 
-- **Emit the `gateway.offline` event through the `PresenceBroadcaster`, not by hand** — the event shape is `{ type, seq, reason, broadcast, offlineDurationMs? }` (`events.ts`) and `seq` is the broadcaster's monotonic per-process counter. The watchdog calls the broadcaster to record the transition with `reason: "watchdog-unhealthy"` and **`broadcast: false`** (this is an operator alert, not a stakeholder fan-out). Since the existing `offline()` always fans out, this needs a small broadcaster method that records the event with `broadcast:false` and skips the fan-out (or an explicit flag on `offline()`); the watchdog must NOT `appendGatewayEvent` a partial shape itself.
-- **DM each admin in `cfg.admins`** — a bot **cannot** `chat.postMessage` straight to a `U…` user id; first `conversations.open({ users: adminId })` to get the DM channel id, then `chat.postMessage({ channel: dmId, text })` (HTTP works even when the WebSocket is dead). Message: a concise "pmk gateway self-terminated: Socket-Mode unrecoverable after `M` reconnect attempts; restart needed." Each admin's open+post is wrapped in try/catch and logged on failure.
-- if `cfg.admins` is empty: terminal log + the offline event only — **no fallback** to recent users/channels;
-- then `process.exit(1)` — a supervisor (if any) restarts; without one it is a visible, alerting failure.
+1. **Emit the `gateway.offline` event first, synchronously**, through the `PresenceBroadcaster` (so it is on disk before any network call). The event shape is `{ type, seq, reason, broadcast, offlineDurationMs? }` (`events.ts`) and `seq` is the broadcaster's monotonic per-process counter. Record it with `reason: "watchdog-unhealthy"` and **`broadcast: false`** (operator alert, not stakeholder fan-out). Since the existing `offline()` always fans out, this needs a small broadcaster method that records the event with `broadcast:false` and skips the fan-out (or an explicit flag on `offline()`); the watchdog must NOT `appendGatewayEvent` a partial shape itself.
+2. **Then fire the admin DMs under a hard `WATCHDOG_ALERT_TIMEOUT_MS` (default 15 s) cap.** A bot **cannot** `chat.postMessage` straight to a `U…` id; per admin in `cfg.admins`, `conversations.open({ users: adminId })` → `chat.postMessage({ channel: dmId, text })` (HTTP works even when the WebSocket is dead). Message: a concise "pmk gateway self-terminated: Socket-Mode unrecoverable after `M` reconnect attempts; restart needed." Run all admins via `Promise.allSettled` **raced against the alert timeout** — if Slack hangs or long-retries past the cap, log "alert timed out" and proceed to exit anyway. Each open+post is also individually try/caught + logged. The Slack `WebClient` should be constructed with low/zero retries for this path so it cannot block on internal backoff.
+3. if `cfg.admins` is empty: terminal log + the offline event only — **no fallback** to recent users/channels.
+4. **Always `process.exit(1)`** after step 2 settles or times out (whichever first) — a supervisor (if any) restarts; without one it is a visible, alerting failure. The alert is best-effort; the exit is not.
 
 (A dedicated `watchdogAlertChannelId` config for channel alerts is deferred — see Out of scope.)
 
@@ -103,6 +103,7 @@ The watchdog failure is an **operator alert**, not a presence notice — it must
 | `REUNHEALTHY_ATTEMPTS` | 3 | confirmed-failed reconnects (each went unhealthy again before `STABLE_CONNECTED_RESET_MS`, or its `start()` threw) before loud exit on the next unhealthy tick |
 | `STABLE_CONNECTED_RESET_MS` | 180_000 | continuous `connected` + no pong-timeout required to reset the attempt counter |
 | `WATCHDOG_RECONNECT_TIMEOUT_MS` | 45_000 | per-step cap on a forced `disconnect()`/`start()`; timing out = a failed reconnect (prevents a wedged reconnect from pinning the in-flight flag) |
+| `WATCHDOG_ALERT_TIMEOUT_MS` | 15_000 | hard cap on the loud-exit admin-DM phase; a hung Slack call past this is logged and the process exits anyway (the exit is never blocked by the alert) |
 
 All live in one place near the watchdog wiring for easy tuning against real data. The default keep-awake flags (`-is`) and override env (`PMK_GATEWAY_CAFFEINATE_FLAGS`) live with the keep-awake unit.
 
@@ -110,13 +111,14 @@ All live in one place near the watchdog wiring for easy tuning against real data
 
 - keep-awake spawn failure — both a synchronous throw and an async `error` event → warn + continue (never blocks start).
 - watchdog reconnect **throwing or timing out** (`WATCHDOG_RECONNECT_TIMEOUT_MS`) → counts as a failed reconnect (advances toward exit), logged; the in-flight flag is cleared in a `finally` so neither a throwing nor a never-settling reconnect can wedge the single-flight guard.
-- the loud-exit admin DM is best-effort: wrap each `chat.postMessage` in try/catch so a failed alert still proceeds to the offline event + exit (we never swallow it silently — log the alert failure). With no admins configured, the offline event + terminal log are the alert.
+- the loud-exit alert is best-effort and time-boxed: the offline event is written first, then admin DMs run under `WATCHDOG_ALERT_TIMEOUT_MS`; a per-DM failure is try/caught + logged, and a hung alert phase is abandoned at the cap so `process.exit(1)` always runs (the exit is never gated on Slack). With no admins configured, the offline event + terminal log are the alert.
 - `SocketHealth` is pure and total (never throws on input).
 
 ## Testing
 
 - **`socket-health.test.ts`** (pure): pong-flood crosses threshold → unhealthy; isolated single timeout → healthy; sustained churn beyond `UNSTABLE_CONN_LIMIT_MS` → unhealthy; stable `connected` → healthy; `reset` clears pong-timeout evidence but leaves the conn-state machine intact (a `connected` anchor set before `reset` survives it); `lastStableConnectedSince` is `null` only when not `connected`, returns `max(connectedSince, lastPongTimeoutAt)` when connected (a single pong-timeout while connected *restarts* the clock rather than nulling it); window pruning bounds state.
 - **`keep-awake.test.ts`**: injected fake spawn — on `darwin` spawns `caffeinate` with the default `-is` and `-w <pid>`; `PMK_GATEWAY_CAFFEINATE_FLAGS` override is honoured (e.g. `-dimsu`) with `-w <pid>` still appended; spawned with `stdio:"ignore"` + `unref()`; on non-darwin spawns nothing; `stop()` kills the child; all three failure shapes are swallowed-with-warning (sync spawn throw, async `error`, and an unexpected child `exit`/`close` while not intentionally stopped) and `start` still returns a handle.
+- **`socket-logger.test.ts`** (Unit C — guards the primary health signal against future wording/adapter drift): the real SDK strings `"A pong wasn't received from the server before the timeout of 5000ms!"` and `"A ping wasn't received from the server before the timeout of 30000ms!"` each bump `recordPongTimeout`; a non-matching WARN (and other lines) does **not** bump; **every** log line at **every** level is still forwarded to the wrapped logger (the tap is observe-only, never swallows).
 - **watchdog wiring test**: injected socket + clock + exit + alert —
   - `unhealthy` → one force reconnect (sets/clears in-flight);
   - **successful recovery**: reconnect, then ≥ `STABLE_CONNECTED_RESET_MS` of stable `connected` → `failedReconnects` resets to 0, no exit;
@@ -124,7 +126,8 @@ All live in one place near the watchdog wiring for easy tuning against real data
   - **`start()` throw** → immediate failed reconnect; three such → loud exit;
   - **reconnect timeout**: a `disconnect()`/`start()` whose promise never settles is cut off at `WATCHDOG_RECONNECT_TIMEOUT_MS`, counts as a failed reconnect, **clears the in-flight flag** (a later tick is not skipped), and three such → loud exit — i.e. a wedged reconnect cannot pin the guard and silently zombie;
   - **SDK churn**: client stuck `reconnecting` past `UNSTABLE_CONN_LIMIT_MS` is assessed unhealthy and the watchdog force-acts (not skipped);
-  - **loud-exit wiring**: the `gateway.offline` event is recorded via the presence broadcaster with `reason:"watchdog-unhealthy"` + `broadcast:false` (proper `seq`, no stakeholder fan-out), and each admin alert goes `conversations.open` → `chat.postMessage` to the DM channel;
+  - **loud-exit wiring**: the `gateway.offline` event is recorded via the presence broadcaster with `reason:"watchdog-unhealthy"` + `broadcast:false` (proper `seq`, no stakeholder fan-out) **before** any DM, and each admin alert goes `conversations.open` → `chat.postMessage` to the DM channel;
+  - **alert never blocks exit**: an admin DM whose promise hangs past `WATCHDOG_ALERT_TIMEOUT_MS` is abandoned and `exit(1)` still runs (assert exit fired even though the alert never resolved);
   - empty `cfg.admins` → offline event + terminal log + exit, no admin DMs and no broadcast;
   - single-flight guard prevents a second tick from starting a concurrent reconnect while one is in flight.
 - Full `@pmk/cli` suite stays green; new units keep the suite ≥ current 483.
