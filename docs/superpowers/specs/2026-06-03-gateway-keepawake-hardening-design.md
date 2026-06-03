@@ -100,7 +100,7 @@ The watchdog failure is an **operator alert**, not a presence notice — it must
 | `PONG_TIMEOUT_WINDOW_MS` | 60_000 | rolling window for counting pong-timeouts |
 | `PONG_TIMEOUT_THRESHOLD` | 3 | pong-timeouts within the window → unhealthy |
 | `UNSTABLE_CONN_LIMIT_MS` | 60_000 | max time un-`connected` before unhealthy |
-| `REUNHEALTHY_ATTEMPTS` | 3 | confirmed-failed reconnects (each went unhealthy again before `STABLE_CONNECTED_RESET_MS`, or its `start()` threw) before loud exit on the next unhealthy tick |
+| `REUNHEALTHY_ATTEMPTS` | 3 | confirmed-failed reconnects (each went unhealthy again before `STABLE_CONNECTED_RESET_MS`, or its `disconnect()`/`start()` threw or timed out) before loud exit on the next unhealthy tick |
 | `STABLE_CONNECTED_RESET_MS` | 180_000 | continuous `connected` + no pong-timeout required to reset the attempt counter |
 | `WATCHDOG_RECONNECT_TIMEOUT_MS` | 45_000 | per-step cap on a forced `disconnect()`/`start()`; timing out = a failed reconnect (prevents a wedged reconnect from pinning the in-flight flag) |
 | `WATCHDOG_ALERT_TIMEOUT_MS` | 15_000 | hard cap on the loud-exit admin-DM phase; a hung Slack call past this is logged and the process exits anyway (the exit is never blocked by the alert) |
