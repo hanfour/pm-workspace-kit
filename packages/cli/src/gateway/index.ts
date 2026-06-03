@@ -13,6 +13,7 @@ import {
   markGracefulShutdown,
   startHeartbeat,
 } from "./heartbeat";
+import { startKeepAwake } from "./keep-awake";
 
 export interface GatewayRunOptions {
   /** Called for each one-line breadcrumb. Defaults to console.log. */
@@ -81,6 +82,7 @@ export async function runGateway(opts: GatewayRunOptions = {}): Promise<void> {
     );
   }
   log(`heartbeat ticking every ${HEARTBEAT_INTERVAL_MS / 1000}s`);
+  const keepAwake = startKeepAwake({ onLog: log });
 
   const dryRunStats = opts.dryRun ? createDryRunStats() : undefined;
   const adapter = new SlackAdapter({
@@ -102,6 +104,7 @@ export async function runGateway(opts: GatewayRunOptions = {}): Promise<void> {
     shuttingDown = true;
     log(`received ${signal}, shutting down…`);
     hb.stop();
+    keepAwake.stop();
     // #44: write a single-use graceful-shutdown marker BEFORE
     // stopping the adapter (which broadcasts offline). If the marker
     // write fails or shutdown is interrupted we degrade to crash
@@ -145,6 +148,7 @@ export async function runGateway(opts: GatewayRunOptions = {}): Promise<void> {
     );
   } catch (err) {
     hb.stop();
+    keepAwake.stop();
     clearHeartbeat();
     removePidFile();
     throw err;
