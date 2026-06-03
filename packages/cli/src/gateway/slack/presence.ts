@@ -132,6 +132,53 @@ export class PresenceBroadcaster {
     await runWithConcurrency(BROADCAST_CONCURRENCY, tasks);
   }
 
+  /**
+   * Loud-exit path for the SocketWatchdog. Records the offline
+   * transition (broadcast:false — operator alert, NOT the stakeholder
+   * fan-out) FIRST and synchronously, then DMs each admin under a hard
+   * timeout so a hung Slack call can never delay the caller's
+   * process.exit. Best-effort: per-DM errors are swallowed (dmSafe); the
+   * whole admin phase is abandoned at `alertTimeoutMs`.
+   */
+  async watchdogTerminate(opts: {
+    adminIds: string[];
+    attempts: number;
+    alertTimeoutMs: number;
+  }): Promise<void> {
+    const seq = ++this.seq;
+    appendGatewayEvent({
+      type: "gateway.offline",
+      seq,
+      reason: "watchdog-unhealthy",
+      broadcast: false,
+    });
+    if (opts.adminIds.length === 0) {
+      this.opts.onLog(
+        "watchdog loud-exit: no admins configured; offline event recorded, exiting",
+      );
+      return;
+    }
+    const text =
+      `:rotating_light: pmk gateway self-terminated: Socket-Mode unrecoverable ` +
+      `after ${opts.attempts} reconnect attempts. The bot is offline until restarted.`;
+    // Each DM is raced against a hard deadline so a hung Slack call
+    // cannot delay the caller's process.exit. Best-effort: errors
+    // are swallowed inside dmSafe.
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const deadline = new Promise<void>((resolve) => {
+      timer = setTimeout(resolve, opts.alertTimeoutMs);
+    });
+    try {
+      await Promise.allSettled(
+        opts.adminIds.map((id) =>
+          Promise.race([this.dmSafe(id, text), deadline]),
+        ),
+      );
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+    }
+  }
+
   private async dmSafe(uid: string, text: string): Promise<void> {
     try {
       const im = await this.opts.web.conversations.open({ users: uid });
