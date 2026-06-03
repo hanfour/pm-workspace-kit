@@ -8,6 +8,35 @@ All notable changes to **pm-workspace-kit** are documented here.
 
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Each release also has a longer narrative on [GitHub Releases](https://github.com/hanfour/pm-workspace-kit/releases) with rationale, dogfood notes, and test plans.
 
+## [v0.19.0] — 2026-06-03 — gateway keep-awake hardening (throttle-proof + self-heal watchdog)
+
+[GitHub release](https://github.com/hanfour/pm-workspace-kit/releases/tag/v0.19.0)
+
+### Why
+
+The v0.18.0 demo smoke uncovered a silent multi-day gateway outage: a backgrounded daemon was App-Nap/sleep-throttled on macOS, starving Slack Socket-Mode's ping/pong (5 s window) — the socket reconnected endlessly but never stayed healthy, while the process stayed alive and the heartbeat kept ticking, so nothing looked wrong and the bot answered no one. This release makes that failure mode impossible-by-default and self-healing, and turns any residual unrecoverable state into a loud, alerting exit instead of a silent zombie.
+
+### Added
+
+- **Throttle-proofing** — [`keep-awake.ts`](https://github.com/hanfour/pm-workspace-kit/blob/main/packages/cli/src/gateway/keep-awake.ts). On macOS, `pmk gateway start` now holds a `caffeinate` power assertion bound to its own pid (`-w <pid>`, auto-released on death) for its whole lifetime, so a backgrounded daemon can't be throttled into starving the socket. Default flags `-is` (idle+system sleep; deliberately not the heavier `-dimsu` that holds the display awake — that remains available via `PMK_GATEWAY_CAFFEINATE_FLAGS`). No-op on non-macOS. Best-effort: a spawn failure never blocks startup.
+- **Self-heal watchdog** — a pure [`SocketHealth`](https://github.com/hanfour/pm-workspace-kit/blob/main/packages/cli/src/gateway/socket-health.ts) tracker (fed by a pong-timeout tap [logger](https://github.com/hanfour/pm-workspace-kit/blob/main/packages/cli/src/gateway/slack/socket-logger.ts) + the five real SDK conn-state events) drives a [`SocketWatchdog`](https://github.com/hanfour/pm-workspace-kit/blob/main/packages/cli/src/gateway/slack/socket-watchdog.ts) (30 s ticks). On a wedged socket (≥3 pong-timeouts/60 s, or not `connected` past 60 s) it forces an in-process reconnect (time-boxed at 45 s so a hung reconnect can't pin the guard). A reconnect counts as failed only if the socket goes unhealthy again before 3 min of continuous health; after 3 confirmed failures the next unhealthy tick performs a **loud exit**.
+- **Loud exit** — `PresenceBroadcaster.watchdogTerminate` records a `gateway.offline` (`reason: watchdog-unhealthy`, `broadcast:false` — an operator alert, not a stakeholder fan-out), DMs each `config.admins` (via `conversations.open`, over HTTP which works even when the WebSocket is dead) under a hard 15 s cap, then `process.exit(1)` — guaranteed even if the alert hangs or rejects. With no admins configured, the offline event + terminal log are the alert.
+
+### Fixed
+
+- Removed a dead `socket.on("reconnect", …)` listener in the Slack adapter (the SDK emits `reconnecting`, never `reconnect`).
+
+### Tests
+
+- `@pmk/cli`: **506** tests, 100% pass. New suites: `socket-health`, `keep-awake`, `socket-logger`, `socket-watchdog`, `socket-watchdog-alert`. Listener-survival-across-reconnect verified against the installed SDK source in a holistic review.
+
+### Notes
+
+- Host live-sanity (caffeinate child present, clean Ctrl+C shutdown) is an operator check, not covered by unit tests.
+- Deferred: launchd/systemd service + boot auto-start; a `watchdogAlertChannelId` for channel (vs admin-DM) alerts; adaptive thresholds.
+
+---
+
 ## [v0.18.0] — 2026-06-03 — adoption metrics + AcmeAds vertical demo (P4 · P5)
 
 [GitHub release](https://github.com/hanfour/pm-workspace-kit/releases/tag/v0.18.0)
