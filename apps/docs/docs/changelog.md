@@ -8,6 +8,35 @@ All notable changes to **pm-workspace-kit** are documented here.
 
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Each release also has a longer narrative on [GitHub Releases](https://github.com/hanfour/pm-workspace-kit/releases) with rationale, dogfood notes, and test plans.
 
+## [v0.18.0] — 2026-06-03 — adoption metrics + AcmeAds vertical demo (P4 · P5)
+
+[GitHub release](https://github.com/hanfour/pm-workspace-kit/releases/tag/v0.18.0)
+
+### Why
+
+Two priorities-plan strands land together. **P4 (adoption metrics)** answers "is anyone actually using this?" from local signals, so the kit's value can be judged without guessing. **P5 (vertical demo bundle)** gives a new operator a concrete, self-contained way to *watch* the knowledge loop work end-to-end on a fictional ad-tech workspace (AcmeAds), rather than reasoning about it abstractly.
+
+### Added
+
+- **`pmk adoption`** (P4) — [`packages/cli/src/adoption.ts`](https://github.com/hanfour/pm-workspace-kit/blob/main/packages/cli/src/adoption.ts). A pure report builder over the audit window, telemetry sidecar, atom corpus, and run markers ([`run-markers.ts`](https://github.com/hanfour/pm-workspace-kit/blob/main/packages/cli/src/run-markers.ts), `~/.pmk/adoption.json`): five clamped metrics (first-run / first-PRD markers, atom reuse rate, questioned rate, active-window turns).
+- **AcmeAds demo content** (P5a) — [`acme-ads-seed.ts`](https://github.com/hanfour/pm-workspace-kit/blob/main/packages/cli/src/gateway/acme-ads-seed.ts): five approved AcmeAds atoms (ad placements, vCPM, customer migration, finance terms, an onboarding dedup rule), tagged `acme-ads-demo`, seeded/unseeded idempotently via `pmk demo seed` / `unseed`.
+- **`pmk demo run`** (P5b) — [`commands/demo.ts`](https://github.com/hanfour/pm-workspace-kit/blob/main/packages/cli/src/commands/demo.ts) + [`demo-runner.ts`](https://github.com/hanfour/pm-workspace-kit/blob/main/packages/cli/src/gateway/demo/demo-runner.ts): posts the five guided questions as a real user (one-time `PMK_DEMO_USER_TOKEN`, `chat:write` only), correlates each `turn.processed`, and prints a Q→A transcript. Reply-readback uses the gateway **bot** token's `conversations.replies` (bot replies are always threaded). `--dm` / zero-config DM auto-open targets the bot DM (uses `im:history`); `--channel` targets a channel (needs the bot's `channels:history`). `--dry-run` previews.
+- **AcmeAds demo walkthrough** (P5c) — [`examples/acme-ads-demo.md`](https://github.com/hanfour/pm-workspace-kit/blob/main/apps/docs/docs/examples/acme-ads-demo.md): a ~15-minute "watch the loop" guide, leading with the zero-credential manual DM path.
+
+### Fixed
+
+- Demo `readReply` no longer silently swallows `conversations.replies` failures — a missing bot scope (e.g. `missing_scope` for `channels:history` in a public channel) now surfaces in the transcript instead of a generic "did not stabilise".
+
+### Verified
+
+- The knowledge loop was verified **live** end-to-end on the host: a `pmk demo run` against the seeded AcmeAds corpus produced five `turn.processed` events with the correct atoms injected, the right audience tier, and the Q5 escalation boundary (`hadMraAsk`), with grounded answers. The automated transcript-capture additionally depends on the bot's reply-read scope (`im:history` for DMs / `channels:history` for channels) and on Slack delivering the demo user's messages — documented in the walkthrough's troubleshooting note.
+
+### Tests
+
+- `@pmk/cli`: **483** tests, 100% pass.
+
+---
+
 ## [v0.17.0] — 2026-05-30 — atom usage telemetry (P2a)
 
 [GitHub release](https://github.com/hanfour/pm-workspace-kit/releases/tag/v0.17.0)
