@@ -6,6 +6,11 @@ import {
   type AudienceDomainExamples,
   type AudienceKey,
 } from "@pmk/shared";
+import {
+  type SecretSource,
+  validateSecretSource,
+  resolveSecret,
+} from "./secret-source";
 
 /**
  * Gateway config — what the host configures once, before
@@ -17,6 +22,7 @@ import {
  * and reference them via env (PMK_SLACK_APP_TOKEN, PMK_SLACK_BOT_TOKEN).
  */
 
+/** Resolved Slack config consumers see (tokens are plain strings). */
 export interface SlackConfig {
   /** xapp-... — App-Level Token with `connections:write` scope. */
   appToken?: string;
@@ -25,6 +31,14 @@ export interface SlackConfig {
   /** Bot user ID; populated lazily after first auth.test call. */
   botUserId?: string;
   /** Workspace name (for display); populated after first auth.test. */
+  workspaceName?: string;
+}
+
+/** On-disk Slack config: tokens may be a literal or a {env}/{cmd} reference. */
+export interface RawSlackConfig {
+  appToken?: SecretSource;
+  botToken?: SecretSource;
+  botUserId?: string;
   workspaceName?: string;
 }
 
@@ -97,13 +111,17 @@ export interface GatewayConfig {
   /** Pool of IT/domain contacts pmk can @-mention on `escalate`. */
   escalation: EscalationConfig;
   /**
-   * Anthropic API key. v0.12.0+: written by `pmk gateway init` so the
-   * gateway can prefer the anthropic-api provider without requiring
-   * the operator to also set ANTHROPIC_API_KEY in env. Env var still
-   * takes precedence at runtime (loadCliConfig() reads env first).
+   * Anthropic API key — a literal or a {env}/{cmd} reference. Resolved
+   * lazily at the provider merge (see resolveGatewayApiKey), NOT at load,
+   * so a gateway {cmd} never runs when the CLI config already supplies a key.
    */
-  apiKey?: string;
+  apiKey?: SecretSource;
   slack: SlackConfig;
+}
+
+/** On-disk gateway config — secret fields are unresolved `SecretSource`. */
+export interface RawGatewayConfig extends Omit<GatewayConfig, "slack"> {
+  slack: RawSlackConfig;
 }
 
 export const GATEWAY_CONFIG_VERSION = 1 as const;
@@ -189,7 +207,7 @@ const asString = (v: unknown): string | undefined =>
  *
  * Pure + immutable: builds a new object, never mutates `raw`.
  */
-function normaliseRawConfig(raw: unknown): GatewayConfig {
+function normaliseRawConfig(raw: unknown): RawGatewayConfig {
   const r = (raw && typeof raw === "object" ? raw : {}) as Record<
     string,
     unknown
@@ -235,9 +253,9 @@ function normaliseRawConfig(raw: unknown): GatewayConfig {
   const sRaw = (
     r.slack && typeof r.slack === "object" ? r.slack : {}
   ) as Record<string, unknown>;
-  const slack: SlackConfig = {
-    appToken: asString(sRaw.appToken),
-    botToken: asString(sRaw.botToken),
+  const slack: RawSlackConfig = {
+    appToken: validateSecretSource(sRaw.appToken, "slack.appToken"),
+    botToken: validateSecretSource(sRaw.botToken, "slack.botToken"),
     botUserId: asString(sRaw.botUserId),
     workspaceName: asString(sRaw.workspaceName),
   };
@@ -250,37 +268,82 @@ function normaliseRawConfig(raw: unknown): GatewayConfig {
     slack,
     defaultIngest: asString(r.defaultIngest),
     mraWorkspace: asString(r.mraWorkspace),
-    apiKey: asString(r.apiKey),
+    apiKey: validateSecretSource(r.apiKey, "apiKey"),
   };
 }
 
-/** Env overrides — handy for CI / containerised hosts. Pure: returns a copy. */
-function applyEnvOverrides(cfg: GatewayConfig): GatewayConfig {
-  return {
-    ...cfg,
-    slack: {
-      ...cfg.slack,
-      appToken: process.env.PMK_SLACK_APP_TOKEN ?? cfg.slack.appToken,
-      botToken: process.env.PMK_SLACK_BOT_TOKEN ?? cfg.slack.botToken,
-    },
-    mraWorkspace: process.env.PMK_MRA_WORKSPACE ?? cfg.mraWorkspace,
-  };
+/** Test seam — exercises normaliseRawConfig without touching disk. */
+export function normaliseRawConfigForTest(raw: unknown): RawGatewayConfig {
+  return normaliseRawConfig(raw);
 }
 
-export function loadGatewayConfig(): GatewayConfig {
+/** Resolve one Slack token: fixed-name env override wins (nullish), else the
+ * on-disk reference. The override short-circuits BEFORE the reference runs. */
+function resolveSlackToken(
+  envName: string,
+  src: SecretSource | undefined,
+  secretName: string,
+): string | undefined {
+  const override = process.env[envName];
+  return override ?? resolveSecret(src, secretName);
+}
+
+/** Read + normalise the on-disk config WITHOUT resolving any secret. */
+export function loadRawGatewayConfig(): RawGatewayConfig {
   const file = gatewayConfigPath();
   if (!fs.existsSync(file)) {
-    return applyEnvOverrides({
+    return {
       version: GATEWAY_CONFIG_VERSION,
       blocklist: [],
       admins: [],
       audience: defaultAudience(),
       escalation: defaultEscalation(),
       slack: {},
-    });
+    };
   }
   const raw = JSON.parse(fs.readFileSync(file, "utf8")) as unknown;
-  return applyEnvOverrides(normaliseRawConfig(raw));
+  return normaliseRawConfig(raw);
+}
+
+/** Runtime config consumers see: Slack tokens resolved eagerly (override
+ * short-circuit + PMK_MRA_WORKSPACE); apiKey left raw for the provider merge. */
+export function loadGatewayConfig(): GatewayConfig {
+  const raw = loadRawGatewayConfig();
+  return {
+    ...raw,
+    mraWorkspace: process.env.PMK_MRA_WORKSPACE ?? raw.mraWorkspace,
+    slack: {
+      appToken: resolveSlackToken(
+        "PMK_SLACK_APP_TOKEN",
+        raw.slack.appToken,
+        "slack.appToken",
+      ),
+      botToken: resolveSlackToken(
+        "PMK_SLACK_BOT_TOKEN",
+        raw.slack.botToken,
+        "slack.botToken",
+      ),
+      botUserId: raw.slack.botUserId,
+      workspaceName: raw.slack.workspaceName,
+    },
+  };
+}
+
+/**
+ * Resolve the effective Anthropic key. The CLI config key wins ONLY when it is
+ * a non-empty string (matching the old truthy fallback); otherwise the gateway
+ * reference resolves. Shared by slack/index.ts (value) and doctor (label +
+ * whether to validate the reference), so the "does the {cmd} run?" decision
+ * can't drift.
+ */
+export function resolveGatewayApiKey(
+  cliApiKey: string | undefined,
+  rawGatewayApiKey: SecretSource | undefined,
+): { value: string | undefined; usedCliConfig: boolean } {
+  if (typeof cliApiKey === "string" && cliApiKey !== "") {
+    return { value: cliApiKey, usedCliConfig: true };
+  }
+  return { value: resolveSecret(rawGatewayApiKey, "apiKey"), usedCliConfig: false };
 }
 
 /**
@@ -351,7 +414,7 @@ export function isAdmin(cfg: GatewayConfig, userId: string): boolean {
   return Array.isArray(cfg.admins) && cfg.admins.includes(userId);
 }
 
-export function saveGatewayConfig(cfg: GatewayConfig): string {
+export function saveGatewayConfig(cfg: RawGatewayConfig): string {
   const file = gatewayConfigPath();
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, JSON.stringify(cfg, null, 2), { mode: 0o600 });

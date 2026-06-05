@@ -7,6 +7,9 @@ import {
   GATEWAY_CONFIG_VERSION,
   hasValidSlackTokens,
   loadGatewayConfig,
+  loadRawGatewayConfig,
+  normaliseRawConfigForTest,
+  resolveGatewayApiKey,
   saveGatewayConfig,
 } from "../src/gateway/config";
 import {
@@ -208,8 +211,9 @@ describe("gateway config", () => {
     fs.mkdirSync(path.dirname(file), { recursive: true });
     // Hand-crafted hostile / corrupt file: admins is an object (would
     // otherwise dodge the Array.isArray guard), blocklist is a bare
-    // string (.includes would crash), audience.default is unknown,
-    // and a token field is a number.
+    // string (.includes would crash), audience.default is unknown.
+    // Secret fields are valid to keep this test focused on non-secret
+    // coercion (malformed secrets now throw — see the fail-fast test).
     fs.writeFileSync(
       file,
       JSON.stringify({
@@ -218,7 +222,7 @@ describe("gateway config", () => {
         blocklist: "U-bad",
         audience: { default: "root", users: { "U-x": "hacker" } },
         escalation: { default: ["U-it", 42], repos: { erp: ["U-a", null] } },
-        slack: { appToken: 12345, botToken: "xoxb-x" },
+        slack: { botToken: "xoxb-x" },
       }),
     );
     const loaded = loadGatewayConfig();
@@ -229,7 +233,6 @@ describe("gateway config", () => {
     assert.deepEqual(loaded.audience.users, {}); // "hacker" dropped
     assert.deepEqual(loaded.escalation.default, ["U-it"]); // 42 dropped
     assert.deepEqual(loaded.escalation.repos.erp, ["U-a"]); // null dropped
-    assert.equal(loaded.slack.appToken, undefined); // number dropped
     assert.equal(loaded.slack.botToken, "xoxb-x");
   });
 
@@ -266,6 +269,170 @@ describe("gateway config", () => {
       if (ORIG_WS === undefined) delete process.env.PMK_MRA_WORKSPACE;
       else process.env.PMK_MRA_WORKSPACE = ORIG_WS;
     }
+  });
+
+  it("normalises secret references and rejects malformed ones", () => {
+    const raw = normaliseRawConfigForTest({
+      version: 1,
+      admins: [],
+      blocklist: [],
+      audience: { default: "biz", users: {}, channels: {} },
+      escalation: { default: [], repos: {} },
+      slack: { appToken: { cmd: "op read x" }, botToken: "xoxb-lit" },
+      apiKey: { env: "MY_KEY" },
+    });
+    assert.deepEqual(raw.slack.appToken, { cmd: "op read x" });
+    assert.equal(raw.slack.botToken, "xoxb-lit");
+    assert.deepEqual(raw.apiKey, { env: "MY_KEY" });
+
+    assert.throws(
+      () =>
+        normaliseRawConfigForTest({
+          version: 1,
+          slack: { appToken: { env: "X", cmd: "y" } },
+        }),
+      /cannot have both|exactly one of/,
+    );
+  });
+
+  it("rejects malformed secret sources (fail-fast, not silent drop)", () => {
+    const base = {
+      version: 1,
+      admins: [],
+      blocklist: [],
+      audience: { default: "biz", users: {}, channels: {} },
+      escalation: { default: [], repos: {} },
+    };
+    // bare non-string scalar for top-level apiKey
+    assert.throws(() => normaliseRawConfigForTest({ ...base, apiKey: 42 }));
+    // array for a slack secret field
+    assert.throws(() =>
+      normaliseRawConfigForTest({ ...base, slack: { appToken: [] } }),
+    );
+    // reference object with non-string env value
+    assert.throws(() =>
+      normaliseRawConfigForTest({
+        ...base,
+        slack: { appToken: { env: 42 } },
+      }),
+    );
+    // ambiguous reference with both env and cmd
+    assert.throws(() =>
+      normaliseRawConfigForTest({
+        ...base,
+        slack: { appToken: { env: "X", cmd: "y" } },
+      }),
+    );
+  });
+
+  it("loadGatewayConfig resolves Slack tokens; PMK_SLACK_* short-circuits the reference", () => {
+    const file = path.join(tmpHome, ".pmk", "gateway.json");
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(
+      file,
+      JSON.stringify({
+        version: 1,
+        admins: [],
+        blocklist: [],
+        audience: { default: "biz", users: {}, channels: {} },
+        escalation: { default: [], repos: {} },
+        slack: { appToken: { cmd: "printf xapp-from-cmd" }, botToken: "xoxb-lit" },
+      }),
+    );
+    // reference resolves
+    let cfg = loadGatewayConfig();
+    assert.equal(cfg.slack.appToken, "xapp-from-cmd");
+    assert.equal(cfg.slack.botToken, "xoxb-lit");
+    // fixed-name override wins WITHOUT running the {cmd}
+    process.env.PMK_SLACK_APP_TOKEN = "xapp-override";
+    cfg = loadGatewayConfig();
+    assert.equal(cfg.slack.appToken, "xapp-override");
+    delete process.env.PMK_SLACK_APP_TOKEN;
+  });
+
+  it("loadRawGatewayConfig keeps references unresolved (no cmd execution)", () => {
+    const file = path.join(tmpHome, ".pmk", "gateway.json");
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(
+      file,
+      JSON.stringify({
+        version: 1, admins: [], blocklist: [],
+        audience: { default: "biz", users: {}, channels: {} },
+        escalation: { default: [], repos: {} },
+        slack: { appToken: { cmd: "exit 1" } },
+        apiKey: { env: "WHATEVER" },
+      }),
+    );
+    const raw = loadRawGatewayConfig();
+    assert.deepEqual(raw.slack.appToken, { cmd: "exit 1" }); // not executed
+    assert.deepEqual(raw.apiKey, { env: "WHATEVER" });
+  });
+
+  it("saveGatewayConfig(loadRawGatewayConfig()) round-trips a reference (no materialise)", () => {
+    const file = path.join(tmpHome, ".pmk", "gateway.json");
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(
+      file,
+      JSON.stringify({
+        version: 1, admins: [], blocklist: [],
+        audience: { default: "biz", users: {}, channels: {} },
+        escalation: { default: [], repos: {} },
+        slack: { appToken: { cmd: "op read op://v/app" } },
+      }),
+    );
+    saveGatewayConfig(loadRawGatewayConfig());
+    const onDisk = JSON.parse(fs.readFileSync(file, "utf8"));
+    assert.deepEqual(onDisk.slack.appToken, { cmd: "op read op://v/app" });
+  });
+
+  it("resolveGatewayApiKey: non-empty CLI key short-circuits the gateway {cmd}", () => {
+    // CLI key present → used, gateway {cmd} (which would throw) NOT run
+    assert.deepEqual(
+      resolveGatewayApiKey("sk-cli", { cmd: "exit 1" }),
+      { value: "sk-cli", usedCliConfig: true },
+    );
+    // empty CLI key treated as absent → reference resolves
+    assert.deepEqual(
+      resolveGatewayApiKey("", "sk-gw-literal"),
+      { value: "sk-gw-literal", usedCliConfig: false },
+    );
+    // no CLI key, no gateway key → none
+    assert.deepEqual(
+      resolveGatewayApiKey(undefined, undefined),
+      { value: undefined, usedCliConfig: false },
+    );
+  });
+
+  it("an unrelated audience edit preserves a {cmd} appToken (no materialise)", async () => {
+    const { _audienceSetForTest } = await import("../src/commands/gateway/audience");
+    const file = path.join(tmpHome, ".pmk", "gateway.json");
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(
+      file,
+      JSON.stringify({
+        version: 1, admins: [], blocklist: [],
+        audience: { default: "biz", users: {}, channels: {} },
+        escalation: { default: [], repos: {} },
+        slack: { appToken: { cmd: "op read op://v/app" }, botToken: "xoxb-x" },
+      }),
+    );
+    _audienceSetForTest("U-ALICE", "tech");
+    const onDisk = JSON.parse(fs.readFileSync(file, "utf8"));
+    assert.deepEqual(onDisk.slack.appToken, { cmd: "op read op://v/app" }); // intact
+    assert.equal(onDisk.audience.users["U-ALICE"], "tech"); // edit landed
+  });
+
+  it("init preserves a {cmd} reference on Enter, replaces on a typed literal", async () => {
+    const { buildInitConfig } = await import("../src/commands/gateway/ops");
+    const existing = {
+      version: 1 as const, admins: [], blocklist: [],
+      audience: { default: "biz" as const, users: {}, channels: {} },
+      escalation: { default: [], repos: {} },
+      slack: { appToken: { cmd: "op read op://v/app" }, botToken: "xoxb-old" },
+    };
+    const out = buildInitConfig({ existing, appTokenTyped: "", botTokenTyped: "xoxb-new" });
+    assert.deepEqual(out.slack.appToken, { cmd: "op read op://v/app" });
+    assert.equal(out.slack.botToken, "xoxb-new");
   });
 });
 

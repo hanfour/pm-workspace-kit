@@ -4,11 +4,14 @@ import * as path from "node:path";
 import chalk from "chalk";
 import { println } from "../../io";
 import {
+  type RawGatewayConfig,
   gatewayConfigPath,
   hasValidSlackTokens,
   loadGatewayConfig,
+  loadRawGatewayConfig,
   saveGatewayConfig,
 } from "../../gateway/config";
+import { type SecretSource } from "../../gateway/secret-source";
 import { gatewayRunningPid, runGateway } from "../../gateway";
 import { userStats } from "../../gateway/session-store";
 import { findMraWorkspace } from "../../adapters/mra";
@@ -135,8 +138,44 @@ export function auditCmd(rest: string[]): void {
   println(formatAuditReport(report));
 }
 
+/**
+ * Build the RawGatewayConfig to persist. A typed value (new literal) replaces;
+ * blank ("") preserves the existing raw SecretSource (incl. {cmd}/{env}).
+ *
+ * Exported so initCmd can be unit-tested without stdin.
+ */
+export function buildInitConfig(args: {
+  existing: RawGatewayConfig;
+  appTokenTyped?: string;
+  botTokenTyped?: string;
+  apiKeyTyped?: string;
+}): RawGatewayConfig {
+  const appToken = args.appTokenTyped?.trim() || args.existing.slack.appToken;
+  const botToken = args.botTokenTyped?.trim() || args.existing.slack.botToken;
+  const apiKey = args.apiKeyTyped?.trim() || args.existing.apiKey;
+  return {
+    ...args.existing,
+    apiKey,
+    slack: { ...args.existing.slack, appToken, botToken },
+  };
+}
+
+/** True when a token value is present and, if the user just typed a
+ * fresh literal, has the required prefix. A preserved reference ({cmd}/{env})
+ * passes without prefix checking — we can't resolve it here. */
+function presentAndFormatOk(
+  typed: string,
+  value: SecretSource | undefined,
+  prefix: string,
+): boolean {
+  if (value === undefined) return false;
+  if (typed && typeof value === "string") return value.startsWith(prefix);
+  // preserved reference/literal (or a non-string value the builder kept) — passes without resolving
+  return true;
+}
+
 export async function initCmd(): Promise<void> {
-  const existing = loadGatewayConfig();
+  const existing = loadRawGatewayConfig();
   println(chalk.bold("\npmk gateway — initial setup"));
   println(
     chalk.dim(
@@ -174,6 +213,11 @@ export async function initCmd(): Promise<void> {
     ),
   );
   println(chalk.dim("         - Bot User OAuth Token (xoxb-...)"));
+  println(
+    chalk.dim(
+      "    (blank = keep current; inject via PMK_SLACK_* / op run, or hand-edit gateway.json to use a {\"cmd\":\"...\"} / {\"env\":\"...\"} reference)",
+    ),
+  );
   println("");
 
   const rl = readline.createInterface({
@@ -181,22 +225,20 @@ export async function initCmd(): Promise<void> {
     output: process.stdout,
   });
   try {
-    const appToken =
-      (
-        await rl.question(
-          chalk.cyan(
-            `App-Level Token (xapp-...) ${existing.slack.appToken ? "[unchanged on enter]" : ""}: `,
-          ),
-        )
-      ).trim() || existing.slack.appToken;
-    const botToken =
-      (
-        await rl.question(
-          chalk.cyan(
-            `Bot Token (xoxb-...) ${existing.slack.botToken ? "[unchanged on enter]" : ""}: `,
-          ),
-        )
-      ).trim() || existing.slack.botToken;
+    const appTokenInput = (
+      await rl.question(
+        chalk.cyan(
+          `App-Level Token (xapp-...) ${existing.slack.appToken ? "[unchanged on enter]" : ""}: `,
+        ),
+      )
+    ).trim();
+    const botTokenInput = (
+      await rl.question(
+        chalk.cyan(
+          `Bot Token (xoxb-...) ${existing.slack.botToken ? "[unchanged on enter]" : ""}: `,
+        ),
+      )
+    ).trim();
     const defaultIngest =
       (
         await rl.question(
@@ -259,26 +301,28 @@ export async function initCmd(): Promise<void> {
         ),
       )
     ).trim();
-    const apiKey = apiKeyInput || existing.apiKey;
 
-    const cfg = {
-      version: 1 as const,
-      blocklist: existing.blocklist,
-      admins: existing.admins,
-      defaultIngest: defaultIngest || undefined,
-      mraWorkspace,
-      audience: existing.audience,
-      escalation: existing.escalation,
-      ...(apiKey ? { apiKey } : {}),
-      slack: { appToken, botToken },
-    };
-    if (!hasValidSlackTokens(cfg)) {
+    const cfg = buildInitConfig({
+      existing: {
+        ...existing,
+        defaultIngest: defaultIngest || undefined,
+        mraWorkspace,
+      },
+      appTokenTyped: appTokenInput,
+      botTokenTyped: botTokenInput,
+      apiKeyTyped: apiKeyInput,
+    });
+
+    if (
+      !presentAndFormatOk(appTokenInput, cfg.slack.appToken, "xapp-") ||
+      !presentAndFormatOk(botTokenInput, cfg.slack.botToken, "xoxb-")
+    ) {
       println(
         chalk.red(
           "tokens missing or wrong format (must start with xapp-/xoxb-). Aborting.",
         ),
       );
-      process.exit(1);
+      return;
     }
     const file = saveGatewayConfig(cfg);
     println(chalk.green(`\nsaved → ${file}`));

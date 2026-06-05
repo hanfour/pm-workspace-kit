@@ -1,6 +1,6 @@
 import chalk from "chalk";
 import { println } from "../../io";
-import { loadGatewayConfig, saveGatewayConfig } from "../../gateway/config";
+import { loadRawGatewayConfig, saveGatewayConfig } from "../../gateway/config";
 import { ensureValidSlackUserId } from "./shared";
 
 export function escalationUsage(): void {
@@ -39,7 +39,7 @@ export function normaliseEscalationScope(scope: string): string | null {
 
 export function escalationCmd(rest: string[]): void {
   const [action, scope, userId] = rest;
-  const cfg = loadGatewayConfig();
+  const cfg = loadRawGatewayConfig();
   switch (action) {
     case undefined:
     case "list": {

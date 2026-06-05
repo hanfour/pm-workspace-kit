@@ -10,10 +10,17 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { WebClient } from "@slack/web-api";
 
-import { type GatewayConfig, gatewayConfigPath, loadGatewayConfig } from "./config";
+import {
+  type GatewayConfig,
+  gatewayConfigPath,
+  loadGatewayConfig,
+  loadRawGatewayConfig,
+  normaliseRawConfigForTest,
+} from "./config";
 import { approvedAtomCount } from "./atom-index";
 import { loadConfig } from "../config";
 import { findClaudeExecutable } from "../llm/resolver";
+import { type SecretSource } from "./secret-source";
 
 export type DoctorSeverity = "pass" | "warn" | "fail";
 
@@ -64,6 +71,14 @@ export interface DoctorContext {
   llmProvider: string;
   manifestRepoPath: string;
   runners: DoctorRunners;
+  /** Raw on-disk secret sources (for source reporting — never resolved here). */
+  secretSources: {
+    appToken?: SecretSource;
+    botToken?: SecretSource;
+    apiKey?: SecretSource;
+  };
+  /** CLI-config apiKey (= ANTHROPIC_API_KEY ?? ~/.pmk/config.json), for apiKey shadowing. */
+  cliApiKey?: string;
 }
 
 export type DoctorCheck = (ctx: DoctorContext) => Promise<DoctorCheckResult>;
@@ -146,6 +161,7 @@ export function buildDoctorContext(opts: {
   let exists = false;
   let mode: number | undefined;
   let config: GatewayConfig | null = null;
+  let secretSources: DoctorContext["secretSources"] = {};
   if (fs.existsSync(configPath)) {
     exists = true;
     try {
@@ -158,7 +174,18 @@ export function buildDoctorContext(opts: {
       // Test-mode: read directly so we don't depend on real homedir().
       const raw = fs.readFileSync(configPath, "utf8");
       try {
-        config = JSON.parse(raw) as GatewayConfig;
+        const parsed = JSON.parse(raw) as unknown;
+        config = parsed as GatewayConfig;
+        try {
+          const rawCfg = normaliseRawConfigForTest(parsed);
+          secretSources = {
+            appToken: rawCfg.slack.appToken,
+            botToken: rawCfg.slack.botToken,
+            apiKey: rawCfg.apiKey,
+          };
+        } catch {
+          // malformed reference in fixture — leave secretSources empty
+        }
       } catch {
         // malformed JSON — config-file check will report
       }
@@ -167,6 +194,16 @@ export function buildDoctorContext(opts: {
         config = loadGatewayConfig();
       } catch {
         // loadGatewayConfig throws on version mismatch — config-file check will surface it
+      }
+      try {
+        const rawCfg = loadRawGatewayConfig();
+        secretSources = {
+          appToken: rawCfg.slack.appToken,
+          botToken: rawCfg.slack.botToken,
+          apiKey: rawCfg.apiKey,
+        };
+      } catch {
+        // raw load fail is non-fatal — secret-sources check will report what it can
       }
     }
   }
@@ -189,6 +226,8 @@ export function buildDoctorContext(opts: {
       opts.manifestRepoPath ??
       path.resolve(__dirname, "slack", "manifest.template.json"),
     runners,
+    secretSources,
+    cliApiKey: loadConfig().apiKey,
   };
 }
 

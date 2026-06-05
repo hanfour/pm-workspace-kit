@@ -1,6 +1,7 @@
 import { SocketModeClient } from "@slack/socket-mode";
 import { WebClient } from "@slack/web-api";
 import type { GatewayConfig } from "../config";
+import { resolveGatewayApiKey } from "../config";
 import {
   loadUserSession,
   saveUserSession,
@@ -187,9 +188,11 @@ export class SlackAdapter {
       // restart to pick up a freshly-written gateway.json apiKey, same
       // caveat as audience/escalation config.
       const baseCliConfig = loadCliConfig();
-      const mergedConfig = baseCliConfig.apiKey
-        ? baseCliConfig
-        : { ...baseCliConfig, apiKey: this.config.apiKey };
+      const { value: apiKey } = resolveGatewayApiKey(
+        baseCliConfig.apiKey,
+        this.config.apiKey,
+      );
+      const mergedConfig = { ...baseCliConfig, apiKey };
       this.llm = resolveProvider(mergedConfig);
     }
     this.mraDoctor = opts.mraDoctor ?? mraDoctorImpl;

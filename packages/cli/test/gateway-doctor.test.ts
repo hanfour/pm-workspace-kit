@@ -22,6 +22,7 @@ import {
   pkbContentCheck,
   channelAclCheck,
   manifestAlignmentCheck,
+  secretSourcesCheck,
   DEFAULT_CHECKS,
 } from "../src/gateway/doctor-checks";
 import type { GatewayConfig } from "../src/gateway/config";
@@ -75,6 +76,8 @@ function makeCtx(overrides: Partial<DoctorContext> = {}): DoctorContext {
     llmProvider: "auto",
     manifestRepoPath: REPO_MANIFEST,
     runners: makeOkRunners(),
+    secretSources: {},
+    cliApiKey: undefined,
     ...overrides,
   };
 }
@@ -591,12 +594,94 @@ describe("doctor — orchestrator (runDoctor + formatDoctorReport)", () => {
   });
 });
 
+describe("doctor — secret-sources check", () => {
+  it("a {cmd} shadowed by PMK_SLACK_APP_TOKEN is NOT executed (no exit 1)", async () => {
+    process.env.PMK_SLACK_APP_TOKEN = "xapp-override";
+    try {
+      const ctx = makeCtx({
+        secretSources: { appToken: { cmd: "exit 1" } },
+        cliApiKey: undefined,
+      });
+      const r = await secretSourcesCheck(ctx);
+      // Would be fail if the cmd ran
+      assert.equal(r.severity, "pass");
+      assert.match(r.message, /effective=fixed-env/);
+    } finally {
+      delete process.env.PMK_SLACK_APP_TOKEN;
+    }
+  });
+
+  it("an unshadowed failing {cmd} → FAIL and detail does NOT contain leaked output", async () => {
+    // Ensure the env override is NOT set for this test
+    delete process.env.PMK_SLACK_BOT_TOKEN;
+    const ctx = makeCtx({
+      secretSources: { botToken: { cmd: "echo LEAK 1>&2; exit 1" } },
+      cliApiKey: undefined,
+    });
+    const r = await secretSourcesCheck(ctx);
+    assert.equal(r.severity, "fail");
+    assert.ok(!r.message.includes("LEAK"), "detail must not contain leaked stderr sentinel");
+  });
+
+  it("CLI apiKey shadows a gateway {cmd} — cmd NOT executed, effective=cli-config", async () => {
+    const ctx = makeCtx({
+      secretSources: { apiKey: { cmd: "exit 1" } },
+      cliApiKey: "sk-cli",
+    });
+    const r = await secretSourcesCheck(ctx);
+    // Would be fail if the cmd ran
+    assert.equal(r.severity, "pass");
+    assert.match(r.message, /apiKey:.*effective=cli-config/);
+  });
+
+  it("PASSes with all-undefined sources and appends no-literal note", async () => {
+    const ctx = makeCtx({ secretSources: {}, cliApiKey: undefined });
+    const r = await secretSourcesCheck(ctx);
+    assert.equal(r.severity, "pass");
+    assert.match(r.message, /no literal secret sources in gateway\.json/);
+  });
+
+  it("secret sources: an empty-string PMK_SLACK_* override still shadows the {cmd} (matches runtime ??)", async () => {
+    const prev = process.env.PMK_SLACK_APP_TOKEN;
+    process.env.PMK_SLACK_APP_TOKEN = "";
+    try {
+      const ctx = makeCtx({
+        secretSources: { appToken: { cmd: "exit 1" } },
+        cliApiKey: undefined,
+      });
+      const r = await secretSourcesCheck(ctx);
+      // cmd would exit 1 if run; passing proves it was shadowed by the empty-string override
+      assert.equal(r.severity, "pass");
+    } finally {
+      if (prev === undefined) delete process.env.PMK_SLACK_APP_TOKEN;
+      else process.env.PMK_SLACK_APP_TOKEN = prev;
+    }
+  });
+
+  it("secret sources: an unshadowed {env} with the var unset → fail, no value leak", async () => {
+    const prevBot = process.env.PMK_SLACK_BOT_TOKEN;
+    delete process.env.PMK_SLACK_BOT_TOKEN;
+    try {
+      const ctx = makeCtx({
+        secretSources: { botToken: { env: "PMK_NONEXISTENT_VAR_XYZ" } },
+        cliApiKey: undefined,
+      });
+      const r = await secretSourcesCheck(ctx);
+      assert.equal(r.severity, "fail");
+    } finally {
+      if (prevBot === undefined) delete process.env.PMK_SLACK_BOT_TOKEN;
+      else process.env.PMK_SLACK_BOT_TOKEN = prevBot;
+    }
+  });
+});
+
 describe("doctor — DEFAULT_CHECKS shape", () => {
-  it("exports exactly 8 checks in the FR2 order", () => {
-    assert.equal(DEFAULT_CHECKS.length, 8);
+  it("exports exactly 9 checks (FR2 + secret-sources)", () => {
+    assert.equal(DEFAULT_CHECKS.length, 9);
     const names = DEFAULT_CHECKS.map((c) => c.name);
     assert.deepEqual(names, [
       "configFileCheck",
+      "secretSourcesCheck",
       "slackAppTokenCheck",
       "slackBotTokenCheck",
       "anthropicKeyCheck",

@@ -1,4 +1,5 @@
 import type { DoctorCheckResult, DoctorContext } from "../doctor";
+import { resolveGatewayApiKey } from "../config";
 
 const NAME = "llm-provider";
 
@@ -14,7 +15,13 @@ export async function anthropicKeyCheck(
   ctx: DoctorContext,
 ): Promise<DoctorCheckResult> {
   // Env takes precedence over config (matches loadConfig() behavior).
-  const key = ctx.envAnthropicKey || ctx.config?.apiKey || "";
+  // resolveGatewayApiKey: non-empty env key wins; else resolve the gateway
+  // SecretSource (which may be a literal, {env}, or {cmd}).
+  const { value: resolvedGatewayKey } = resolveGatewayApiKey(
+    undefined,
+    ctx.config?.apiKey,
+  );
+  const key = ctx.envAnthropicKey || resolvedGatewayKey || "";
   const provider = ctx.llmProvider || "auto";
 
   // Explicit anthropic-api: a key is mandatory and must verify.

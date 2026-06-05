@@ -1,6 +1,6 @@
 import chalk from "chalk";
 import { println } from "../../io";
-import { loadGatewayConfig, saveGatewayConfig } from "../../gateway/config";
+import { loadRawGatewayConfig, saveGatewayConfig } from "../../gateway/config";
 import { appendAdminLog, cliActor } from "../../gateway/admin-log";
 import { ensureValidSlackUserId } from "./shared";
 
@@ -23,7 +23,7 @@ export function adminBootstrapUsage(): void {
 
 export function adminBootstrapCmd(rest: string[]): void {
   const [action, target] = rest;
-  const cfg = loadGatewayConfig();
+  const cfg = loadRawGatewayConfig();
   switch (action) {
     case undefined:
     case "list": {

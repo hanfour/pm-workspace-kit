@@ -1,6 +1,6 @@
 import chalk from "chalk";
 import { println } from "../../io";
-import { loadGatewayConfig, saveGatewayConfig } from "../../gateway/config";
+import { loadRawGatewayConfig, saveGatewayConfig } from "../../gateway/config";
 import {
   ensureValidSlackChannelId,
   ensureValidSlackUserId,
@@ -8,6 +8,7 @@ import {
   isExampleTier,
   type ExampleTier,
 } from "./shared";
+import type { AudienceKey } from "@pmk/shared";
 
 export function audienceUsage(): void {
   println(
@@ -26,9 +27,22 @@ export function audienceUsage(): void {
   );
 }
 
+/** Test-only seam: persist a per-user audience override via the same raw
+ * load/save path the real handler uses (proves references aren't materialised). */
+export function _audienceSetForTest(userId: string, key: AudienceKey): void {
+  const cfg = loadRawGatewayConfig();
+  saveGatewayConfig({
+    ...cfg,
+    audience: {
+      ...cfg.audience,
+      users: { ...cfg.audience.users, [userId]: key },
+    },
+  });
+}
+
 export function audienceCmd(rest: string[]): void {
   const [action, ...args] = rest;
-  const cfg = loadGatewayConfig();
+  const cfg = loadRawGatewayConfig();
   switch (action) {
     case undefined:
     case "list": {

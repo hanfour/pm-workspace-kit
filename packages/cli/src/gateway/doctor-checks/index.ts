@@ -7,6 +7,7 @@ import { mraWorkspaceCheck } from "./mra-workspace";
 import { pkbContentCheck } from "./pkb-content";
 import { channelAclCheck } from "./channel-acl";
 import { manifestAlignmentCheck } from "./manifest-alignment";
+import { secretSourcesCheck } from "./secret-sources";
 
 export {
   configFileCheck,
@@ -17,14 +18,17 @@ export {
   pkbContentCheck,
   channelAclCheck,
   manifestAlignmentCheck,
+  secretSourcesCheck,
 };
 
 // Order matters for output legibility: config-file first (blocks
-// everything below if missing), then external service checks (Slack,
+// everything below if missing), then secret-sources (disk/effective labels
+// before the live token checks), then external service checks (Slack,
 // Anthropic, mra), then content/policy checks, then the static
 // manifest-alignment self-check last.
 export const DEFAULT_CHECKS: DoctorCheck[] = [
   configFileCheck,
+  secretSourcesCheck,
   slackAppTokenCheck,
   slackBotTokenCheck,
   anthropicKeyCheck,

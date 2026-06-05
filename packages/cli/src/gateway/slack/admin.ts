@@ -32,9 +32,10 @@ import {
 } from "@pmk/shared";
 import {
   isAdmin,
-  loadGatewayConfig,
+  loadRawGatewayConfig,
   saveGatewayConfig,
   type GatewayConfig,
+  type RawGatewayConfig,
 } from "../config";
 import {
   approveAtom,
@@ -150,7 +151,7 @@ function helpText(): string {
 // ────────────────── status ──────────────────
 
 function adminStatus(actor: string): AdminSlashResult {
-  const cfg = loadGatewayConfig();
+  const cfg = loadRawGatewayConfig();
   const lines: string[] = ["*gateway status*"];
   lines.push(`• mra workspace: ${cfg.mraWorkspace ?? "_(not configured)_"}`);
   lines.push(
@@ -178,7 +179,7 @@ function adminAudience(
   tokens: string[],
 ): AdminSlashResult {
   const [sub, ...args] = tokens;
-  const cfg = loadGatewayConfig();
+  const cfg = loadRawGatewayConfig();
   switch (sub) {
     case "set": {
       const [userToken, key] = args;
@@ -318,7 +319,7 @@ function adminAudienceExample(
   actor: string,
   args: string[],
 ): AdminSlashResult {
-  const cfg = loadGatewayConfig();
+  const cfg = loadRawGatewayConfig();
   if (!cfg.audience.domainExamples) cfg.audience.domainExamples = {};
   if (!cfg.audience.domainExamples.biz) cfg.audience.domainExamples.biz = [];
   if (!cfg.audience.domainExamples.pm) cfg.audience.domainExamples.pm = [];
@@ -408,7 +409,7 @@ function adminEscalation(
   tokens: string[],
 ): AdminSlashResult {
   const [sub, scopeRaw, userToken] = tokens;
-  const cfg = loadGatewayConfig();
+  const cfg = loadRawGatewayConfig();
   switch (sub) {
     case "add":
     case "remove": {
@@ -572,7 +573,7 @@ function adminAtoms(actor: string, tokens: string[]): AdminSlashResult {
 
 function adminAdmins(actor: string, tokens: string[]): AdminSlashResult {
   const [sub, userToken] = tokens;
-  const cfg = loadGatewayConfig();
+  const cfg = loadRawGatewayConfig();
   switch (sub) {
     case "list":
     case undefined: {
@@ -652,7 +653,7 @@ function adminAudit(_actor: string, tokens: string[]): AdminSlashResult {
 // Export for tests.
 export const _internals = {
   isAdmin,
-  loadGatewayConfig,
+  loadRawGatewayConfig,
   saveGatewayConfig,
-  type: {} as GatewayConfig,
+  type: {} as RawGatewayConfig,
 };

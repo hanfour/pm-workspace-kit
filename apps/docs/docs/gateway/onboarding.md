@@ -130,6 +130,47 @@ pmk gateway demo unseed
 - Token rotated or scopes changed? Re-run `pmk gateway init`, then
   `pmk gateway doctor` to confirm.
 
+## Secrets without plaintext
+
+By default `pmk gateway init` stores your Slack tokens and Anthropic key as literal strings in `~/.pmk/gateway.json` (mode 0600). If you want the file to carry no secret material at all — for example, so a Time Machine backup or a disk image doesn't capture a live token — you can replace any of the three secret fields with a **reference** after running `init`:
+
+```json
+{
+  "slack": {
+    "appToken": { "cmd": "op read op://Personal/Slack/app-token" },
+    "botToken": { "env": "MY_SLACK_BOT_TOKEN" }
+  },
+  "apiKey": { "cmd": "vault kv get -field=value secret/anthropic/key" }
+}
+```
+
+Two reference forms are supported:
+
+- **`{ "cmd": "…" }`** — pmk runs the command via `sh -c` (10 s timeout) and uses the trimmed stdout as the secret. Any CLI secret manager that can print a value works: 1Password (`op read`), HashiCorp Vault, AWS Secrets Manager, `pass`, etc.
+- **`{ "env": "VAR_NAME" }`** — pmk reads that environment variable at startup.
+
+**Precedence** (highest wins):
+
+| Secret | Override order |
+|---|---|
+| `slack.appToken` | `PMK_SLACK_APP_TOKEN` env → `{cmd}`/`{env}` reference → literal |
+| `slack.botToken` | `PMK_SLACK_BOT_TOKEN` env → `{cmd}`/`{env}` reference → literal |
+| `apiKey` | `ANTHROPIC_API_KEY` or `~/.pmk/config.json` apiKey → `{cmd}`/`{env}` reference → literal |
+
+A fixed-name env override (`PMK_SLACK_APP_TOKEN` / `PMK_SLACK_BOT_TOKEN`), if set to **any** value — including an empty string — short-circuits the reference, which is then never run. (Note: an empty value is still subject to the `xapp-`/`xoxb-` format check, so it won't let the gateway start with a blank token.) Similarly, a non-empty CLI-config key means the gateway `apiKey` `{cmd}` never runs.
+
+**Re-running `init` preserves references.** If you press Enter past a token prompt, the existing reference stays on disk unchanged. Only a newly typed literal replaces it.
+
+**`pmk gateway doctor` shows each secret's source:**
+
+```
+[PASS] secret-sources — slack.appToken: disk=cmd effective=cmd; slack.botToken: disk=env:MY_SLACK_BOT_TOKEN effective=env:MY_SLACK_BOT_TOKEN; apiKey: disk=literal effective=literal; no literal secret sources in gateway.json
+```
+
+If a reference is the effective source but can't produce a value (command exits non-zero, env var unset), `doctor` exits 1 with a message naming the secret and exit code — never the command's output. Fix the reference and re-run `doctor` before starting the gateway.
+
+> **Scope note:** the "no literal secret sources" note appears when none of the three secret fields is a literal string — i.e. each is either a `{cmd}`/`{env}` reference or unset. The check covers `gateway.json` only. A `~/.pmk/config.json` `apiKey` is out of scope and may still be plaintext.
+
 ## Where this sits in the 30-day path
 
 Onboarding is the **Week 1** milestone in the README adoption path.
