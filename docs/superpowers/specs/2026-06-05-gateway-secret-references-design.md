@@ -25,7 +25,8 @@ manager-agnostic, with no per-manager code.
 ## Goals
 
 - gateway.json can carry a **reference** instead of plaintext for any of the
-  three secrets, resolved at load.
+  three secrets, resolved before runtime use (Slack tokens at load; apiKey at
+  the provider merge — see Precedence).
 - Manager-agnostic: 1Password, Vault, AWS/GCP, `pass`, anything that can
   print a secret — via a command — works with zero per-manager code.
 - Back-compat: existing gateway.json with plaintext strings keeps working
@@ -39,7 +40,9 @@ manager-agnostic, with no per-manager code.
   `cliConfig.apiKey ?? resolveSecret(gatewayCfg.apiKey)`. This is the *only*
   site that knowingly sees the raw apiKey; everything else either ignores
   apiKey or goes through this merge.
-- `doctor` makes "no plaintext on disk" verifiable.
+- `doctor` makes "no literal secret sources in gateway.json" verifiable.
+  (Note: this is scoped to gateway.json — a CLI-config `apiKey` in
+  `~/.pmk/config.json` is out of scope and can still be plaintext.)
 
 ## Non-goals (YAGNI)
 
@@ -200,11 +203,14 @@ precedence and run the `{cmd}` needlessly).
 
 **Single source of truth — `resolveGatewayApiKey(cliConfig, rawGatewayApiKey)`:**
 extract one helper that returns `{ value, effectiveSource }` where
-`effectiveSource ∈ { "cli-config", "gateway:<diskSource>" }`, and which only
-calls `resolveSecret` when `cliConfig.apiKey` is absent. Both `slack/index.ts`
-(for the value) and `doctor` (for the label + whether to validate the
-reference) call this SAME helper, so the "does the gateway `{cmd}` run?"
-decision can't drift between runtime and doctor.
+`effectiveSource ∈ { "cli-config", "gateway:<diskSource>" }`. `cliConfig.apiKey`
+counts as "supplies a key" (→ `cli-config`, short-circuit) **only when it is a
+non-empty string**; an empty/absent CLI key falls through to
+`resolveSecret(rawGatewayApiKey)`. (This matches today's truthy fallback in
+`slack/index.ts`, where `""` is falsy.) Both `slack/index.ts` (for the value)
+and `doctor` (for the label + whether to validate the reference) call this SAME
+helper, so the "does the gateway `{cmd}` run?" decision can't drift between
+runtime and doctor.
 
 ## Error handling
 
@@ -243,8 +249,9 @@ distinct checks:
     executed)` and is **not** run — matching the runtime. Validation failure →
     FAIL (exit 1); error names the secret + exit code, **excludes stdout,
     stderr, and the resolved value**.
-  - PASS line "no plaintext secrets on disk" keyed on **`diskSource`** (none of
-    the three is `literal`).
+  - PASS line "no literal secret sources in gateway.json" keyed on
+    **`diskSource`** (none of the three is `literal`). Scoped to gateway.json;
+    a CLI-config `apiKey` is not in scope.
 - **Auth checks (existing):** Slack `auth.test` / LLM echo use the **resolved**
   values as today — unchanged.
 
@@ -288,8 +295,9 @@ include any resolved value or command stdout/stderr.
 - Precedence — **apiKey** (via the shared `resolveGatewayApiKey` helper):
   gateway apiKey `{cmd}` **does not execute** when CLI config supplies a key —
   tested for **both** `ANTHROPIC_API_KEY` set **and** `~/.pmk/config.json`
-  `apiKey` set; `effectiveSource` reports `cli-config` in each. Only with no
-  CLI key does the reference resolve.
+  `apiKey` set; `effectiveSource` reports `cli-config` in each. An **empty**
+  CLI apiKey (`""`) is treated as absent → the gateway reference resolves.
+  Only with no usable CLI key does the reference resolve.
 - doctor + runtime agree: the same `resolveGatewayApiKey` helper drives both,
   so a CLI-config key shadows the gateway `{cmd}` in doctor exactly as at
   runtime (doctor does not run a `{cmd}` the runtime would skip).
