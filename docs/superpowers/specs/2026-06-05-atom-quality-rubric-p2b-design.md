@@ -32,7 +32,7 @@ The gateway proposes knowledge atoms from conversations; a human approver reacts
 
 Applied by the approver when a proposed atom surfaces. **No telemetry exists yet at approval time** (a brand-new atom has never been retrieved), so the rubric is **content-quality**. Default disposition is strict: an atom must clear **all five** axes to approve; failing any routes to absorb-with-edit or reject.
 
-1. **Grounded** — derives from a verifiable source (a doc, code, a named system/field/PRD/ADR), not an unsourced assertion.
+1. **Grounded** — traceable to a verifiable source: a doc / code / ADR / PRD / named system or field, **or a named SME's answer in the captured source thread** (an atom distilled from a named IT/domain expert's Slack reply is grounded — don't mistake a legitimate human answer for an unsourced assertion). Only genuinely unsourced claims fail this axis.
 2. **Durable** — a stable fact likely to be asked again, not a one-off / time-bound / ephemeral answer.
 3. **Correctly scoped** — right scope tag, filed where that scope's audience would look.
 4. **Non-duplicate** — not already covered by an approved atom; overlapping content should be merged, not duplicated.
@@ -51,16 +51,19 @@ Strict gating and TTL auto-promote are in tension (auto-promote approves without
 
 ### D. Quarterly audit playbook (guides/atom-audit-playbook.md)
 
-Telemetry-driven review of **existing** atoms, run quarterly by the host/approver via `pmk gateway atoms telemetry`. Classify every atom into one bucket and take the bucket's action:
+Telemetry-driven review of **existing** atoms, run quarterly by the host/approver via `pmk gateway atoms telemetry`. The four signals below are **review flags, not a partition** — an atom can trip more than one (e.g. dead-weight AND stale), and most healthy atoms (recent, low-but-nonzero reuse, no questions) trip **none**. So the playbook applies a **precedence** (first match wins for the headline action) and counts the rest separately:
 
-| Bucket | Signal | Action |
+**Precedence:** Questioned → Dead-weight → Stale → Load-bearing → **Unflagged (keep, counted separately)**.
+
+| Review flag | Signal | Action |
 |---|---|---|
-| **Dead-weight** | `reuseCount` 0 after a maturity window | retire candidate — remove unless there's a known reason to keep |
-| **Load-bearing** | high `reuseCount`, `questionedCount` 0 | keep; the corpus backbone — do not churn |
-| **Questioned** | `questionedCount` material (absolute or relative to reuse) | review the atom + its source → fix (re-ground/edit) or retire |
+| **Questioned** | `questionedCount` over the §E threshold | review the atom + its source → fix (re-ground/edit) or retire (highest precedence — a grounding problem outranks low usage) |
+| **Dead-weight** | `reuseCount` 0 after the maturity window | retire candidate — remove unless there's a known reason to keep |
 | **Stale** | `lastRetrievedAt` old + low reuse | review for relevance → keep / edit / retire |
+| **Load-bearing** | high `reuseCount`, `questionedCount` 0 | keep; the corpus backbone — do not churn |
+| **Unflagged** | none of the above (recent, nonzero reuse, no questions) | keep, no action; counted in the audit-log total |
 
-The playbook documents: who runs it, the quarterly cadence, the exact command, the per-bucket decision, and recording each run as a short **audit-log entry** (date, counts per bucket, what was retired/fixed) so successive audits show the trend.
+The playbook documents: who runs it, the quarterly cadence, the exact command, the precedence application, and recording each run as a short **audit-log entry** (date, count per flag + unflagged total, what was retired/fixed) so successive audits show the trend.
 
 ### E. Path-B deferred calibration
 
@@ -69,14 +72,15 @@ The **structure** (B + D) is final. The **numbers** are explicit **v0 defaults**
 | Number | v0 default | Why this default (to calibrate) |
 |---|---|---|
 | Dead-weight maturity window | one quarter (~90 days) | long enough that a genuinely useful atom would have been retrieved at least once across a quarter's traffic |
-| Questioned threshold | `questionedCount ≥ 2` **or** `questionedCount / reuseCount ≥ ~0.3` | a single 👎 can be noise; two, or a high ratio, signals a real grounding problem |
+| Questioned threshold | `questionedCount ≥ 2` **or** (`reuseCount ≥ 5` **and** `questionedCount / reuseCount ≥ 0.3`) | a single 👎 is noise, so the ratio arm needs a **reuse floor** — without it a 1/1 atom trips immediately, contradicting "one 👎 is noise". The floor reuses the CLI's existing `LOAD_BEARING_MIN_REUSE = 5` (`gateway.ts`) so the rubric and the tool agree on "enough usage to judge" |
 | Stale window | `lastRetrievedAt` older than two quarters with low reuse | half a year unused is a strong relevance signal |
 
 The first quarterly audit explicitly includes a step: "review whether these v0 thresholds match observed reality; adjust and record."
 
 ## Correctness / docs hygiene
 
-- ADR front-matter + numbering follow `templates/adr-template.md` and the `adr/000x` series; add the ADR to the product-decision-log index (`adr/0003`) if that's the convention there.
+- ADR **section structure** follows `templates/adr-template.md` (Status / Date / Deciders / Tags / Context / Decision / Consequences / Alternatives / References); **metadata mirrors ADR-0006** (`doc_id`/`title`/`owner`/`status`/`date` front-matter) since the template's code block omits YAML front-matter but the recent ADRs carry it — match the recent ones, not the bare template.
+- **Index:** the ADR index is [`adr/README.md`](apps/docs/docs/adr/README.md) (its "How to add an ADR" step 3 says *add a row*), **not** `adr/0003`. The index table currently lists only ADR-0001–0003 and is **stale** — it omits the existing 0004/0005/0006. Backfill rows for **0004 (desktop-framework), 0005 (pmk-mra-bridge), 0006 (pmk-gateway-slack)** and then add **0007**, so the index is correct and complete.
 - The playbook references `pmk gateway atoms telemetry` exactly as shipped (P2a) and the four telemetry fields by their real names.
 - Docusaurus build must stay green (no new broken links beyond the pre-existing site-wide `LICENSE.txt` footer); both docs use Docusaurus-resolvable relative links and avoid `_briefs/`-style underscore-dir markdown links.
 - Cross-link: ADR-0007 ↔ the playbook; both ↔ the P2 plan section and the telemetry concept.
@@ -84,7 +88,7 @@ The first quarterly audit explicitly includes a step: "review whether these v0 t
 ## Testing / verification
 
 - `npm --workspace apps/docs run build` → exit 0, no new broken-link target from the two new pages.
-- Content sanity: the rubric's three outcomes map cleanly (no atom can be simultaneously "approve" and "reject"); the playbook's four buckets are exhaustive-enough for the telemetry fields and each has a defined action; every deferred number carries the `⚖️ calibrate` marker.
+- Content sanity: the rubric's three outcomes map cleanly (no atom can be simultaneously "approve" and "reject"); the playbook's four review flags each have a defined action, the **precedence** resolves multi-flag atoms to one headline action, and **unflagged** atoms are explicitly kept + counted (so the flags need not partition); every deferred number carries the `⚖️ calibrate` marker, and the questioned-ratio arm has its reuse floor.
 
 ## Out of scope / future
 
