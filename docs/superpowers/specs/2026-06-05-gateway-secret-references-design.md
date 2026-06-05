@@ -36,10 +36,11 @@ manager-agnostic, with no per-manager code.
   are untouched.
 - **One deliberate consumer change — the provider merge** in
   `slack/index.ts`: `GatewayConfig.apiKey` becomes a raw `SecretSource`
-  (not a `string`), resolved there via
-  `cliConfig.apiKey ?? resolveSecret(gatewayCfg.apiKey)`. This is the *only*
-  site that knowingly sees the raw apiKey; everything else either ignores
-  apiKey or goes through this merge.
+  (not a `string`), resolved there via the shared
+  `resolveGatewayApiKey(cliConfig, gatewayCfg.apiKey)` helper (which
+  short-circuits on a non-empty CLI key — see Precedence, not a bare `??`).
+  This is the *only* site that knowingly sees the raw apiKey; everything else
+  either ignores apiKey or goes through this merge.
 - `doctor` makes "no literal secret sources in gateway.json" verifiable.
   (Note: this is scoped to gateway.json — a CLI-config `apiKey` in
   `~/.pmk/config.json` is out of scope and can still be plaintext.)
@@ -126,7 +127,7 @@ re-save never materialises a secret:
   validation only**. Returns the raw shape: each secret is still a
   `SecretSource` (literal | `{env}` | `{cmd}`). **No env reads, no `{cmd}`
   execution.** This is what `init` edits and what `doctor` inspects for
-  source / no-plaintext reporting, and what `saveGatewayConfig` writes.
+  source / no-literal-source reporting, and what `saveGatewayConfig` writes.
 - **`loadGatewayConfig()`** — builds on the raw load and produces the runtime
   config consumers see. It resolves **Slack tokens eagerly** (see precedence)
   so `appToken?: string` / `botToken?: string` stay resolved strings and no
