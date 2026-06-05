@@ -190,6 +190,9 @@ function formatRepoBlock(repo: string, docs: PkbDoc[]): string {
   ].join("\n\n");
 }
 
+/** Exposed for unit tests; not part of the public command surface. */
+export const _internal = { resolveRepoSpec, formatRepoBlock };
+
 function warnIfStale(entries: Array<{ repo: string; doc: PkbDoc }>): void {
   // Group oldest mtime per repo so the warning lists every stale repo,
   // not just the single oldest doc.

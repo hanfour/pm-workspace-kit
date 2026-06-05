@@ -132,3 +132,6 @@ export async function applyCommand(
   }
   println(chalk.green("\n[pmk] plan walked through. Remember to commit."));
 }
+
+/** Exposed for unit tests; not part of the public command surface. */
+export const _internal = { parsePlan };
