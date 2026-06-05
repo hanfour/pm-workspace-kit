@@ -112,3 +112,68 @@ describe("SocketWatchdog", () => {
     assert.equal(h.exited(), 1);
   });
 });
+
+describe("makeAdapterWatchdogDeps", () => {
+  it("wires reconnect to socket.disconnect() then socket.start() in order", async () => {
+    const { makeAdapterWatchdogDeps } = await import("../src/gateway/slack/socket-watchdog");
+    const calls: string[] = [];
+    const deps = makeAdapterWatchdogDeps({
+      health: new SocketHealth(0),
+      socket: {
+        disconnect: async () => { calls.push("disconnect"); },
+        start: async () => { calls.push("start"); },
+      },
+      presence: { watchdogTerminate: async () => {} },
+      admins: ["U1"],
+      onLog: () => {},
+    });
+    await deps.reconnect();
+    assert.deepEqual(calls, ["disconnect", "start"]);
+  });
+
+  it("wires terminate to presence.watchdogTerminate with the documented args", async () => {
+    const { makeAdapterWatchdogDeps, REUNHEALTHY_ATTEMPTS, WATCHDOG_ALERT_TIMEOUT_MS } =
+      await import("../src/gateway/slack/socket-watchdog");
+    let arg: { adminIds: string[]; attempts: number; alertTimeoutMs: number } | undefined;
+    const deps = makeAdapterWatchdogDeps({
+      health: new SocketHealth(0),
+      socket: { disconnect: async () => {}, start: async () => {} },
+      presence: { watchdogTerminate: async (o) => { arg = o; } },
+      admins: ["U1", "U2"],
+      onLog: () => {},
+    });
+    await deps.terminate();
+    assert.deepEqual(arg, {
+      adminIds: ["U1", "U2"],
+      attempts: REUNHEALTHY_ATTEMPTS,
+      alertTimeoutMs: WATCHDOG_ALERT_TIMEOUT_MS,
+    });
+  });
+
+  it("honours injected exit/now and defaults to callable ones otherwise", async () => {
+    const { makeAdapterWatchdogDeps } = await import("../src/gateway/slack/socket-watchdog");
+    let exited: number | null = null;
+    const injected = makeAdapterWatchdogDeps({
+      health: new SocketHealth(0),
+      socket: { disconnect: async () => {}, start: async () => {} },
+      presence: { watchdogTerminate: async () => {} },
+      admins: [],
+      onLog: () => {},
+      exit: (c) => { exited = c; },
+      now: () => 12_345,
+    });
+    injected.exit(1);
+    assert.equal(exited, 1);
+    assert.equal(injected.now(), 12_345);
+
+    const def = makeAdapterWatchdogDeps({
+      health: new SocketHealth(0),
+      socket: { disconnect: async () => {}, start: async () => {} },
+      presence: { watchdogTerminate: async () => {} },
+      admins: [],
+      onLog: () => {},
+    });
+    assert.equal(typeof def.exit, "function");
+    assert.ok(def.now() >= Date.now() - 1_000); // default now() is real wall-clock
+  });
+});

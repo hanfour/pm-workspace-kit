@@ -23,11 +23,7 @@ import {
 } from "./dry-run-wrapper";
 import { SocketHealth, type ConnState } from "../socket-health";
 import { createPongTapLogger } from "./socket-logger";
-import {
-  SocketWatchdog,
-  WATCHDOG_ALERT_TIMEOUT_MS,
-  REUNHEALTHY_ATTEMPTS,
-} from "./socket-watchdog";
+import { SocketWatchdog, makeAdapterWatchdogDeps } from "./socket-watchdog";
 import { resolveProvider, type LlmProvider } from "../../llm";
 import { loadConfig as loadCliConfig } from "../../config";
 import {
@@ -279,26 +275,23 @@ export class SlackAdapter {
 
     // Self-heal watchdog: detect a wedged socket → in-process reconnect →
     // loud exit if unrecoverable. Skipped under fake transport (tests).
+    // Construct before the connect (so it's ready) but only START its timer
+    // AFTER the initial socket.start() succeeds — there's nothing for the
+    // watchdog to heal until the socket is up, and starting it earlier could
+    // let a first tick race the in-progress initial connect.
     if (this.realTransport) {
-      this.watchdog = new SocketWatchdog({
-        health: this.health,
-        reconnect: async () => {
-          await this.socket.disconnect();
-          await this.socket.start();
-        },
-        terminate: () =>
-          this.presence.watchdogTerminate({
-            adminIds: this.config.admins,
-            attempts: REUNHEALTHY_ATTEMPTS,
-            alertTimeoutMs: WATCHDOG_ALERT_TIMEOUT_MS,
-          }),
-        exit: (code) => process.exit(code),
-        now: () => Date.now(),
-        onLog: this.onLog,
-      });
-      this.watchdog.start();
+      this.watchdog = new SocketWatchdog(
+        makeAdapterWatchdogDeps({
+          health: this.health,
+          socket: this.socket,
+          presence: this.presence,
+          admins: this.config.admins,
+          onLog: this.onLog,
+        }),
+      );
     }
     await this.socket.start();
+    this.watchdog?.start();
 
     // #44: always invoke presence.backOnline so the audit captures
     // every online transition (suppressed or sent). The presence

@@ -34,6 +34,53 @@ export interface SocketWatchdogDeps {
   reconnectTimeoutMs?: number;
 }
 
+/** Collaborators the SlackAdapter feeds into {@link makeAdapterWatchdogDeps}. */
+export interface AdapterWatchdogWiring {
+  health: SocketHealth;
+  socket: { disconnect(): Promise<unknown>; start(): Promise<unknown> };
+  presence: {
+    watchdogTerminate(o: {
+      adminIds: string[];
+      attempts: number;
+      alertTimeoutMs: number;
+    }): Promise<void>;
+  };
+  admins: string[];
+  onLog: (msg: string) => void;
+  /** Defaults to process.exit; injectable for tests. */
+  exit?: (code: number) => void;
+  /** Defaults to Date.now; injectable for tests. */
+  now?: () => number;
+}
+
+/**
+ * Build the production `SocketWatchdogDeps` the SlackAdapter uses — the
+ * reconnect / terminate / exit / now closures. Extracted as a pure factory
+ * so this wiring is unit-testable: the adapter only constructs a watchdog
+ * under a real socket (`realTransport`), so the fake-transport test harness
+ * can't exercise these closures without risking a real `process.exit`.
+ */
+export function makeAdapterWatchdogDeps(
+  w: AdapterWatchdogWiring,
+): SocketWatchdogDeps {
+  return {
+    health: w.health,
+    reconnect: async () => {
+      await w.socket.disconnect();
+      await w.socket.start();
+    },
+    terminate: () =>
+      w.presence.watchdogTerminate({
+        adminIds: w.admins,
+        attempts: REUNHEALTHY_ATTEMPTS,
+        alertTimeoutMs: WATCHDOG_ALERT_TIMEOUT_MS,
+      }),
+    exit: w.exit ?? ((code) => process.exit(code)),
+    now: w.now ?? (() => Date.now()),
+    onLog: w.onLog,
+  };
+}
+
 export class SocketWatchdog {
   private timer?: ReturnType<typeof setInterval>;
   private failedReconnects = 0;
@@ -98,6 +145,11 @@ export class SocketWatchdog {
     this.inFlight = true;
     const timeoutMs = this.deps.reconnectTimeoutMs ?? WATCHDOG_RECONNECT_TIMEOUT_MS;
     try {
+      // The spec phrases the cap as per-step (disconnect, then start); we
+      // race the whole reconnect() thunk against one timeout instead. That
+      // is equivalent-or-stricter for the only thing the cap must guarantee
+      // — that a wedged reconnect can never pin `inFlight` forever — and it
+      // bounds the *total* reconnect time rather than 2× a per-step budget.
       await withTimeout(this.deps.reconnect(), timeoutMs);
       this.deps.health.reset(this.deps.now());
       this.pendingEvaluation = true;
