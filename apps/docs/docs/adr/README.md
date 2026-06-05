@@ -12,6 +12,17 @@ The kit ships three pre-written **methodology** ADRs you can adopt as-is or adap
 | [ADR-0002](./0002-dev-harness.md) | Dev harness conventions | Accepted | 2026-04-24 |
 | [ADR-0003](./0003-product-decision-log.md) | Product decision log as a first-class ADR class | Accepted | 2026-04-24 |
 
+## Project ADRs
+
+The kit's own architectural + process decisions (write your own starting at 0004+):
+
+| # | Title | Status | Date |
+|---|---|---|---|
+| [ADR-0004](./0004-desktop-framework.md) | Desktop app framework — Electron | Accepted | 2026-04-24 |
+| [ADR-0005](./0005-pmk-mra-bridge.md) | pmk delegates code intelligence to mra (does not absorb) | Accepted | 2026-04-27 |
+| [ADR-0006](./0006-pmk-gateway-slack.md) | pmk gateway — host-machine bot for Slack/LINE, not SaaS | Accepted | 2026-04-27 |
+| [ADR-0007](./0007-atom-approval-rubric.md) | Atom approval rubric — strict five-axis gate at proposal time | Proposed | 2026-06-05 |
+
 ## How to use
 
 1. Adopt as your repo's starting ADR-0001/0002/0003, or renumber to fit your sequence.

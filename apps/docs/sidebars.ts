@@ -23,6 +23,7 @@ const sidebars: SidebarsConfig = {
         "guides/confluence-sync",
         "guides/authoring-north-star",
         "guides/handoff-to-implementation",
+        "guides/atom-audit-playbook",
       ],
     },
     {
