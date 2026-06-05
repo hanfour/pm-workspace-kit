@@ -102,7 +102,8 @@ export function resolveSecret(src: SecretSource | undefined): string | undefined
 - `undefined` (no source at all) → `undefined`. NOT an error — absence is
   surfaced later as "gateway not configured".
 - `string` → the literal.
-- `{ env }` → `process.env[env]`; **unset → throw `SecretResolutionError`**.
+- `{ env }` → `process.env[env]`; **unset OR empty (`""`) → throw
+  `SecretResolutionError`** (an explicit reference must yield a real value).
 - `{ cmd }` → run `sh -c <cmd>`, return `stdout.trimEnd()`; 10s timeout.
   Non-zero exit, timeout, or empty output → throw `SecretResolutionError`.
 
@@ -157,12 +158,15 @@ admin). Concretely the migration covers:
 - `gateway/slack/admin.ts` (Slack `/pmk admin ...`)
 - `commands/gateway/ops.ts` `init`
 
-These mutators only touch non-secret fields (admins / audience / escalation),
-so operating on the raw config is straightforward — they edit those fields and
-save the raw secret sources untouched. (Types only narrow the gap, not close
-it: a resolved Slack literal is still structurally a valid `SecretSource`, so
-this is enforced procedurally — every mutator loads raw — plus the
-materialisation test below, not by the compiler alone.)
+`admin` / `audience` / `escalation` (CLI + Slack) only touch **non-secret**
+fields, so on raw config they edit those fields and save the raw secret sources
+untouched. `init` is the one mutator that **does** touch secret fields: it also
+loads/saves raw, and may **replace** a secret source **only when the user types
+a new literal** — pressing Enter preserves the existing `{cmd}`/`{env}`
+reference (see Init UX). (Types only narrow the gap, not close it: a resolved
+Slack literal is still structurally a valid `SecretSource`, so this is enforced
+procedurally — every mutator loads raw — plus the materialisation test below,
+not by the compiler alone.)
 
 ### Precedence (highest → lowest), with short-circuit
 
@@ -182,23 +186,33 @@ const appToken = process.env.PMK_SLACK_APP_TOKEN ?? resolveSecret(raw.slack.appT
 so a one-off `PMK_SLACK_APP_TOKEN=...` works even if the file's `{cmd}` would
 fail, and a broken reference only fail-fasts when no override is present.
 
-**Anthropic apiKey — resolved at the provider-merge in `slack/index.ts`,
-NOT in `loadGatewayConfig`:**
+**Anthropic apiKey — resolved at the provider-merge, NOT in
+`loadGatewayConfig`:**
 ```
-CLI config apiKey  (= ANTHROPIC_API_KEY ?? CLI-file apiKey)
+CLI config apiKey  (= ANTHROPIC_API_KEY ?? CLI-file apiKey, i.e. ~/.pmk/config.json)
   ↳ else resolveSecret(gateway raw apiKey reference)
 ```
-i.e. `const apiKey = cliConfig.apiKey ?? resolveSecret(gatewayCfg.apiKey);`.
 This preserves today's precedence exactly and guarantees the gateway apiKey
-`{cmd}` **does not execute when `ANTHROPIC_API_KEY` is set**. Implementers
-MUST NOT move `ANTHROPIC_API_KEY` handling into `loadGatewayConfig` (that
-would change CLI-config precedence and run the `{cmd}` needlessly).
+`{cmd}` **does not execute when the CLI config already supplies a key** — via
+either `ANTHROPIC_API_KEY` **or** `~/.pmk/config.json`'s `apiKey`. Implementers
+MUST NOT move this into `loadGatewayConfig` (that would change CLI-config
+precedence and run the `{cmd}` needlessly).
+
+**Single source of truth — `resolveGatewayApiKey(cliConfig, rawGatewayApiKey)`:**
+extract one helper that returns `{ value, effectiveSource }` where
+`effectiveSource ∈ { "cli-config", "gateway:<diskSource>" }`, and which only
+calls `resolveSecret` when `cliConfig.apiKey` is absent. Both `slack/index.ts`
+(for the value) and `doctor` (for the label + whether to validate the
+reference) call this SAME helper, so the "does the gateway `{cmd}` run?"
+decision can't drift between runtime and doctor.
 
 ## Error handling
 
 - `{cmd}` failure (non-zero exit / timeout / empty) → fail-fast at load with
   a clear message naming **which secret** failed and the exit code — **never
-  the command's stdout** (it may be the secret).
+  the command's stdout or stderr** (either can carry the secret; e.g. a
+  manager CLI that echoes the item). The `SecretResolutionError` message is
+  built from the secret name + exit code only.
 - Resolved secrets are never logged.
 - A `{cmd}` that resolves but the secret is malformed (wrong prefix) surfaces
   through the existing `hasValidSlackTokens` path, unchanged.
@@ -214,24 +228,28 @@ distinct checks:
   disk" and "what actually supplies it at runtime" differ:
   - `diskSource` — from the **raw** shape only: `literal` / `env:<NAME>` /
     `cmd`. Never derived from the resolved config or runtime env.
-  - `effectiveSource` — what the runtime would actually use: `fixed-env`
-    (`PMK_SLACK_*` / `ANTHROPIC_API_KEY` set) when an override shadows the
-    disk source, otherwise `= diskSource`.
+  - `effectiveSource` — what the runtime would actually use, computed the SAME
+    way runtime does (Slack via the `loadGatewayConfig` short-circuit; apiKey
+    via the shared `resolveGatewayApiKey` helper). It is `fixed-env`
+    (`PMK_SLACK_*` set) or, for apiKey, `cli-config` (`ANTHROPIC_API_KEY` **or**
+    `~/.pmk/config.json` apiKey present) when something shadows the disk
+    source, otherwise `= diskSource`.
   - Keep the 0600 mode check.
   - **Reference validation mirrors runtime short-circuit:** resolve a
     `{cmd}`/`{env}` reference once to confirm a non-empty value **only when it
-    is the effective source** (no fixed-env override shadowing it). When an
-    override is set, the reference is reported as `diskSource: cmd
-    (shadowed by fixed-env — not executed)` and is **not** run — matching the
-    runtime, which never executes it either. Validation failure → FAIL (exit
-    1); error names the secret + exit code, **excludes stdout / resolved value**.
+    is the effective source** (nothing shadowing it). When shadowed (a
+    fixed-env override, or for apiKey a CLI-config key), the reference is
+    reported as `diskSource: cmd (shadowed by <effectiveSource> — not
+    executed)` and is **not** run — matching the runtime. Validation failure →
+    FAIL (exit 1); error names the secret + exit code, **excludes stdout,
+    stderr, and the resolved value**.
   - PASS line "no plaintext secrets on disk" keyed on **`diskSource`** (none of
     the three is `literal`).
 - **Auth checks (existing):** Slack `auth.test` / LLM echo use the **resolved**
   values as today — unchanged.
 
 `--json` includes `diskSource` + `effectiveSource` per secret but MUST NOT
-include any resolved value or command stdout.
+include any resolved value or command stdout/stderr.
 
 ## Init UX (v1 scope)
 
@@ -254,9 +272,11 @@ include any resolved value or command stdout.
 
 ## Testing
 
-- `resolveSecret`: literal; `{env}` set → value, unset → throws; `{cmd}`
-  success / non-zero / empty / timeout (last three throw); **error excludes
-  stdout** (no-leak assertion).
+- `resolveSecret`: literal; `{env}` set → value, **unset → throws, empty
+  `""` → throws**; `{cmd}` success / non-zero / empty / timeout (last three
+  throw); **error excludes both stdout AND stderr** (no-leak assertion —
+  include a `{cmd}` that writes the "secret" to stderr then exits non-zero, and
+  assert it appears nowhere in the thrown message).
 - Well-formedness (in `normaliseRawConfig`): `{ env, cmd }` ambiguous → throw;
   `{}` / unknown keys → throw; empty string `{ cmd: "" }` / non-string
   `{ env: 42 }` → throw. Each error names the secret. (Distinct from task-B
@@ -265,8 +285,14 @@ include any resolved value or command stdout.
   `{cmd}`/`{env}` is **neither read nor executed** (assert the command/env is
   never touched, e.g. a `{cmd}` pointing at a sentinel that would throw still
   yields the override value).
-- Precedence — **apiKey**: `ANTHROPIC_API_KEY` set → gateway apiKey `{cmd}`
-  **does not execute**; resolution stays at the provider-merge site.
+- Precedence — **apiKey** (via the shared `resolveGatewayApiKey` helper):
+  gateway apiKey `{cmd}` **does not execute** when CLI config supplies a key —
+  tested for **both** `ANTHROPIC_API_KEY` set **and** `~/.pmk/config.json`
+  `apiKey` set; `effectiveSource` reports `cli-config` in each. Only with no
+  CLI key does the reference resolve.
+- doctor + runtime agree: the same `resolveGatewayApiKey` helper drives both,
+  so a CLI-config key shadows the gateway `{cmd}` in doctor exactly as at
+  runtime (doctor does not run a `{cmd}` the runtime would skip).
 - **Save must not materialise:** `saveGatewayConfig(loadRawGatewayConfig())`
   round-trips a `{cmd}`/`{env}` reference unchanged on disk (never plaintext).
 - **All mutators preserve references (representative):** with a `{cmd}`
@@ -277,18 +303,20 @@ include any resolved value or command stdout.
 - **init preserves references:** edit one field, Enter past a `{cmd}` field →
   the `{cmd}` survives unchanged in the written file.
 - **doctor:** `diskSource` derived from raw (independent of resolved config);
-  `effectiveSource` reflects a fixed-env override; a `{cmd}` shadowed by a
-  fixed-env override is **not executed**; unshadowed `{cmd}` failure → FAIL;
-  `--json` carries `diskSource`/`effectiveSource` but no resolved value / stdout.
+  `effectiveSource` reflects a shadow (Slack fixed-env; apiKey `cli-config`); a
+  `{cmd}` shadowed by either is **not executed**; an unshadowed `{cmd}` failure
+  → FAIL; `--json` carries `diskSource`/`effectiveSource` but no resolved value,
+  stdout, or stderr.
 
 ## Deliverables
 
 - `secret-source.ts` (+ tests); `config.ts` — `SecretSource` types,
   `RawGatewayConfig`, `loadRawGatewayConfig`, Slack-eager resolution in
-  `loadGatewayConfig`, `saveGatewayConfig(raw)`; provider-merge apiKey resolve
-  in `slack/index.ts`; **migrate every gateway.json mutator** (admin / audience
-  / escalation CLI + Slack `/pmk admin` + init) to raw load/edit/save; doctor
-  extension (+ tests); init help text; deployment doc section.
+  `loadGatewayConfig`, `saveGatewayConfig(raw)`; shared
+  `resolveGatewayApiKey(cliConfig, rawGatewayApiKey)` helper used by both
+  `slack/index.ts` and `doctor`; **migrate every gateway.json mutator** (admin /
+  audience / escalation CLI + Slack `/pmk admin` + init) to raw load/edit/save;
+  doctor extension (+ tests); init help text; deployment doc section.
 - **ADR-0008** (`apps/docs/docs/adr/0008-gateway-secret-references.md`)
   recording the decision (references over plaintext; cmd+env, manager-agnostic;
   non-goals).
