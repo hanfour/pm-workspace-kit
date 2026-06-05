@@ -1,7 +1,11 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import type { AudienceDomainExamples, AudienceKey } from "@pmk/shared";
+import {
+  AUDIENCE_KEYS,
+  type AudienceDomainExamples,
+  type AudienceKey,
+} from "@pmk/shared";
 
 /**
  * Gateway config — what the host configures once, before
@@ -148,40 +152,135 @@ function defaultEscalation(): EscalationConfig {
   return { default: [], repos: {} };
 }
 
+/** Keep only the genuine strings from an untrusted array-ish value. */
+function asStringArray(v: unknown): string[] {
+  return Array.isArray(v)
+    ? v.filter((x): x is string => typeof x === "string")
+    : [];
+}
+
+/** A `Record<string, T>` where every value passes `keep`; others dropped. */
+function asStringRecord<T>(
+  v: unknown,
+  keep: (val: unknown) => val is T,
+): Record<string, T> {
+  if (!v || typeof v !== "object" || Array.isArray(v)) return {};
+  const out: Record<string, T> = {};
+  for (const [k, val] of Object.entries(v as Record<string, unknown>)) {
+    if (keep(val)) out[k] = val;
+  }
+  return out;
+}
+
+const isAudienceKey = (v: unknown): v is AudienceKey =>
+  typeof v === "string" && (AUDIENCE_KEYS as readonly string[]).includes(v);
+
+const asString = (v: unknown): string | undefined =>
+  typeof v === "string" ? v : undefined;
+
+/**
+ * Coerce an untrusted parsed config into a valid, fully-populated
+ * `GatewayConfig`. The file on disk is external data we never trust
+ * blindly (#review): a tampered or partially-written `gateway.json`
+ * could otherwise make `admins` a non-array (silently bypassing
+ * `isAdmin`'s `Array.isArray` guard) or `blocklist` a non-array (whose
+ * `.includes()` would throw and crash the daemon). Security-critical
+ * arrays are filtered to strings; missing fields are back-filled.
+ *
+ * Pure + immutable: builds a new object, never mutates `raw`.
+ */
+function normaliseRawConfig(raw: unknown): GatewayConfig {
+  const r = (raw && typeof raw === "object" ? raw : {}) as Record<
+    string,
+    unknown
+  >;
+  if (r.version !== GATEWAY_CONFIG_VERSION) {
+    throw new Error(
+      `gateway config has version ${r.version}, this build expects ${GATEWAY_CONFIG_VERSION}`,
+    );
+  }
+  const aRaw = (
+    r.audience && typeof r.audience === "object" ? r.audience : {}
+  ) as Record<string, unknown>;
+  const deRaw = (
+    aRaw.domainExamples && typeof aRaw.domainExamples === "object"
+      ? aRaw.domainExamples
+      : {}
+  ) as Record<string, unknown>;
+  const audience: AudienceConfig = {
+    default: isAudienceKey(aRaw.default) ? aRaw.default : "biz",
+    users: asStringRecord(aRaw.users, isAudienceKey),
+    channels: asStringRecord(aRaw.channels, isAudienceKey),
+    domainExamples: {
+      biz: Array.isArray(deRaw.biz)
+        ? (deRaw.biz as AudienceDomainExamples["biz"])
+        : [],
+      pm: Array.isArray(deRaw.pm)
+        ? (deRaw.pm as AudienceDomainExamples["pm"])
+        : [],
+    },
+  };
+  const eRaw = (
+    r.escalation && typeof r.escalation === "object" ? r.escalation : {}
+  ) as Record<string, unknown>;
+  const reposRaw = asStringRecord(eRaw.repos, (v): v is unknown[] =>
+    Array.isArray(v),
+  );
+  const repos: Record<string, string[]> = {};
+  for (const [k, v] of Object.entries(reposRaw)) repos[k] = asStringArray(v);
+  const escalation: EscalationConfig = {
+    default: asStringArray(eRaw.default),
+    repos,
+  };
+  const sRaw = (
+    r.slack && typeof r.slack === "object" ? r.slack : {}
+  ) as Record<string, unknown>;
+  const slack: SlackConfig = {
+    appToken: asString(sRaw.appToken),
+    botToken: asString(sRaw.botToken),
+    botUserId: asString(sRaw.botUserId),
+    workspaceName: asString(sRaw.workspaceName),
+  };
+  return {
+    version: GATEWAY_CONFIG_VERSION,
+    admins: asStringArray(r.admins),
+    blocklist: asStringArray(r.blocklist),
+    audience,
+    escalation,
+    slack,
+    defaultIngest: asString(r.defaultIngest),
+    mraWorkspace: asString(r.mraWorkspace),
+    apiKey: asString(r.apiKey),
+  };
+}
+
+/** Env overrides — handy for CI / containerised hosts. Pure: returns a copy. */
+function applyEnvOverrides(cfg: GatewayConfig): GatewayConfig {
+  return {
+    ...cfg,
+    slack: {
+      ...cfg.slack,
+      appToken: process.env.PMK_SLACK_APP_TOKEN ?? cfg.slack.appToken,
+      botToken: process.env.PMK_SLACK_BOT_TOKEN ?? cfg.slack.botToken,
+    },
+    mraWorkspace: process.env.PMK_MRA_WORKSPACE ?? cfg.mraWorkspace,
+  };
+}
+
 export function loadGatewayConfig(): GatewayConfig {
   const file = gatewayConfigPath();
   if (!fs.existsSync(file)) {
-    return {
+    return applyEnvOverrides({
       version: GATEWAY_CONFIG_VERSION,
       blocklist: [],
       admins: [],
       audience: defaultAudience(),
       escalation: defaultEscalation(),
       slack: {},
-    };
+    });
   }
-  const raw = JSON.parse(fs.readFileSync(file, "utf8")) as GatewayConfig;
-  if (raw.version !== GATEWAY_CONFIG_VERSION) {
-    throw new Error(
-      `gateway config has version ${raw.version}, this build expects ${GATEWAY_CONFIG_VERSION}`,
-    );
-  }
-  // Back-fill fields added in later builds so old configs still load.
-  if (!raw.audience) raw.audience = defaultAudience();
-  if (!raw.audience.users) raw.audience.users = {};
-  if (!raw.audience.channels) raw.audience.channels = {};
-  if (!raw.audience.domainExamples) raw.audience.domainExamples = {};
-  if (!raw.audience.domainExamples.biz) raw.audience.domainExamples.biz = [];
-  if (!raw.audience.domainExamples.pm) raw.audience.domainExamples.pm = [];
-  if (!raw.escalation) raw.escalation = defaultEscalation();
-  if (!raw.escalation.repos) raw.escalation.repos = {};
-  if (!raw.escalation.default) raw.escalation.default = [];
-  if (!Array.isArray(raw.admins)) raw.admins = [];
-  // Env overrides — handy for CI / containerised hosts.
-  raw.slack.appToken = process.env.PMK_SLACK_APP_TOKEN ?? raw.slack.appToken;
-  raw.slack.botToken = process.env.PMK_SLACK_BOT_TOKEN ?? raw.slack.botToken;
-  raw.mraWorkspace = process.env.PMK_MRA_WORKSPACE ?? raw.mraWorkspace;
-  return raw;
+  const raw = JSON.parse(fs.readFileSync(file, "utf8")) as unknown;
+  return applyEnvOverrides(normaliseRawConfig(raw));
 }
 
 /**

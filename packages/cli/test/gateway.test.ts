@@ -48,6 +48,7 @@ import {
 } from "../src/gateway/messaging";
 import type { ChatMessage } from "@pmk/shared";
 import {
+  isAdmin,
   pickAudience,
   pickEffectiveEscalationPool,
   pickEscalationPool,
@@ -200,6 +201,36 @@ describe("gateway config", () => {
     assert.deepEqual(loaded.escalation.default, []);
     assert.deepEqual(loaded.escalation.repos, {});
     assert.equal(loaded.mraWorkspace, undefined);
+  });
+
+  it("coerces a tampered config to safe values (no isAdmin/blocklist bypass)", () => {
+    const file = path.join(tmpHome, ".pmk", "gateway.json");
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    // Hand-crafted hostile / corrupt file: admins is an object (would
+    // otherwise dodge the Array.isArray guard), blocklist is a bare
+    // string (.includes would crash), audience.default is unknown,
+    // and a token field is a number.
+    fs.writeFileSync(
+      file,
+      JSON.stringify({
+        version: 1,
+        admins: { "U-evil": true },
+        blocklist: "U-bad",
+        audience: { default: "root", users: { "U-x": "hacker" } },
+        escalation: { default: ["U-it", 42], repos: { erp: ["U-a", null] } },
+        slack: { appToken: 12345, botToken: "xoxb-x" },
+      }),
+    );
+    const loaded = loadGatewayConfig();
+    assert.deepEqual(loaded.admins, []);
+    assert.deepEqual(loaded.blocklist, []);
+    assert.equal(isAdmin(loaded, "U-evil"), false);
+    assert.equal(loaded.audience.default, "biz"); // unknown key → fallback
+    assert.deepEqual(loaded.audience.users, {}); // "hacker" dropped
+    assert.deepEqual(loaded.escalation.default, ["U-it"]); // 42 dropped
+    assert.deepEqual(loaded.escalation.repos.erp, ["U-a"]); // null dropped
+    assert.equal(loaded.slack.appToken, undefined); // number dropped
+    assert.equal(loaded.slack.botToken, "xoxb-x");
   });
 
   it("mraWorkspace round-trips through save/load", () => {
