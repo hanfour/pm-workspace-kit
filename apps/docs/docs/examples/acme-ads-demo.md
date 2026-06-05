@@ -49,16 +49,42 @@ The bot answers in BIZ-friendly 繁中, grounded in the seeded atoms. Exact word
 pmk gateway escalation add default <slack-user-id>
 ```
 
+### A recorded run
+
+An actual manual walkthrough on a live gateway, grounded in the seeded atoms. Wording varies per run; the substance tracks the PKB. (Question 5's answer is lightly redacted — the live reply named the host's own loaded repos; here it shows the generic boundary it demonstrates.)
+
+**Q1 — AcmeAds 的 AdFormat 跟 placement 有什麼差別？**
+> AdFormat 是「長什麼樣」，placement 是「放在哪」。AdFormat（廣告版型）定義廣告的呈現規格——橫幅、原生、影音、插頁——決定素材尺寸、互動元件與計價單位。placement（版位）是這個版型實際投放的位置——某 App 首頁頂部、文章列表第三則、影片前貼。一對多關係：同一個 AdFormat 可投到多個 placement，同一個 placement 也可能支援多種 AdFormat。報表以 placement 為最小計量單位，AdFormat 用來分群分析。
+
+**Q2 — 某個 placement 的 vCPM 怎麼算？資料在哪看？**
+> vCPM = 該 placement 的 PlacementRevenue ÷ 可視曝光數 × 1000。資料來源是報表系統的 `placement_daily` 日彙總表，欄位是 `revenue`（分子）和 `viewable_impressions`（分母）。注意 vCPM 和 CPM 不同——CPM 用總曝光，vCPM 只算有進入可視區的曝光，廣告主結算通常看 vCPM。
+
+**Q3 — self-service onboarding 上線後，舊客戶的資料怎麼遷？**
+> 舊客戶不會自動進 self-service 流程，對他們來說上線是無感的。依 PRD-2026-0001 與 `crm-customer-migration` module 的設計，遷移是分批、可回滾的 Strangler Fig 方式：(1) 既有客戶資料維持在舊 CRM 表，self-service 只接新註冊；(2) 背景 job 按 batch 把舊客戶 profile 對映到新 schema；(3) 每批遷移後跑對帳，異常的留在舊表、不阻擋新流程。ADR-0004 有記錄這個決策的脈絡。
+
+**Q4 — PlacementRevenue 跟 AccountPayable 差在哪？財報上看哪個？**
+> 兩個是不同方向的錢，不可互換。PlacementRevenue 是 AcmeAds 從廣告主那邊「收進來」的版位營收，計入損益表（P&L）的營收 top line，看「賺多少」用這個。AccountPayable 是 AcmeAds 要「付出去」的——主要是付給 media/publisher 的分潤與供應商應付帳款，落在資產負債表的負債端，看「欠多少待付」用這個。財報上：PlacementRevenue → 損益表；AccountPayable → 資產負債表。
+
+**Q5 — customer onboarding 的客戶去重規則寫在哪個 module 的哪個函式？**
+> Module 邊界已知：`crm.customer`，比對主鍵是 normalized email + 公司統編，命中合併、衝突取最近一次 self-service 提交。但「確切是哪個函式」需要深入 `acme-ads` repo——該 repo 未載入此 PKB，所以 bot 答到 module 邊界為止；更深的位置就是 **escalation 邊界**（交給 IT，或先把該 repo 載入 workspace）。
+
+Notice Q5: the bot answers precisely to the boundary it can ground (the module), then stops — "which exact function" is the hand-off. That hand-off *is* the escalation boundary in action.
+
 ## 4. Automated path (optional) — `pmk demo run`
 
-To post the same five questions automatically and print a transcript:
+`pmk demo run` posts the five questions for you and prints a Q→A transcript. One real limitation is worth knowing before you reach for it:
 
-```bash
-pmk demo run --channel <channel-or-dm-id> --dry-run   # preview first
-pmk demo run --channel <channel-or-dm-id>             # then for real
-```
+- **`--dm` (auto-open the bot DM) does NOT drive the bot** when `PMK_DEMO_USER_TOKEN` is the **gateway app's own** user token. Slack does not redeliver a message posted with an app's user token back to that same app's bot as a `message.im` event (loop prevention), so the bot never sees the questions and every turn prints `(no reply)`. A **manually typed** DM (section 2) is unaffected — it isn't posted through the app's token. This is why the manual path is the recommended walkthrough.
+- **The channel path works**, because an @-mention is delivered through the separate `app_mention` event:
 
-`run` posts **as you** (so the bot answers), reads each reply, and prints a Q→A transcript. It needs a one-time Slack **user OAuth token** in `PMK_DEMO_USER_TOKEN` (`xoxp-…`) with only **`chat:write`** — the token is used solely to post the questions. Reply-reading uses your already-configured gateway **bot** token, so the user token needs **no history scope**; keep its grant minimal. If `run` can post but can't read replies, check the **bot** side (is it in the channel? `pmk gateway doctor`), not the user token.
+  ```bash
+  pmk demo run --channel <channel-id> --dry-run   # preview first
+  pmk demo run --channel <channel-id>             # then for real
+  ```
+
+  Reply-reading then needs the **bot** to hold `channels:history` for that channel (DMs use `im:history`, which the bot already has). Without it, `run` prints `(could not read replies: missing_scope)` — the posting and the bot answering still happened (confirm via the events log / `pmk gateway atoms telemetry`); only the transcript read-back failed.
+
+The token (`PMK_DEMO_USER_TOKEN`, `xoxp-…`) needs only **`chat:write`**. For a frictionless walkthrough, prefer the **manual path (section 2)** — no token, no extra scope.
 
 ## 5. Clean up
 
