@@ -324,10 +324,14 @@ export function approveAtom(idOrPrefix: string): KnowledgeAtom | undefined {
   const found = findAtomByPrefix(idOrPrefix);
   if (!found) return undefined;
   if (found.atom.status === "approved") return found.atom;
-  found.atom.status = "approved";
-  found.atom.expiresAt = undefined;
-  fs.writeFileSync(found.file, renderAtomMarkdown(found.atom), "utf8");
-  return found.atom;
+  // Promote on a copy — approved atoms never expire, so drop expiresAt.
+  const promoted: KnowledgeAtom = {
+    ...found.atom,
+    status: "approved",
+    expiresAt: undefined,
+  };
+  fs.writeFileSync(found.file, renderAtomMarkdown(promoted), "utf8");
+  return promoted;
 }
 
 /**

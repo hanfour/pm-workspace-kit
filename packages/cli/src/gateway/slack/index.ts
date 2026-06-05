@@ -373,10 +373,12 @@ export class SlackAdapter {
     const userId = event.user;
     if (!userId) return;
     if (this.config.blocklist.includes(userId)) {
-      await this.web.chat.postMessage({
-        channel: event.channel!,
-        text: "pmk: 你已被 host 加入封鎖名單，無法使用此服務。",
-      });
+      await this.web.chat
+        .postMessage({
+          channel: event.channel!,
+          text: "pmk: 你已被 host 加入封鎖名單，無法使用此服務。",
+        })
+        .catch(() => {});
       return;
     }
 

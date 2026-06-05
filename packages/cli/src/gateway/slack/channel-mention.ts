@@ -151,9 +151,25 @@ export class ChannelMentionHandler {
       text: ":hourglass_flowing_sand: thinking…",
     });
 
-    const response = await this.llm.chat(PROMPT_CASE, c.messages, {
-      onToken: () => {},
-    });
+    let response: string;
+    try {
+      response = await this.llm.chat(PROMPT_CASE, c.messages, {
+        onToken: () => {},
+      });
+    } catch (err) {
+      // Resolve the "thinking…" placeholder into the error instead of
+      // leaving it stuck forever. We surface the error inline here (and
+      // return) rather than rethrowing, which would make the outer
+      // handler post a second, redundant warning into the thread.
+      await this.web.chat
+        .update({
+          channel: channelId,
+          ts: String(placeholder.ts),
+          text: `:x: pmk 內部錯誤：${(err as Error).message}`,
+        })
+        .catch(() => {});
+      return;
+    }
     const visible = stripCaseUpdateBlock(response);
     c.messages.push({ role: "assistant", content: visible });
 

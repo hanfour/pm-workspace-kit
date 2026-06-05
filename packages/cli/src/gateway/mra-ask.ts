@@ -44,6 +44,18 @@ export function parseMraAsk(response: string): MraAskRequest | undefined {
       question = value.trim();
   }
   if (!repo || !question) return undefined;
+  // `repo` is LLM-generated and gets passed as an argv element to the
+  // `mra` subprocess. spawn() takes an array (no shell), so there's no
+  // shell-injection risk, but a value like `--foo` or `../x` could be
+  // misread as an option or escape the intended repo. Constrain it to a
+  // plain repo-name shape and reject leading-dash option lookalikes.
+  if (
+    repo.startsWith("-") ||
+    repo.includes("..") ||
+    !/^[a-zA-Z0-9_.\/-]+$/.test(repo)
+  ) {
+    return undefined;
+  }
   return { repo, question };
 }
 

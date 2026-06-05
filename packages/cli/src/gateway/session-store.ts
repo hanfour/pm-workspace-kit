@@ -23,9 +23,36 @@ import { gatewayDir } from "./config";
 
 const PLATFORM_SLACK = "slack";
 
+/**
+ * Slack-derived IDs (user/channel/thread_ts) become on-disk path
+ * segments. Slack never emits path separators in these, but the values
+ * originate from an external payload, so we never trust them blindly:
+ * a `/`, `\`, `..`, or control char would let a crafted/forged event
+ * escape `~/.pmk/gateway/`. Reject anything that isn't a flat segment.
+ */
+function assertSafeSegment(value: string, kind: string): string {
+  if (
+    !value ||
+    value === "." ||
+    value === ".." ||
+    /[/\\\0]/.test(value) ||
+    value.includes("..")
+  ) {
+    throw new Error(`gateway: unsafe ${kind} segment: ${JSON.stringify(value)}`);
+  }
+  return value;
+}
+
 function userDir(slackUserId: string, threadTs?: string): string {
-  const base = path.join(gatewayDir(), PLATFORM_SLACK, "users", slackUserId);
-  return threadTs ? path.join(base, "threads", threadTs) : base;
+  const base = path.join(
+    gatewayDir(),
+    PLATFORM_SLACK,
+    "users",
+    assertSafeSegment(slackUserId, "userId"),
+  );
+  return threadTs
+    ? path.join(base, "threads", assertSafeSegment(threadTs, "threadTs"))
+    : base;
 }
 
 function channelDir(slackChannelId: string, threadTs?: string): string {
@@ -33,9 +60,11 @@ function channelDir(slackChannelId: string, threadTs?: string): string {
     gatewayDir(),
     PLATFORM_SLACK,
     "channels",
-    slackChannelId,
+    assertSafeSegment(slackChannelId, "channelId"),
   );
-  return threadTs ? path.join(base, "threads", threadTs) : base;
+  return threadTs
+    ? path.join(base, "threads", assertSafeSegment(threadTs, "threadTs"))
+    : base;
 }
 
 /**
@@ -43,7 +72,12 @@ function channelDir(slackChannelId: string, threadTs?: string): string {
  * activeCase, lastActiveAt are channel-wide, not thread-scoped.
  */
 function channelRootDir(slackChannelId: string): string {
-  return path.join(gatewayDir(), PLATFORM_SLACK, "channels", slackChannelId);
+  return path.join(
+    gatewayDir(),
+    PLATFORM_SLACK,
+    "channels",
+    assertSafeSegment(slackChannelId, "channelId"),
+  );
 }
 
 export interface UserSession {
@@ -94,10 +128,12 @@ export function loadUserSession(
 export function saveUserSession(s: UserSession, threadTs?: string): void {
   const dir = userDir(s.userId, threadTs);
   fs.mkdirSync(dir, { recursive: true });
-  s.lastActiveAt = Date.now();
+  // Stamp lastActiveAt on a copy — never mutate the caller's object,
+  // which may still be in use after the save returns.
+  const toSave: UserSession = { ...s, lastActiveAt: Date.now() };
   fs.writeFileSync(
     path.join(dir, "session.json"),
-    JSON.stringify(s, null, 2),
+    JSON.stringify(toSave, null, 2),
     "utf8",
   );
 }
@@ -113,10 +149,11 @@ export function loadChannelMeta(slackChannelId: string): ChannelMeta {
 export function saveChannelMeta(m: ChannelMeta): void {
   const dir = channelRootDir(m.channelId);
   fs.mkdirSync(dir, { recursive: true });
-  m.lastActiveAt = Date.now();
+  // Stamp lastActiveAt on a copy — never mutate the caller's object.
+  const toSave: ChannelMeta = { ...m, lastActiveAt: Date.now() };
   fs.writeFileSync(
     path.join(dir, "meta.json"),
-    JSON.stringify(m, null, 2),
+    JSON.stringify(toSave, null, 2),
     "utf8",
   );
 }
@@ -235,7 +272,10 @@ function escalationsDir(): string {
 }
 
 function escalationFile(channelId: string, threadTs: string): string {
-  return path.join(escalationsDir(), `${channelId}__${threadTs}.json`);
+  return path.join(
+    escalationsDir(),
+    `${assertSafeSegment(channelId, "channelId")}__${assertSafeSegment(threadTs, "threadTs")}.json`,
+  );
 }
 
 export function loadThreadEscalation(

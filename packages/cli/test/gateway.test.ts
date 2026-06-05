@@ -398,6 +398,29 @@ describe("session-store", () => {
     assert.ok(loaded.lastActiveAt > 0);
   });
 
+  it("saveUserSession does not mutate the caller's object (immutability)", () => {
+    const s = loadUserSession("U-immut");
+    s.lastActiveAt = 0;
+    saveUserSession(s);
+    // The on-disk copy is stamped with now, but the caller's object
+    // must be left untouched.
+    assert.equal(s.lastActiveAt, 0);
+    assert.ok(loadUserSession("U-immut").lastActiveAt > 0);
+  });
+
+  it("rejects path-traversal in Slack IDs (no escape from gateway dir)", () => {
+    assert.throws(() => loadUserSession("../../etc"), /unsafe userId/);
+    assert.throws(
+      () => saveUserSession({ ...loadUserSession("U-ok"), userId: ".." }),
+      /unsafe userId/,
+    );
+    assert.throws(() => loadChannelMeta("a/b"), /unsafe channelId/);
+    assert.throws(
+      () => loadUserSession("U-ok", "../evil"),
+      /unsafe threadTs/,
+    );
+  });
+
   it("listRecentUsers filters by lastActiveAt", () => {
     const old = loadUserSession("U-old");
     saveUserSession(old);
@@ -520,6 +543,21 @@ describe("mra-ask directive", () => {
   it("parseMraAsk returns undefined when required field missing", () => {
     const r = parseMraAsk("```mra-ask\nrepo: erp\n```");
     assert.equal(r, undefined);
+  });
+
+  it("parseMraAsk rejects option-injection / unsafe repo names", () => {
+    // `repo` is passed as an argv element to the mra subprocess; a
+    // leading dash or path-escape must not slip through.
+    assert.equal(
+      parseMraAsk("```mra-ask\nrepo: --version\nquestion: x\n```"),
+      undefined,
+    );
+    assert.equal(
+      parseMraAsk("```mra-ask\nrepo: ../../etc/passwd\nquestion: y\n```"),
+      undefined,
+    );
+    // A normal repo name still parses.
+    assert.ok(parseMraAsk("```mra-ask\nrepo: my-repo\nquestion: y\n```"));
   });
 
   it("stripMraAskBlock removes trailing fenced block", () => {
