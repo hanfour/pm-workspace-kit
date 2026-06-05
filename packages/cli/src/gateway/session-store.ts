@@ -2,6 +2,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import type { ChatMessage } from "@pmk/shared";
 import { gatewayDir } from "./config";
+import { isRecord, readJsonFile, writeJsonFile } from "./json-store";
 
 /**
  * Where Slack-user-scoped state lives.
@@ -108,54 +109,82 @@ export interface ChannelMeta {
  * saved. Free-chat now uses the append-only `gateway/channel-log.ts`
  * module; on-disk files migrate automatically on first load. */
 
+/**
+ * Lenient validators for on-disk state. They check only the
+ * load-bearing field (a session's `messages` array) and otherwise tolerate
+ * legacy / partially-written files — the loaders back-fill the rest. This
+ * deliberately never rejects a real session over a missing numeric field
+ * (which would silently wipe a user's history); it only rejects genuinely
+ * unusable shapes (non-object, no messages array, unparseable).
+ */
+const isStoredUserSession = (
+  v: unknown,
+): v is Partial<UserSession> & { messages: ChatMessage[] } =>
+  isRecord(v) && Array.isArray(v.messages);
+
+const isStoredChannelMeta = (v: unknown): v is Partial<ChannelMeta> =>
+  isRecord(v);
+
+/** Read + normalise a user session file. undefined when absent/corrupt. */
+function readUserSessionFile(
+  file: string,
+  fallbackUserId: string,
+): UserSession | undefined {
+  const raw = readJsonFile(file, isStoredUserSession);
+  if (!raw) return undefined;
+  return {
+    userId: typeof raw.userId === "string" ? raw.userId : fallbackUserId,
+    displayName: typeof raw.displayName === "string" ? raw.displayName : undefined,
+    messages: raw.messages,
+    lastActiveAt: typeof raw.lastActiveAt === "number" ? raw.lastActiveAt : 0,
+    approxTokens: typeof raw.approxTokens === "number" ? raw.approxTokens : 0,
+    turns: typeof raw.turns === "number" ? raw.turns : 0,
+  };
+}
+
 export function loadUserSession(
   slackUserId: string,
   threadTs?: string,
 ): UserSession {
   const file = path.join(userDir(slackUserId, threadTs), "session.json");
-  if (!fs.existsSync(file)) {
-    return {
+  return (
+    readUserSessionFile(file, slackUserId) ?? {
       userId: slackUserId,
       messages: [],
       lastActiveAt: 0,
       approxTokens: 0,
       turns: 0,
-    };
-  }
-  return JSON.parse(fs.readFileSync(file, "utf8")) as UserSession;
+    }
+  );
 }
 
 export function saveUserSession(s: UserSession, threadTs?: string): void {
-  const dir = userDir(s.userId, threadTs);
-  fs.mkdirSync(dir, { recursive: true });
   // Stamp lastActiveAt on a copy — never mutate the caller's object,
   // which may still be in use after the save returns.
   const toSave: UserSession = { ...s, lastActiveAt: Date.now() };
-  fs.writeFileSync(
-    path.join(dir, "session.json"),
-    JSON.stringify(toSave, null, 2),
-    "utf8",
+  writeJsonFile(
+    path.join(userDir(s.userId, threadTs), "session.json"),
+    toSave,
   );
 }
 
 export function loadChannelMeta(slackChannelId: string): ChannelMeta {
   const file = path.join(channelRootDir(slackChannelId), "meta.json");
-  if (!fs.existsSync(file)) {
-    return { channelId: slackChannelId, lastActiveAt: 0 };
-  }
-  return JSON.parse(fs.readFileSync(file, "utf8")) as ChannelMeta;
+  const raw = readJsonFile(file, isStoredChannelMeta);
+  return {
+    channelId:
+      raw && typeof raw.channelId === "string" ? raw.channelId : slackChannelId,
+    activeCase:
+      raw && typeof raw.activeCase === "string" ? raw.activeCase : undefined,
+    lastActiveAt:
+      raw && typeof raw.lastActiveAt === "number" ? raw.lastActiveAt : 0,
+  };
 }
 
 export function saveChannelMeta(m: ChannelMeta): void {
-  const dir = channelRootDir(m.channelId);
-  fs.mkdirSync(dir, { recursive: true });
   // Stamp lastActiveAt on a copy — never mutate the caller's object.
   const toSave: ChannelMeta = { ...m, lastActiveAt: Date.now() };
-  fs.writeFileSync(
-    path.join(dir, "meta.json"),
-    JSON.stringify(toSave, null, 2),
-    "utf8",
-  );
+  writeJsonFile(path.join(channelRootDir(m.channelId), "meta.json"), toSave);
 }
 
 /**
@@ -168,14 +197,8 @@ export function listRecentUsers(hours: number): string[] {
   const cutoff = Date.now() - hours * 60 * 60 * 1000;
   const out: string[] = [];
   for (const id of fs.readdirSync(dir)) {
-    try {
-      const s = JSON.parse(
-        fs.readFileSync(path.join(dir, id, "session.json"), "utf8"),
-      ) as UserSession;
-      if (s.lastActiveAt >= cutoff) out.push(id);
-    } catch {
-      /* skip corrupt */
-    }
+    const s = readUserSessionFile(path.join(dir, id, "session.json"), id);
+    if (s && s.lastActiveAt >= cutoff) out.push(id);
   }
   return out;
 }
@@ -186,13 +209,17 @@ export function listRecentChannels(hours: number): ChannelMeta[] {
   const cutoff = Date.now() - hours * 60 * 60 * 1000;
   const out: ChannelMeta[] = [];
   for (const id of fs.readdirSync(dir)) {
-    try {
-      const m = JSON.parse(
-        fs.readFileSync(path.join(dir, id, "meta.json"), "utf8"),
-      ) as ChannelMeta;
-      if (m.lastActiveAt >= cutoff) out.push(m);
-    } catch {
-      /* skip */
+    const raw = readJsonFile(
+      path.join(dir, id, "meta.json"),
+      isStoredChannelMeta,
+    );
+    if (raw && typeof raw.lastActiveAt === "number" && raw.lastActiveAt >= cutoff) {
+      out.push({
+        channelId: typeof raw.channelId === "string" ? raw.channelId : id,
+        activeCase:
+          typeof raw.activeCase === "string" ? raw.activeCase : undefined,
+        lastActiveAt: raw.lastActiveAt,
+      });
     }
   }
   return out;
@@ -213,21 +240,15 @@ export function userStats(hours: number): Array<{
   const cutoff = Date.now() - hours * 60 * 60 * 1000;
   const out: ReturnType<typeof userStats> = [];
   for (const id of fs.readdirSync(dir)) {
-    try {
-      const s = JSON.parse(
-        fs.readFileSync(path.join(dir, id, "session.json"), "utf8"),
-      ) as UserSession;
-      if (s.lastActiveAt < cutoff) continue;
-      out.push({
-        userId: s.userId,
-        displayName: s.displayName,
-        turns: s.turns,
-        approxTokens: s.approxTokens,
-        lastActiveAt: s.lastActiveAt,
-      });
-    } catch {
-      /* skip */
-    }
+    const s = readUserSessionFile(path.join(dir, id, "session.json"), id);
+    if (!s || s.lastActiveAt < cutoff) continue;
+    out.push({
+      userId: s.userId,
+      displayName: s.displayName,
+      turns: s.turns,
+      approxTokens: s.approxTokens,
+      lastActiveAt: s.lastActiveAt,
+    });
   }
   out.sort((a, b) => b.approxTokens - a.approxTokens);
   return out;
@@ -278,26 +299,32 @@ function escalationFile(channelId: string, threadTs: string): string {
   );
 }
 
+/**
+ * Validate a stored escalation marker. Requires every field a consumer
+ * relies on — notably `mentionedUserIds` (an array), because
+ * `maybeAbsorbReply` calls `.includes()` on it; a marker missing it
+ * would crash the absorb path, so we'd rather treat it as absent.
+ */
+const isStoredThreadEscalation = (v: unknown): v is ThreadEscalation =>
+  isRecord(v) &&
+  typeof v.channelId === "string" &&
+  typeof v.threadTs === "string" &&
+  typeof v.question === "string" &&
+  typeof v.pendingSince === "number" &&
+  Array.isArray(v.mentionedUserIds);
+
 export function loadThreadEscalation(
   channelId: string,
   threadTs: string,
 ): ThreadEscalation | undefined {
-  const file = escalationFile(channelId, threadTs);
-  if (!fs.existsSync(file)) return undefined;
-  try {
-    return JSON.parse(fs.readFileSync(file, "utf8")) as ThreadEscalation;
-  } catch {
-    return undefined;
-  }
+  return readJsonFile(
+    escalationFile(channelId, threadTs),
+    isStoredThreadEscalation,
+  );
 }
 
 export function saveThreadEscalation(esc: ThreadEscalation): void {
-  fs.mkdirSync(escalationsDir(), { recursive: true });
-  fs.writeFileSync(
-    escalationFile(esc.channelId, esc.threadTs),
-    JSON.stringify(esc, null, 2),
-    "utf8",
-  );
+  writeJsonFile(escalationFile(esc.channelId, esc.threadTs), esc);
 }
 
 export function clearThreadEscalation(
@@ -337,9 +364,7 @@ export function claimThreadEscalation(
     return undefined;
   }
   try {
-    return JSON.parse(fs.readFileSync(claimed, "utf8")) as ThreadEscalation;
-  } catch {
-    return undefined;
+    return readJsonFile(claimed, isStoredThreadEscalation);
   } finally {
     try {
       fs.unlinkSync(claimed);
@@ -363,20 +388,11 @@ export function listPendingEscalations(): ThreadEscalation[] {
   const out: ThreadEscalation[] = [];
   for (const f of fs.readdirSync(dir)) {
     if (!f.endsWith(".json")) continue;
-    try {
-      const parsed = JSON.parse(
-        fs.readFileSync(path.join(dir, f), "utf8"),
-      ) as ThreadEscalation;
-      if (
-        typeof parsed.channelId === "string" &&
-        typeof parsed.threadTs === "string" &&
-        typeof parsed.pendingSince === "number"
-      ) {
-        out.push(parsed);
-      }
-    } catch {
-      /* skip corrupt */
-    }
+    const parsed = readJsonFile(
+      path.join(dir, f),
+      isStoredThreadEscalation,
+    );
+    if (parsed) out.push(parsed);
   }
   return out;
 }

@@ -452,6 +452,91 @@ describe("session-store", () => {
     );
   });
 
+  it("loadUserSession tolerates a corrupt file (returns empty, no throw)", () => {
+    const file = path.join(
+      tmpHome,
+      ".pmk",
+      "gateway",
+      "slack",
+      "users",
+      "U-corrupt",
+      "session.json",
+    );
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, "{ broken json ");
+    const s = loadUserSession("U-corrupt");
+    assert.deepEqual(s.messages, []);
+    assert.equal(s.userId, "U-corrupt");
+    assert.equal(s.turns, 0);
+  });
+
+  it("loadUserSession back-fills a legacy file missing numeric fields (no history loss)", () => {
+    const file = path.join(
+      tmpHome,
+      ".pmk",
+      "gateway",
+      "slack",
+      "users",
+      "U-legacy",
+      "session.json",
+    );
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    // An old build that only persisted userId + messages.
+    fs.writeFileSync(
+      file,
+      JSON.stringify({
+        userId: "U-legacy",
+        messages: [{ role: "user", content: "remember me" }],
+      }),
+    );
+    const s = loadUserSession("U-legacy");
+    assert.equal(s.messages.length, 1, "history preserved, not wiped");
+    assert.equal(s.messages[0].content, "remember me");
+    assert.equal(s.lastActiveAt, 0);
+    assert.equal(s.approxTokens, 0);
+    assert.equal(s.turns, 0);
+  });
+
+  it("loadChannelMeta tolerates a corrupt file (returns default)", () => {
+    const file = path.join(
+      tmpHome,
+      ".pmk",
+      "gateway",
+      "slack",
+      "channels",
+      "C-corrupt",
+      "meta.json",
+    );
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, "not json at all");
+    const m = loadChannelMeta("C-corrupt");
+    assert.equal(m.channelId, "C-corrupt");
+    assert.equal(m.lastActiveAt, 0);
+    assert.equal(m.activeCase, undefined);
+  });
+
+  it("loadThreadEscalation rejects a malformed marker (missing mentionedUserIds)", () => {
+    const dir = path.join(
+      tmpHome,
+      ".pmk",
+      "gateway",
+      "slack",
+      "escalations",
+    );
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, "C1__ts-bad.json"),
+      JSON.stringify({
+        channelId: "C1",
+        threadTs: "ts-bad",
+        question: "q",
+        pendingSince: 1,
+        // mentionedUserIds intentionally absent → .includes() would crash
+      }),
+    );
+    assert.equal(loadThreadEscalation("C1", "ts-bad"), undefined);
+  });
+
   it("listRecentUsers filters by lastActiveAt", () => {
     const old = loadUserSession("U-old");
     saveUserSession(old);
