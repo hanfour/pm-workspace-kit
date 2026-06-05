@@ -57,7 +57,7 @@ Telemetry-driven review of **existing** atoms, run quarterly by the host/approve
 
 | Review flag | Signal | Action |
 |---|---|---|
-| **Questioned** | `questionedCount` over the §E threshold | review the atom + its source → fix (re-ground/edit) or retire (highest precedence — a grounding problem outranks low usage) |
+| **Questioned** | `questionedCount` meets the §E threshold | review the atom + its source → fix (re-ground/edit) or retire (highest precedence — a grounding problem outranks low usage) |
 | **Dead-weight** | `reuseCount` 0 after the maturity window | retire candidate — remove unless there's a known reason to keep |
 | **Stale** | `lastRetrievedAt` old + low reuse | review for relevance → keep / edit / retire |
 | **Load-bearing** | high `reuseCount`, `questionedCount` 0 | keep; the corpus backbone — do not churn |
