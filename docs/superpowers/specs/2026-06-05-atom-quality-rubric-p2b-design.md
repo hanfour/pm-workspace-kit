@@ -11,7 +11,7 @@ The gateway proposes knowledge atoms from conversations; a human approver reacts
 ## Goals
 
 - A documented, strict-leaning **approver rubric**: precise approve / absorb-with-edit / reject criteria a human can apply consistently at proposal time.
-- A repeatable **quarterly audit playbook**: telemetry-driven classification of existing atoms into keep / fix / retire, with concrete steps.
+- A repeatable **quarterly audit playbook**: telemetry-driven triage/review of existing atoms into keep / fix / retire actions, with concrete steps.
 - Usable **now** without faking data: structure is final; threshold numbers are explicit v0 defaults marked for calibration.
 
 ## Non-goals (YAGNI)
@@ -71,16 +71,16 @@ The **structure** (B + D) is final. The **numbers** are explicit **v0 defaults**
 
 | Number | v0 default | Why this default (to calibrate) |
 |---|---|---|
-| Dead-weight maturity window | one quarter (~90 days) | long enough that a genuinely useful atom would have been retrieved at least once across a quarter's traffic |
-| Questioned threshold | `questionedCount ≥ 2` **or** (`reuseCount ≥ 5` **and** `questionedCount / reuseCount ≥ 0.3`) | a single 👎 is noise, so the ratio arm needs a **reuse floor** — without it a 1/1 atom trips immediately, contradicting "one 👎 is noise". The floor reuses the CLI's existing `LOAD_BEARING_MIN_REUSE = 5` (`gateway.ts`) so the rubric and the tool agree on "enough usage to judge" |
-| Stale window | `lastRetrievedAt` older than two quarters with low reuse | half a year unused is a strong relevance signal |
+| Dead-weight maturity window | ⚖️ calibrate: one quarter (~90 days) | long enough that a genuinely useful atom would have been retrieved at least once across a quarter's traffic |
+| Questioned threshold | ⚖️ calibrate: `questionedCount ≥ 2` **or** (`reuseCount ≥ 5` **and** `questionedCount / reuseCount ≥ 0.3`) | a single 👎 is noise, so the ratio arm needs a **reuse floor** — without it a 1/1 atom trips immediately, contradicting "one 👎 is noise". The floor reuses the CLI's existing `LOAD_BEARING_MIN_REUSE = 5` (`gateway.ts`) so the rubric and the tool agree on "enough usage to judge" |
+| Stale window | ⚖️ calibrate: `lastRetrievedAt` older than two quarters with low reuse | half a year unused is a strong relevance signal |
 
 The first quarterly audit explicitly includes a step: "review whether these v0 thresholds match observed reality; adjust and record."
 
 ## Correctness / docs hygiene
 
 - ADR **section structure** follows `templates/adr-template.md` (Status / Date / Deciders / Tags / Context / Decision / Consequences / Alternatives / References); **metadata mirrors ADR-0006** (`doc_id`/`title`/`owner`/`status`/`date` front-matter) since the template's code block omits YAML front-matter but the recent ADRs carry it — match the recent ones, not the bare template.
-- **Index:** the ADR index is [`adr/README.md`](apps/docs/docs/adr/README.md) (its "How to add an ADR" step 3 says *add a row*), **not** `adr/0003`. The index table currently lists only ADR-0001–0003 and is **stale** — it omits the existing 0004/0005/0006. Backfill rows for **0004 (desktop-framework), 0005 (pmk-mra-bridge), 0006 (pmk-gateway-slack)** and then add **0007**, so the index is correct and complete.
+- **Index:** the ADR index is `apps/docs/docs/adr/README.md` (its "How to add an ADR" step 3 says *add a row*), **not** `adr/0003`. The index table currently lists only ADR-0001–0003 and is **stale** — it omits the existing 0004/0005/0006. Backfill rows for **0004 (desktop-framework), 0005 (pmk-mra-bridge), 0006 (pmk-gateway-slack)** and then add **0007**, so the index is correct and complete.
 - The playbook references `pmk gateway atoms telemetry` exactly as shipped (P2a) and the four telemetry fields by their real names.
 - Docusaurus build must stay green (no new broken links beyond the pre-existing site-wide `LICENSE.txt` footer); both docs use Docusaurus-resolvable relative links and avoid `_briefs/`-style underscore-dir markdown links.
 - Cross-link: ADR-0007 ↔ the playbook; both ↔ the P2 plan section and the telemetry concept.
