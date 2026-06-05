@@ -26,6 +26,11 @@ import {
 } from "../../case";
 import { approxTokensFor } from "../messaging";
 import {
+  chatWithContextRetry,
+  type ContextRetrySession,
+} from "./context-retry";
+import type { ChatMessage } from "@pmk/shared";
+import {
   FreeChatTurnRunner,
   type FreeChatSession,
 } from "./free-chat-turn";
@@ -151,25 +156,47 @@ export class ChannelMentionHandler {
       text: ":hourglass_flowing_sand: thinking…",
     });
 
-    let response: string;
-    try {
-      response = await this.llm.chat(PROMPT_CASE, c.messages, {
-        onToken: () => {},
-      });
-    } catch (err) {
-      // Resolve the "thinking…" placeholder into the error instead of
-      // leaving it stuck forever. We surface the error inline here (and
-      // return) rather than rethrowing, which would make the outer
-      // handler post a second, redundant warning into the thread.
+    // Case-mode parity with free-chat: wrap the LLM call in the
+    // context-too-long retry so a bloated case history force-prunes and
+    // retries (with a :scissors: notice) instead of dead-ending on
+    // `msg_too_long`, and a genuinely-too-long conversation gets the
+    // same friendly "open a new thread" guidance rather than a generic
+    // internal-error string. The getter/setter view lets
+    // forcePruneToMinimum's `messages = [...]` reassignment propagate
+    // back onto the case file.
+    const caseSession: ContextRetrySession = {
+      get messages(): ChatMessage[] {
+        return c.messages;
+      },
+      set messages(v: ChatMessage[]) {
+        c.messages = v;
+      },
+      approxTokens: approxTokensFor(c.messages),
+    };
+    const retry = await chatWithContextRetry({
+      llm: this.llm,
+      systemPrompt: PROMPT_CASE,
+      buildMessages: () => c.messages,
+      session: caseSession,
+      actor: userId,
+      retrievalAtoms: 0,
+      phase: "first-call",
+    });
+    if (!retry.ok) {
+      const errText =
+        retry.kind === "context"
+          ? ":x: 對話太長，請開新 thread 重新提問"
+          : `:warning: pmk 內部錯誤：${(retry.error as Error).message}`;
       await this.web.chat
         .update({
           channel: channelId,
           ts: String(placeholder.ts),
-          text: `:x: pmk 內部錯誤：${(err as Error).message}`,
+          text: errText,
         })
         .catch(() => {});
       return;
     }
+    const response = retry.full;
     const visible = stripCaseUpdateBlock(response);
     c.messages.push({ role: "assistant", content: visible });
 
@@ -181,7 +208,7 @@ export class ChannelMentionHandler {
     await this.web.chat.update({
       channel: channelId,
       ts: String(placeholder.ts),
-      text: truncateForSlack(markdownToMrkdwn(visible)),
+      text: retry.scissorsPrefix + truncateForSlack(markdownToMrkdwn(visible)),
     });
 
     const summary = formatTrackingSummary(summaries);

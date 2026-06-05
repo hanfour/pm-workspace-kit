@@ -255,6 +255,50 @@ describe("SlackAdapter integration: mra-ask escalate round", () => {
     const finalText = h.web.updated[h.web.updated.length - 1].text ?? "";
     assert.match(finalText, /PKB summary/);
   });
+
+  it("synthesise round context-too-long (both attempts) → friendly new-thread guidance, no crash", async () => {
+    // First call delegates to mra; the synthesise round then blows the
+    // context window on BOTH the initial attempt and the post-force-prune
+    // retry, so synthesiseAfterMra re-throws PmkContextTooLongError and
+    // run() must surface the friendly notice instead of crashing.
+    const ctxErr = () => {
+      throw new PmkContextTooLongError(new Error("msg_too_long"));
+    };
+    h.llm.script(
+      "preamble.\n```mra-ask\nrepo: erp\nquestion: where is X?\n```",
+      ctxErr,
+      ctxErr,
+    );
+    h.mra.scriptAsk({
+      ok: true,
+      stdout: "scope :foo defined in models/x.rb:1",
+      stderr: "",
+      attempts: 1,
+    });
+
+    await h.adapter.start();
+    await h.socket.emit(
+      "message",
+      dmMessagePayload({
+        user: "U-PM",
+        channel: "D-PM-DM",
+        text: "where is X?",
+      }),
+    );
+    await h.flush();
+
+    assert.equal(
+      h.llm.calls.length,
+      3,
+      "first-call + synthesise attempt + post-prune retry = 3 LLM calls",
+    );
+    const finalText = h.web.updated[h.web.updated.length - 1].text ?? "";
+    assert.match(
+      finalText,
+      /對話太長.*重新提問/,
+      "post-mra synthesise blow-up surfaces new-thread guidance, not a crash",
+    );
+  });
 });
 
 describe("SlackAdapter integration: channel @-mention", () => {
@@ -363,6 +407,105 @@ describe("SlackAdapter integration: channel @-mention", () => {
       .postsTo(channelId)
       .filter((p) => p.text && !p.text.includes("thinking"));
     assert.ok(summaryPosts.length >= 1, "tracking summary should be posted");
+  });
+
+  it("case path: PmkContextTooLong → force-prune → retry success → :scissors: prefix", async () => {
+    const channelId = "C-LONGCASE";
+    const caseName = "2026-06-05-bloated-case";
+    const dir = channelCasesDir(channelId);
+    const seed = newCase({
+      name: caseName,
+      title: "Long-running incident",
+      symptom: "lots of back-and-forth",
+    });
+    // Paired history so forcePruneToMinimum has turns to drop.
+    seed.messages = [
+      { role: "user", content: "Q1 ..." },
+      { role: "assistant", content: "A1 ..." },
+      { role: "user", content: "Q2 ..." },
+      { role: "assistant", content: "A2 ..." },
+      { role: "user", content: "Q3 ..." },
+      { role: "assistant", content: "A3 ..." },
+    ];
+    saveCase(seed, dir);
+    saveChannelMeta({ channelId, activeCase: caseName, lastActiveAt: Date.now() });
+
+    h.llm.script(
+      () => {
+        throw new PmkContextTooLongError(new Error("msg_too_long"));
+      },
+      "After pruning, the cleaner case analysis.",
+    );
+
+    await h.adapter.start();
+    await h.socket.emit(
+      "app_mention",
+      appMentionPayload({
+        user: "U-OPS",
+        channel: channelId,
+        text: "<@UBOTID> another long follow-up",
+      }),
+    );
+    await h.flush();
+
+    assert.equal(
+      h.llm.calls.length,
+      2,
+      "case path retries after force-prune (parity with free-chat)",
+    );
+    const finalText = h.web.updated[h.web.updated.length - 1].text ?? "";
+    assert.match(
+      finalText,
+      /^:scissors: 對話過長，已自動裁掉 \d+ 輪舊訊息/,
+      "case reply gets the same scissors trim notice as free-chat",
+    );
+    assert.match(finalText, /cleaner case analysis/);
+    const eventTypes = readGatewayEvents().map(
+      (e) => (e as { type: string }).type,
+    );
+    assert.ok(eventTypes.includes("context.force-pruned"));
+  });
+
+  it("case path: both attempts PmkContextTooLong → friendly new-thread guidance", async () => {
+    const channelId = "C-DEADCASE";
+    const caseName = "2026-06-05-unrecoverable";
+    const dir = channelCasesDir(channelId);
+    const seed = newCase({
+      name: caseName,
+      title: "Unrecoverable",
+      symptom: "huge",
+    });
+    seed.messages = [
+      { role: "user", content: "Q1 ..." },
+      { role: "assistant", content: "A1 ..." },
+      { role: "user", content: "Q2 ..." },
+      { role: "assistant", content: "A2 ..." },
+    ];
+    saveCase(seed, dir);
+    saveChannelMeta({ channelId, activeCase: caseName, lastActiveAt: Date.now() });
+
+    const ctxErr = () => {
+      throw new PmkContextTooLongError(new Error("msg_too_long"));
+    };
+    h.llm.script(ctxErr, ctxErr);
+
+    await h.adapter.start();
+    await h.socket.emit(
+      "app_mention",
+      appMentionPayload({
+        user: "U-OPS",
+        channel: channelId,
+        text: "<@UBOTID> still huge",
+      }),
+    );
+    await h.flush();
+
+    const finalText = h.web.updated[h.web.updated.length - 1].text ?? "";
+    assert.match(
+      finalText,
+      /對話太長.*重新提問/,
+      "case hard-fail surfaces new-thread guidance, not a generic error",
+    );
   });
 });
 
