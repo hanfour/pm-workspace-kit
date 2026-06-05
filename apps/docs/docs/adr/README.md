@@ -21,7 +21,7 @@ The kit's own architectural + process decisions (write your own starting at 0004
 | [ADR-0004](./0004-desktop-framework.md) | Desktop app framework — Electron | Accepted | 2026-04-24 |
 | [ADR-0005](./0005-pmk-mra-bridge.md) | pmk delegates code intelligence to mra (does not absorb) | Accepted | 2026-04-27 |
 | [ADR-0006](./0006-pmk-gateway-slack.md) | pmk gateway — host-machine bot for Slack/LINE, not SaaS | Accepted | 2026-04-27 |
-| [ADR-0007](./0007-atom-approval-rubric.md) | Atom approval rubric — strict five-axis gate at proposal time | Proposed | 2026-06-05 |
+| [ADR-0007](./0007-atom-approval-rubric.md) | Atom approval rubric — strict five-axis gate at proposal time | Accepted | 2026-06-05 |
 
 ## How to use
 

@@ -2,7 +2,7 @@
 doc_id: ADR-2026-0007
 title: Atom approval rubric — strict five-axis gate at proposal time
 owner: "@hanfour"
-status: Proposed
+status: Accepted
 date: 2026-06-05
 related:
   prd: []
@@ -13,7 +13,7 @@ related:
 
 # ADR-0007: Atom approval rubric — strict five-axis gate at proposal time
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-06-05
 - **Deciders:** @hanfour
 - **Tags:** gateway, knowledge, pkb, process
