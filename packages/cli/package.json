@@ -19,7 +19,7 @@
     }
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json && cp src/gateway/slack/manifest.template.json dist/gateway/slack/manifest.template.json && chmod +x dist/index.js",
+    "build": "rm -rf dist && tsc -p tsconfig.json && cp src/gateway/slack/manifest.template.json dist/gateway/slack/manifest.template.json && chmod +x dist/index.js",
     "dev": "tsx src/index.ts",
     "start": "node dist/index.js",
     "typecheck:test": "tsc -p tsconfig.test.json",
