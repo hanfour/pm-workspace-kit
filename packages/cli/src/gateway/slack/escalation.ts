@@ -28,7 +28,7 @@ import {
   pickEscalationPool,
 } from "../config";
 import {
-  clearThreadEscalation,
+  claimThreadEscalation,
   loadThreadEscalation,
   saveThreadEscalation,
 } from "../session-store";
@@ -170,16 +170,24 @@ export class EscalationCoordinator {
   }): Promise<boolean> {
     const { channelId, threadTs, contributorUserId, answerText } = args;
     const { web, onLog, llm } = this.opts;
-    const esc = loadThreadEscalation(channelId, threadTs);
-    if (!esc) return false;
-    if (!esc.mentionedUserIds.includes(contributorUserId)) {
+    // Peek first (read-only) so a non-tagged teammate's reply doesn't
+    // consume the marker — we only claim once we know this contributor
+    // was actually tagged.
+    const peek = loadThreadEscalation(channelId, threadTs);
+    if (!peek) return false;
+    if (!peek.mentionedUserIds.includes(contributorUserId)) {
       // Random teammate replied; don't absorb. We only trust the
       // people pmk explicitly tagged.
       return false;
     }
-    // Claim the marker EAGERLY. Without this, two fast IT replies
-    // could both pass the gate and trigger duplicate extraction.
-    clearThreadEscalation(channelId, threadTs);
+    // Atomically claim the marker. Two tagged IT replies to the same
+    // thread run in parallel (distinct inflight-queue keys); the rename
+    // inside claimThreadEscalation lets only ONE win, so the duplicate
+    // extraction the old load-then-clear allowed can't happen. A loser
+    // (or a Slack envelope retry of this same reply) returns true so the
+    // caller still treats it as absorbed and doesn't run a normal turn.
+    const esc = claimThreadEscalation(channelId, threadTs);
+    if (!esc) return true;
     onLog(
       `escalation reply received from ${contributorUserId} in ${channelId}/${threadTs}; extracting`,
     );

@@ -313,6 +313,43 @@ export function clearThreadEscalation(
 }
 
 /**
+ * Atomically claim a pending-escalation marker. `fs.renameSync` is
+ * atomic on POSIX, so when two tagged contributors reply to the same
+ * escalated thread at once (different inflight-queue keys → genuinely
+ * parallel), only ONE wins the rename — the loser gets ENOENT and bails.
+ * This is what stops a duplicate atom being extracted from a single
+ * escalation. Returns the marker on a successful claim, or undefined if
+ * there's no marker / another caller already claimed it.
+ *
+ * The claimed marker is consumed (deleted) before returning — claiming
+ * is one-shot, mirroring the previous load-then-clear semantics.
+ */
+export function claimThreadEscalation(
+  channelId: string,
+  threadTs: string,
+): ThreadEscalation | undefined {
+  const file = escalationFile(channelId, threadTs);
+  const claimed = `${file}.claiming`;
+  try {
+    fs.renameSync(file, claimed);
+  } catch {
+    // ENOENT: no marker, or a sibling reply already won the rename.
+    return undefined;
+  }
+  try {
+    return JSON.parse(fs.readFileSync(claimed, "utf8")) as ThreadEscalation;
+  } catch {
+    return undefined;
+  } finally {
+    try {
+      fs.unlinkSync(claimed);
+    } catch {
+      /* best-effort cleanup */
+    }
+  }
+}
+
+/**
  * List every escalation marker currently on disk. A marker existing
  * means the thread is still waiting for an IT reply (clearThreadEscalation
  * deletes the file the moment a reply lands and is absorbed). Used by
