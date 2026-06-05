@@ -31,7 +31,7 @@ These are **review flags, not a partition** — an atom can trip more than one, 
 Conservative starting values, **not** data-derived. The first audit with real organic telemetry should re-check and adjust them.
 
 - **Dead-weight maturity window:** ⚖️ calibrate: one quarter (~90 days). Long enough that a genuinely useful atom would have been retrieved at least once across a quarter's traffic.
-- **Questioned threshold:** ⚖️ calibrate: `questionedCount ≥ 2` **or** (`reuseCount ≥ 5` **and** `questionedCount / reuseCount ≥ 0.3`). A single 👎 is noise, so the ratio arm needs a reuse floor; the `5` matches the CLI's `LOAD_BEARING_MIN_REUSE`.
+- **Questioned threshold:** ⚖️ calibrate: `questionedCount ≥ 2` **or** (`reuseCount ≥ 5` **and** `questionedCount / reuseCount ≥ 0.3`). A single 👎 is noise, so the ratio arm needs a reuse floor; the `5` mirrors the CLI's `LOAD_BEARING_MIN_REUSE` — treat the CLI's actual value as source of truth if it ever changes.
 - **Stale window:** ⚖️ calibrate: `lastRetrievedAt` older than two quarters with low reuse. Half a year unused is a strong relevance signal.
 
 ## Steps
