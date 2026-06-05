@@ -30,8 +30,15 @@ manager-agnostic, with no per-manager code.
   print a secret — via a command — works with zero per-manager code.
 - Back-compat: existing gateway.json with plaintext strings keeps working
   unchanged.
-- Consumers (provider resolution, `hasValidSlackTokens`, the whole gateway)
-  see a resolved `string` and need no changes.
+- **Slack token consumers unchanged**: `loadGatewayConfig().slack.appToken` /
+  `.botToken` stay resolved `string`s; `hasValidSlackTokens` and the adapter
+  are untouched.
+- **One deliberate consumer change — the provider merge** in
+  `slack/index.ts`: `GatewayConfig.apiKey` becomes a raw `SecretSource`
+  (not a `string`), resolved there via
+  `cliConfig.apiKey ?? resolveSecret(gatewayCfg.apiKey)`. This is the *only*
+  site that knowingly sees the raw apiKey; everything else either ignores
+  apiKey or goes through this merge.
 - `doctor` makes "no plaintext on disk" verifiable.
 
 ## Non-goals (YAGNI)
@@ -139,6 +146,24 @@ resolved plaintext (a resolved literal is structurally a valid `SecretSource`,
 so types alone can't catch it; this is the procedural guard that complements
 them).
 
+**Applies to EVERY gateway.json mutator, not just `init`.** All
+load → edit → save paths must switch from `loadGatewayConfig()` to
+`loadRawGatewayConfig()`, because each currently saves a resolved config and
+would materialise a referenced secret on any unrelated edit (e.g. adding an
+admin). Concretely the migration covers:
+
+- `commands/gateway/admin.ts`, `commands/gateway/audience.ts`,
+  `commands/gateway/escalation.ts` (CLI `pmk gateway admin/audience/escalation`)
+- `gateway/slack/admin.ts` (Slack `/pmk admin ...`)
+- `commands/gateway/ops.ts` `init`
+
+These mutators only touch non-secret fields (admins / audience / escalation),
+so operating on the raw config is straightforward — they edit those fields and
+save the raw secret sources untouched. (Types only narrow the gap, not close
+it: a resolved Slack literal is still structurally a valid `SecretSource`, so
+this is enforced procedurally — every mutator loads raw — plus the
+materialisation test below, not by the compiler alone.)
+
 ### Precedence (highest → lowest), with short-circuit
 
 Preserves the current "env always wins" model, but the **stage** differs per
@@ -185,21 +210,28 @@ would change CLI-config precedence and run the `{cmd}` needlessly).
 `loadGatewayConfig()` has lost the source labels for Slack tokens. Two
 distinct checks:
 
-- **Source check (reads raw only):**
+- **Source check** — reports two labels per secret, because "where it lives on
+  disk" and "what actually supplies it at runtime" differ:
+  - `diskSource` — from the **raw** shape only: `literal` / `env:<NAME>` /
+    `cmd`. Never derived from the resolved config or runtime env.
+  - `effectiveSource` — what the runtime would actually use: `fixed-env`
+    (`PMK_SLACK_*` / `ANTHROPIC_API_KEY` set) when an override shadows the
+    disk source, otherwise `= diskSource`.
   - Keep the 0600 mode check.
-  - Report each secret's source: `literal` / `env:<NAME>` / `cmd` /
-    `fixed-env(PMK_SLACK_*)` — derived from the raw shape, never the resolved
-    config.
-  - Resolve each `{cmd}`/`{env}` reference once to confirm it yields a
-    non-empty value; failure → FAIL (exit 1). The error names the secret +
-    exit code and **excludes stdout / the resolved value**.
-  - PASS line "no plaintext secrets on disk" when none of the three is a
-    `literal`.
+  - **Reference validation mirrors runtime short-circuit:** resolve a
+    `{cmd}`/`{env}` reference once to confirm a non-empty value **only when it
+    is the effective source** (no fixed-env override shadowing it). When an
+    override is set, the reference is reported as `diskSource: cmd
+    (shadowed by fixed-env — not executed)` and is **not** run — matching the
+    runtime, which never executes it either. Validation failure → FAIL (exit
+    1); error names the secret + exit code, **excludes stdout / resolved value**.
+  - PASS line "no plaintext secrets on disk" keyed on **`diskSource`** (none of
+    the three is `literal`).
 - **Auth checks (existing):** Slack `auth.test` / LLM echo use the **resolved**
   values as today — unchanged.
 
-`--json` output includes the **source label** per secret but MUST NOT include
-any resolved value or command stdout.
+`--json` includes `diskSource` + `effectiveSource` per secret but MUST NOT
+include any resolved value or command stdout.
 
 ## Init UX (v1 scope)
 
@@ -237,16 +269,26 @@ any resolved value or command stdout.
   **does not execute**; resolution stays at the provider-merge site.
 - **Save must not materialise:** `saveGatewayConfig(loadRawGatewayConfig())`
   round-trips a `{cmd}`/`{env}` reference unchanged on disk (never plaintext).
+- **All mutators preserve references (representative):** with a `{cmd}`
+  `appToken` on disk, run an unrelated edit through each mutator family — CLI
+  `audience set` / `admin add` / `escalation add` and the Slack `/pmk admin`
+  path — and assert the `{cmd}` survives unchanged (not materialised) while the
+  intended field changes.
 - **init preserves references:** edit one field, Enter past a `{cmd}` field →
   the `{cmd}` survives unchanged in the written file.
-- **doctor:** source reporting derived from raw (independent of resolved
-  config); `{cmd}` failure → FAIL; `--json` carries source label but no
-  resolved value / stdout (no-leak).
+- **doctor:** `diskSource` derived from raw (independent of resolved config);
+  `effectiveSource` reflects a fixed-env override; a `{cmd}` shadowed by a
+  fixed-env override is **not executed**; unshadowed `{cmd}` failure → FAIL;
+  `--json` carries `diskSource`/`effectiveSource` but no resolved value / stdout.
 
 ## Deliverables
 
-- `secret-source.ts` (+ tests), `config.ts` schema + resolution, doctor
-  extension (+ tests), init help text, deployment doc section.
+- `secret-source.ts` (+ tests); `config.ts` — `SecretSource` types,
+  `RawGatewayConfig`, `loadRawGatewayConfig`, Slack-eager resolution in
+  `loadGatewayConfig`, `saveGatewayConfig(raw)`; provider-merge apiKey resolve
+  in `slack/index.ts`; **migrate every gateway.json mutator** (admin / audience
+  / escalation CLI + Slack `/pmk admin` + init) to raw load/edit/save; doctor
+  extension (+ tests); init help text; deployment doc section.
 - **ADR-0008** (`apps/docs/docs/adr/0008-gateway-secret-references.md`)
   recording the decision (references over plaintext; cmd+env, manager-agnostic;
   non-goals).
