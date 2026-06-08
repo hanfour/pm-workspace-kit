@@ -452,12 +452,20 @@ export interface OpsDeps {
   /** Send a signal to a pid; throw if the pid does not exist (signal 0). */
   kill: (pid: number, signal: NodeJS.Signals | 0) => void;
   sleep: (ms: number) => Promise<void>;
+  /**
+   * True when the launchd service label is currently loaded. Injected because
+   * the real probe shells out to `launchctl print` against the live gui domain,
+   * which ignores $HOME — so without injection a test cannot isolate from a
+   * service actually installed on the developer's machine.
+   */
+  loaded: (label: string) => boolean;
 }
 
 const realDeps: OpsDeps = {
   execFile: (f, a) => { execFileSync(f, a, { stdio: "ignore" }); },
   kill: (p, s) => process.kill(p, s),
   sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+  loaded: loadedService,
 };
 
 /**
@@ -472,12 +480,12 @@ const realDeps: OpsDeps = {
  *   3. A plist file is installed on disk (booted-out but persisted)
  *      → loaded: false; caller must NOT issue bootout.
  */
-function launchctlTarget(): { label: string; loaded: boolean } | undefined {
+function launchctlTarget(d: OpsDeps): { label: string; loaded: boolean } | undefined {
   const live = gatewayLiveRunState();
   if (live?.supervised === "launchd" && live.serviceLabel && serviceLabelValid(live.serviceLabel)) {
     return { label: live.serviceLabel, loaded: true };
   }
-  if (loadedService(SERVICE_LABEL)) return { label: SERVICE_LABEL, loaded: true };
+  if (d.loaded(SERVICE_LABEL)) return { label: SERVICE_LABEL, loaded: true };
   if (installedPlist(SERVICE_LABEL)) return { label: SERVICE_LABEL, loaded: false };
   return undefined;
 }
@@ -492,7 +500,7 @@ function launchctlTarget(): { label: string; loaded: boolean } | undefined {
  */
 export async function stopCmdImpl(d: OpsDeps = realDeps): Promise<string> {
   const live = gatewayLiveRunState();
-  const lc = launchctlTarget();
+  const lc = launchctlTarget(d);
 
   // launchd path: only issue bootout when the service is actually loaded.
   // A plist that exists but is already booted-out doesn't need (or
@@ -522,8 +530,6 @@ export async function stopCmd(): Promise<void> {
 // ---------------------------------------------------------------------------
 
 export interface RestartDeps extends OpsDeps {
-  /** Returns true when the launchd service label is currently loaded. */
-  isLoaded: (label: string) => boolean;
   /** Spawns `gateway start` detached; returns the child pid. */
   spawnDetached: () => number;
   /** Reads run-state raw from disk (may be undefined or stale). */
@@ -551,7 +557,7 @@ export async function restartCmdImpl(d: RestartDeps): Promise<string> {
   const installed = installedPlist(SERVICE_LABEL);
   const uid = requireUid();
 
-  if (d.isLoaded(SERVICE_LABEL) || live?.supervised === "launchd") {
+  if (d.loaded(SERVICE_LABEL) || live?.supervised === "launchd") {
     const kickLabel = (live?.serviceLabel && serviceLabelValid(live.serviceLabel)) ? live.serviceLabel : SERVICE_LABEL;
     d.execFile("launchctl", ["kickstart", "-k", `gui/${uid}/${kickLabel}`]);
     return `restarted launchd service ${kickLabel}`;
@@ -589,7 +595,6 @@ export async function restartCmd(): Promise<void> {
 
   const deps: RestartDeps = {
     ...realDeps,
-    isLoaded: loadedService,
     readReady: readGatewayRunStateRaw,
     spawnDetached: () => {
       const out = fs.openSync(path.join(logsDir, "gateway.out.log"), "a");

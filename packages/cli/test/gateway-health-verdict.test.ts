@@ -20,14 +20,23 @@ describe("verdict", () => {
     assert.equal(verdict({ pidAlive: false, heartbeatAge: 1000 }).level, "down");
     assert.equal(verdict({ pidAlive: true, heartbeatAge: 90_000 }).level, "down");
   });
-  it("with live inputs: healthy vs degraded", () => {
-    assert.equal(verdict({ pidAlive: true, heartbeatAge: 5_000, live: { socketState: "connected", flaps: 0 } }).level, "healthy");
-    assert.equal(verdict({ pidAlive: true, heartbeatAge: 5_000, live: { socketState: "reconnecting", flaps: 0 } }).level, "degraded");
-    assert.equal(verdict({ pidAlive: true, heartbeatAge: 5_000, live: { socketState: "connected", flaps: 2 } }).level, "degraded");
-    assert.equal(verdict({ pidAlive: true, heartbeatAge: 45_000, live: { socketState: "connected", flaps: 0 } }).level, "degraded");
+  it("with live inputs: gates on current/recent-window signals, NOT lifetime flaps", () => {
+    const fresh = 5_000;
+    const ok = { socketState: "connected" as const, pongTimeoutsInWindow: 0, unstableMs: 0 };
+    // healthy: connected with a clean recent window
+    assert.equal(verdict({ pidAlive: true, heartbeatAge: fresh, live: ok }).level, "healthy");
+    // the bug we're fixing: a tolerated transient pong-timeout (below threshold) — and any
+    // historical reconnect, which is no longer even an input — must NOT degrade a connected socket
+    assert.equal(verdict({ pidAlive: true, heartbeatAge: fresh, live: { ...ok, pongTimeoutsInWindow: 2 } }).level, "healthy");
+    // degraded: socket not currently connected
+    assert.equal(verdict({ pidAlive: true, heartbeatAge: fresh, live: { socketState: "reconnecting", pongTimeoutsInWindow: 0, unstableMs: 5_000 } }).level, "degraded");
+    // degraded: pong-timeout flood within the window (>= threshold)
+    assert.equal(verdict({ pidAlive: true, heartbeatAge: fresh, live: { ...ok, pongTimeoutsInWindow: 3 } }).level, "degraded");
+    // degraded: heartbeat aging even with a clean socket
+    assert.equal(verdict({ pidAlive: true, heartbeatAge: 45_000, live: ok }).level, "degraded");
   });
   it("pid-dead wins even with healthy live inputs", () => {
-    assert.equal(verdict({ pidAlive: false, heartbeatAge: 5_000, live: { socketState: "connected", flaps: 0 } }).level, "down");
+    assert.equal(verdict({ pidAlive: false, heartbeatAge: 5_000, live: { socketState: "connected", pongTimeoutsInWindow: 0, unstableMs: 0 } }).level, "down");
   });
   it("without live inputs (CLI): never healthy — caps at degraded when up", () => {
     const v = verdict({ pidAlive: true, heartbeatAge: 5_000 });

@@ -46,7 +46,7 @@ describe("gateway stop", () => {
 
   function deps(over: Partial<OpsDeps> = {}): OpsDeps & { calls: string[][] } {
     const calls: string[][] = [];
-    return { calls, execFile: (f, a) => { calls.push([f, ...a]); }, kill: () => {}, sleep: async () => {}, ...over };
+    return { calls, execFile: (f, a) => { calls.push([f, ...a]); }, kill: () => {}, sleep: async () => {}, loaded: () => false, ...over };
   }
 
   it("not running, not installed → message, no launchctl/kill", async () => {
@@ -83,7 +83,7 @@ describe("gateway restart", () => {
       calls,
       execFile: (f, a) => calls.push([f, ...a]),
       kill: () => {}, sleep: async () => {},
-      isLoaded: () => false,
+      loaded: () => false,
       spawnDetached: () => 999,
       readReady: () => undefined,
       ...over,
@@ -93,13 +93,13 @@ describe("gateway restart", () => {
   it("plist installed but NOT loaded → launchctl bootstrap (not kickstart)", async () => {
     fs.mkdirSync(path.join(tmp, "Library", "LaunchAgents"), { recursive: true });
     fs.writeFileSync(path.join(tmp, "Library", "LaunchAgents", "com.pmk.gateway.plist"), "<plist/>");
-    const d = base({ isLoaded: () => false });
+    const d = base({ loaded: () => false });
     await restartCmdImpl(d);
     assert.equal(d.calls[0][1], "bootstrap");
   });
 
   it("loaded service → kickstart -k targets SERVICE_LABEL when no custom label", async () => {
-    const d = base({ isLoaded: () => true });
+    const d = base({ loaded: () => true });
     await restartCmdImpl(d);
     assert.deepEqual(d.calls[0].slice(1, 3), ["kickstart", "-k"]);
     assert.match(d.calls[0][3], /com\.pmk\.gateway/);
@@ -107,7 +107,7 @@ describe("gateway restart", () => {
 
   it("loaded service with custom serviceLabel → kickstart targets custom label", async () => {
     writeRunState({ pid: process.pid, startedAt: 1, phase: "ready", supervised: "launchd", serviceLabel: "com.myorg.pmk" });
-    const d = base({ isLoaded: () => true });
+    const d = base({ loaded: () => true });
     await restartCmdImpl(d);
     assert.deepEqual(d.calls[0].slice(1, 3), ["kickstart", "-k"]);
     assert.match(d.calls[0][3], /com\.myorg\.pmk/);
@@ -118,7 +118,7 @@ describe("gateway restart", () => {
     let spawned = false; let polls = 0;
     const out = await restartCmdImpl(base({
       kill: () => { throw new Error("dead"); }, // already gone after SIGTERM
-      isLoaded: () => false,
+      loaded: () => false,
       spawnDetached: () => { spawned = true; return 777; },
       readReady: () => (++polls >= 2 ? { pid: 777, phase: "ready" } : { pid: 777, phase: "starting" }),
     }));
@@ -128,7 +128,7 @@ describe("gateway restart", () => {
 
   it("standalone start never reaches ready → failure message", async () => {
     const out = await restartCmdImpl(base({
-      isLoaded: () => false,
+      loaded: () => false,
       spawnDetached: () => 777,
       readReady: () => ({ pid: 777, phase: "starting" }), // never ready
     }));

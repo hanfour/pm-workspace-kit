@@ -685,8 +685,14 @@ function adminDoctor(args: AdminSlashArgs): AdminSlashResult {
   const snap = args.getRuntimeHealthSnapshot?.();
   const hbAt = lastHeartbeatAt();
   const heartbeatAge = hbAt === undefined ? undefined : now - hbAt;
+  // Verdict gates on current/recent-window socket signals (self-healing), NOT
+  // lifetime flaps/confirmedFailures — those stay in the display line below as info.
   const live = snap?.socket
-    ? { socketState: snap.socket.state, flaps: snap.watchdog?.flaps ?? 0 }
+    ? {
+        socketState: snap.socket.state,
+        pongTimeoutsInWindow: snap.socket.pongTimeoutsInWindow,
+        unstableMs: snap.socket.unstableMs,
+      }
     : undefined;
   // pidAlive: true — this runs inside the live daemon answering a slash command
   const v = verdict({ pidAlive: true, heartbeatAge, live });
