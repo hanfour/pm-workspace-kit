@@ -62,41 +62,51 @@ Today liveness is a bare pid file read by `gatewayRunningPid()`
 ```ts
 interface GatewayRunState {
   pid: number;
-  startedAt: number;        // ms epoch — drives uptime
+  startedAt: number;            // ms epoch — drives uptime
+  phase: "starting" | "ready";  // ready ONLY after adapter.start() succeeds
   supervised: "launchd" | null;
-  serviceLabel?: string;    // e.g. "com.pmk.gateway"
+  serviceLabel?: string;        // e.g. "com.pmk.gateway"
 }
 ```
 
-- Written by `runGateway` at startup; the file may persist after the process
-  dies (so a dead daemon's last state is still readable) — see the raw/live
-  split below. The existing shutdown marker stays as-is.
+- Written by `runGateway`: `phase:"starting"` at process start, then
+  **rewritten `phase:"ready"` only after `SlackAdapter.start()` resolves**
+  (socket connected + auth ok). This is what `restart` polls on — heartbeat/pid
+  alone are written early and would report success while Slack startup is still
+  failing. The file may persist after the process dies; the existing shutdown
+  marker stays as-is.
 - `supervised` / `serviceLabel` (of the *running* process) are read from env at
   start: the launchd plist sets `PMK_SERVICE=launchd` + `PMK_SERVICE_LABEL=<label>`.
   Absent → `null` (standalone).
 
-**Two readers (don't conflate):**
+**Two run-state readers (don't conflate):**
 - `readGatewayRunStateRaw(): GatewayRunState | undefined` — the file as-is,
   possibly stale (pid may be dead). Used by `status` (must work when down).
 - `gatewayLiveRunState(): GatewayRunState | undefined` — raw + liveness-checked
   via `process.kill(pid, 0)`; `undefined` if not actually running. Used by
   start/stop/restart. `gatewayRunningPid()` derives from this.
 
-**Installed-service discovery (separate from "is it running"):** because after
-`launchctl bootout` the daemon is gone and run-state is stale, env alone can't
-tell start/restart whether a LaunchAgent is *installed*. Add
-`installedService(): { label: string } | undefined` that checks the plist at
-`~/Library/LaunchAgents/com.pmk.gateway.plist` (and, when present, confirms with
-`launchctl print gui/<uid>/<label>`). So the supervised decision is:
-*running supervised* (live run-state `supervised==="launchd"`) **or** *stopped
-but installed* (`installedService()` present) → use launchctl; else standalone.
+**Three distinct launchd states (do NOT conflate "installed" with "loaded"):**
+`launchctl bootout` *unloads* the service from the launchd domain — the plist
+stays on disk but `kickstart` then fails (not loaded). So model three things:
+- `installedPlist(): { label, plistPath } | undefined` — the plist file exists
+  at `~/Library/LaunchAgents/com.pmk.gateway.plist`.
+- `loadedService(label): boolean` — loaded in the domain (`launchctl print
+  gui/<uid>/<label>` succeeds).
+- `gatewayLiveRunState()` — the process is actually alive.
+
+The lifecycle decision (used by A):
+- live + `supervised==="launchd"`, or `loadedService` → launchctl `kickstart -k`.
+- `installedPlist` but NOT loaded → `launchctl bootstrap gui/<uid> <plistPath>`
+  (RunAtLoad starts it), for restart/start.
+- no plist → standalone.
 
 ### Unit A — `stop` / `restart`
 
 Add `case "stop"` / `case "restart"` to `commands/gateway/index.ts` and
-`stopCmd` / `restartCmd` in `commands/gateway/ops.ts`. Both use the **supervised
-decision** from Unit 0 (running-supervised OR stopped-but-installed → launchctl;
-else standalone).
+`stopCmd` / `restartCmd` in `commands/gateway/ops.ts`. Both use the **lifecycle
+decision** from Unit 0 (live-supervised / `loadedService` / `installedPlist`
+unloaded / standalone).
 
 **`launchctl` is invoked shell-free** — `execFile("launchctl", [verb,
 "gui/" + uid + "/" + label, …])` with `uid = process.getuid()` and a validated
@@ -112,19 +122,23 @@ shell command string.
   it exits (cap ~30s); report graceful stop, or still-running on timeout.
 
 **`pmk gateway restart`:**
-- launchctl path → `execFile("launchctl", ["kickstart", "-k",
-  "gui/<uid>/<label>"])` (one-shot kill + restart). Report.
+- `loadedService` (or live-supervised) → `execFile("launchctl", ["kickstart",
+  "-k", "gui/<uid>/<label>"])` (one-shot kill + restart). Report.
+- `installedPlist` but **not loaded** (e.g. after a prior `stop`/bootout) →
+  `execFile("launchctl", ["bootstrap", "gui/<uid>", <plistPath>])` (RunAtLoad
+  starts it). `kickstart` would FAIL here — must bootstrap first.
 - standalone → run the stop path (SIGTERM + wait for exit), then re-launch
   detached: `spawn(<node>, [<dist>/index.js, "gateway", "start"], { detached:
   true, stdio: ["ignore", <out fd>, <err fd>] })`, `child.unref()`. **stdout/err
   go to the same log files as the LaunchAgent** (`~/.pmk/logs/gateway.{out,err}.log`,
   opened with `fs.openSync(..., "a")`) — NOT `"ignore"` — so a failed start is
-  diagnosable. Then **poll run-state + heartbeat for up to ~8s**: only report
-  success once a fresh run-state/heartbeat from the new pid appears; otherwise
-  report "start may have failed — see ~/.pmk/logs/gateway.err.log" and the exit
-  if the child already died.
-- Not running → just start (detached standalone, same logging+poll) or
-  `launchctl kickstart` (if installed).
+  diagnosable. Then **poll run-state for `phase:"ready"` from the new pid for up
+  to ~15s** (NOT just heartbeat/pid — those are written early, before
+  `adapter.start()`; a Slack-auth/socket failure would otherwise look like a
+  success). Report success only on `ready`; else "start may have failed — see
+  ~/.pmk/logs/gateway.err.log" + the child's exit if it already died.
+- Not running → just start (detached standalone with the same logging + `ready`
+  poll) or `bootstrap`/`kickstart` (if installed/loaded).
 
 If `launchctl` is missing / not macOS, fall back to the standalone path or
 report a clear error.
@@ -135,14 +149,17 @@ report a clear error.
 Add `adminDoctor` + `case "doctor"` in `slack/admin.ts`. **Main engineering
 point:** `adminStatus` only `loadRawGatewayConfig()`s today; `adminDoctor`
 needs the daemon's live handles. Their state is private, so add **public
-snapshot APIs** and pass the snapshots (not the objects) into the handler:
+snapshot APIs**:
 - `SocketHealth.snapshot(now: number): { state, pongTimeoutsInWindow, unstableMs }`
 - `SocketWatchdog.snapshot(): { flaps, reconnects, confirmedFailures }`
 
-Thread these snapshots (+ `startedAt`) from `SlackAdapter` (`slack/index.ts`,
-which owns the socket + health/watchdog) into `SlashCommandHandler` → the admin
-handler (DI). When a handle is absent (e.g. dry-run) the metric renders
-"unknown" rather than throwing.
+**DI must pass a PROVIDER FUNCTION, not a construction-time snapshot** — a value
+captured when `SlashCommandHandler` is built would freeze `/pmk admin doctor` at
+old state forever. Pass `getRuntimeHealthSnapshot(): RuntimeHealthSnapshot` (a
+closure over the live `SocketHealth`/`SocketWatchdog` + `startedAt`) that reads
+`SocketHealth.snapshot(Date.now())` / `SocketWatchdog.snapshot()` **at command
+time**, on each `/doctor` invocation. When the provider is absent (e.g. dry-run)
+metrics render "unknown" rather than throwing.
 
 Reported (live):
 | metric | source |
@@ -173,11 +190,16 @@ it MUST NOT resolve secret references: a status command must never execute a
 **Heartbeat aging thresholds** (used by both verdict + the age label):
 `fresh` < 30s, `aging` 30s–`HEARTBEAT_STALE_MS` (60s), `stale` ≥ 60s.
 
-Both lead with a one-line verdict: **🟢 healthy / 🟡 degraded / 🔴 down**:
-- 🔴 down = pid dead OR heartbeat `stale`.
-- 🟡 degraded = socket not `connected`, OR watchdog `flaps > 0`, OR heartbeat
-  `aging`.
-- 🟢 healthy = pid alive, socket connected, no flaps, heartbeat `fresh`.
+**Shared verdict helper** — `verdict({ pidAlive, heartbeatAge, live? })` where
+`live?` (`{ socketState, flaps }`) is **optional**, because CLI has no socket/
+watchdog memory:
+- 🔴 down = `!pidAlive` OR heartbeat `stale`.
+- with `live` (Slack doctor): 🟡 degraded if `socketState !== "connected"` OR
+  `flaps > 0` OR heartbeat `aging`; else 🟢 healthy.
+- **without `live` (CLI status): cap at 🟡** — `🔴` if down, else
+  `🟡 "process + heartbeat ok, live socket unknown — see /pmk admin doctor"`.
+  CLI never claims 🟢 (it can't confirm the socket). Unknown socket never lowers
+  to 🔴.
 
 Permission: Slack side gated by the existing `/pmk admin` admin check; CLI runs
 on the host.
@@ -225,38 +247,46 @@ on the host.
 
 ## Testing
 
-- run-state: write on start; `readGatewayRunStateRaw` returns a stale file
-  (dead pid) verbatim; `gatewayLiveRunState` returns undefined for a dead pid;
-  `supervised` derived from `PMK_SERVICE` env, missing → standalone.
-- installed-service discovery: `installedService()` true when the plist exists,
-  undefined otherwise; "stopped but installed" → stop/restart take the launchctl
-  path even though run-state is stale/absent.
-- supervised decision: shell-free `execFile("launchctl", [...])` with the exact
-  argv (`bootout` / `kickstart -k`, `gui/<uid>/<label>`); label validation rejects
-  a bad label.
-- stop: standalone (mock `process.kill` → SIGTERM then exit poll); launchctl path
-  (asserts argv); not-running-and-not-installed message.
-- restart: standalone — assert detached spawn opts, stdio wired to the log fds
-  (NOT "ignore"), and that success is only reported after a fresh run-state/
-  heartbeat appears within the poll window; a child that dies immediately →
-  failure message pointing at `gateway.err.log`. launchctl path → `kickstart -k`.
-- `adminDoctor`: inject fake `SocketHealth.snapshot`/`SocketWatchdog.snapshot`
-  (connected/0-flaps vs reconnecting/N-flaps) + heartbeat + events → asserts
-  verdict (🟢/🟡) and metric lines; missing handle → "unknown"; non-admin → denied.
-- CLI status: heartbeat + events files with a dead pid → renders persisted health
-  + the "use Slack doctor" note; **a gateway.json with a `{cmd}` secret ref →
-  status does NOT execute the command** (assert via a sentinel cmd that would
-  error/observe); heartbeat thresholds fresh/aging/stale map to the right verdict.
+- run-state: write `phase:"starting"` on start then `"ready"` after a (faked)
+  `adapter.start()` resolves; `readGatewayRunStateRaw` returns a stale file
+  (dead pid) verbatim; `gatewayLiveRunState` undefined for a dead pid;
+  `supervised` from `PMK_SERVICE` env, missing → standalone.
+- launchd states: `installedPlist()` true iff plist exists; `loadedService()`
+  reflects `launchctl print` success (mock); the lifecycle decision picks
+  `kickstart` when loaded vs `bootstrap` when plist-exists-but-unloaded vs
+  standalone when no plist.
+- launchctl shell-free: `execFile("launchctl", [...])` exact argv (`bootout` /
+  `kickstart -k` / `bootstrap`, `gui/<uid>/<label|plist>`); bad label rejected.
+- stop: standalone (mock `process.kill` → SIGTERM then exit poll); launchctl
+  path → `bootout` argv; not-running-and-not-installed message.
+- restart: **plist-exists-but-unloaded → `bootstrap` (NOT `kickstart`)**;
+  loaded → `kickstart -k`; standalone — assert detached spawn opts + stdio wired
+  to the log fds (NOT "ignore"); **success reported ONLY after `phase:"ready"`
+  from the new pid — a run-state that is still `"starting"` (early heartbeat/pid)
+  must NOT count as success**; a child that dies / never reaches ready →
+  failure message pointing at `gateway.err.log`.
+- `adminDoctor`: the **provider is read at command time** — call `/doctor` twice
+  with a snapshot that changes between calls and assert the second reflects the
+  new state (proves no construction-time freeze). Verdict 🟢 (connected/0-flaps/
+  fresh) vs 🟡 (reconnecting or flaps>0 or aging); missing provider → "unknown";
+  non-admin → denied.
+- verdict helper: with `live` → 🟢/🟡/🔴 per rules; **without `live` → never 🟢,
+  caps at 🟡 when up, 🔴 when down**.
+- CLI status: heartbeat + events with a dead pid → persisted health + the "use
+  Slack doctor" note + **caps at 🟡 (never 🟢)**; **a gateway.json with a `{cmd}`
+  secret ref → status does NOT execute the command** (sentinel cmd that would
+  error/observe); fresh/aging/stale → right verdict.
 - install-service: plist content (Label, KeepAlive, `PMK_SERVICE` env, abs paths,
   WorkingDirectory rule, **no secret**); `{env}`-secret warning fires; idempotency
   (`--force`); non-macOS guard.
 
 ## Deliverables
 
-- `gateway/index.ts`: `GatewayRunState`, `readGatewayRunStateRaw()`,
-  `gatewayLiveRunState()`, `installedService()`; write run-state in `runGateway`
-  (capturing `PMK_SERVICE`/`PMK_SERVICE_LABEL`). `gatewayRunningPid()` derives
-  from `gatewayLiveRunState()`.
+- `gateway/index.ts`: `GatewayRunState` (with `phase`), `readGatewayRunStateRaw()`,
+  `gatewayLiveRunState()`, `installedPlist()`, `loadedService(label)`; in
+  `runGateway` write `phase:"starting"` at start then rewrite `phase:"ready"`
+  after `SlackAdapter.start()` resolves (capturing `PMK_SERVICE`/`PMK_SERVICE_LABEL`).
+  `gatewayRunningPid()` derives from `gatewayLiveRunState()`.
 - `gateway/socket-health.ts`: `SocketHealth.snapshot(now)`;
   `gateway/slack/socket-watchdog.ts`: `SocketWatchdog.snapshot()` (public reads).
 - `commands/gateway/ops.ts`: `stopCmd`, `restartCmd` (supervised-decision +
@@ -264,13 +294,15 @@ on the host.
   run-state + `loadRawGatewayConfig`, never resolves secrets);
   `commands/gateway/index.ts`: `stop` / `restart` cases.
 - `gateway/slack/admin.ts`: `adminDoctor` + `doctor` case; `slack/index.ts` +
-  `slack/slash-command.ts`: thread the `SocketHealth`/`SocketWatchdog` snapshots
-  + `startedAt` into the admin handler.
+  `slack/slash-command.ts`: thread a `getRuntimeHealthSnapshot()` **provider
+  function** (closure over live `SocketHealth`/`SocketWatchdog` + `startedAt`,
+  read at command time) into the admin handler.
 - `commands/gateway/service.ts` (new): `installServiceCmd` + `install-service`
   case; launchd plist generator (WorkingDirectory rule, `{env}`-secret warning,
   shell-free launchctl, `--load`/`--uninstall`/`--force`).
-- A small shared health-verdict helper (🟢/🟡/🔴 + heartbeat fresh/aging/stale
-  thresholds) used by both Slack and CLI so the logic isn't duplicated.
+- A small shared `verdict({ pidAlive, heartbeatAge, live? })` helper (🟢/🟡/🔴 +
+  heartbeat fresh/aging/stale thresholds; `live` optional → CLI caps at 🟡) used
+  by both Slack and CLI so the logic isn't duplicated.
 - Docs: gateway onboarding/lifecycle page — "Operating the gateway" section
   (stop/restart, doctor, install-service, always-on).
 - Tests for each unit above.
