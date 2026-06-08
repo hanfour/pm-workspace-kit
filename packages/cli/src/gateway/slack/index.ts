@@ -140,6 +140,8 @@ export class SlackAdapter {
   private readonly realTransport: boolean;
   /** Self-heal watchdog; started in start(), stopped in stop(). */
   private watchdog?: SocketWatchdog;
+  /** Epoch ms when this adapter instance was constructed. Used by admin doctor. */
+  private readonly startedAt = Date.now();
 
   constructor(opts: SlackAdapterOptions) {
     // v0.13: token guard only fires on the prod construction path.
@@ -207,6 +209,11 @@ export class SlackAdapter {
     this.slashCommand = new SlashCommandHandler({
       web: this.web,
       config: this.config,
+      getRuntimeHealthSnapshot: () => ({
+        socket: this.health.snapshot(Date.now()),
+        watchdog: this.watchdog?.snapshot(),
+        startedAt: this.startedAt,
+      }),
     });
     this.escalation = new EscalationCoordinator({
       web: this.web,

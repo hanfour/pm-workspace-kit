@@ -1,12 +1,17 @@
-import * as fs from "node:fs";
 import * as path from "node:path";
+import * as fs from "node:fs";
 import { SlackAdapter } from "./slack";
 import { createDryRunStats } from "./slack/dry-run-wrapper";
 import {
-  gatewayPidPath,
   hasValidSlackTokens,
   loadGatewayConfig,
 } from "./config";
+import {
+  writeRunState,
+  removeRunState,
+  readGatewayRunStateRaw,
+  gatewayLiveRunState,
+} from "./run-state";
 import {
   HEARTBEAT_INTERVAL_MS,
   clearHeartbeat,
@@ -96,7 +101,16 @@ export async function runGateway(opts: GatewayRunOptions = {}): Promise<void> {
     dryRunOpts: dryRunStats ? { stats: dryRunStats } : undefined,
   });
 
-  writePidFile();
+  const supervised: "launchd" | null = process.env.PMK_SERVICE === "launchd" ? "launchd" : null;
+  const serviceLabel = process.env.PMK_SERVICE_LABEL;
+
+  writeRunState({
+    pid: process.pid,
+    startedAt: Date.now(),
+    phase: "starting",
+    supervised,
+    serviceLabel,
+  });
 
   let shuttingDown = false;
   const shutdown = async (signal: string) => {
@@ -135,7 +149,7 @@ export async function runGateway(opts: GatewayRunOptions = {}): Promise<void> {
         "  (retrieval / LLM token / escalation counters live in dryrun-events-YYYY-MM.log)",
       );
     }
-    removePidFile();
+    removeRunState();
     process.exit(0);
   };
   process.on("SIGINT", () => void shutdown("SIGINT"));
@@ -143,6 +157,14 @@ export async function runGateway(opts: GatewayRunOptions = {}): Promise<void> {
 
   try {
     const info = await adapter.start();
+    const prev = readGatewayRunStateRaw();
+    writeRunState({
+      pid: process.pid,
+      startedAt: prev?.startedAt ?? Date.now(), // file race on startup — fall back to now (off by < adapter.start() duration)
+      phase: "ready",
+      supervised,
+      serviceLabel,
+    });
     log(
       `gateway up. Slack=${info.workspaceName} botUser=<@${info.botUserId}>. Ctrl+C to stop.`,
     );
@@ -150,7 +172,7 @@ export async function runGateway(opts: GatewayRunOptions = {}): Promise<void> {
     hb.stop();
     keepAwake.stop();
     clearHeartbeat();
-    removePidFile();
+    removeRunState();
     throw err;
   }
 
@@ -158,41 +180,10 @@ export async function runGateway(opts: GatewayRunOptions = {}): Promise<void> {
   await new Promise(() => {});
 }
 
-function writePidFile(): void {
-  try {
-    fs.writeFileSync(gatewayPidPath(), process.pid.toString(), "utf8");
-  } catch {
-    /* non-fatal */
-  }
-}
-
-function removePidFile(): void {
-  try {
-    fs.unlinkSync(gatewayPidPath());
-  } catch {
-    /* may already be gone */
-  }
-}
-
 /**
- * Read the PID file and best-effort check if that PID is alive.
+ * Read the run-state file and best-effort check if that PID is alive.
  * Returns the PID if a gateway appears to be running, undefined otherwise.
  */
 export function gatewayRunningPid(): number | undefined {
-  const file = gatewayPidPath();
-  if (!fs.existsSync(file)) return undefined;
-  const pid = parseInt(fs.readFileSync(file, "utf8").trim(), 10);
-  if (!Number.isFinite(pid)) return undefined;
-  try {
-    process.kill(pid, 0); // signal 0 = liveness check
-    return pid;
-  } catch {
-    // PID stale — clean up so future status checks are accurate.
-    try {
-      fs.unlinkSync(file);
-    } catch {
-      /* ignore */
-    }
-    return undefined;
-  }
+  return gatewayLiveRunState()?.pid;
 }

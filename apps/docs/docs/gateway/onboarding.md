@@ -171,6 +171,196 @@ If a reference is the effective source but can't produce a value (command exits 
 
 > **Scope note:** the "no literal secret sources" note appears when none of the three secret fields is a literal string — i.e. each is either a `{cmd}`/`{env}` reference or unset. The check covers `gateway.json` only. A `~/.pmk/config.json` `apiKey` is out of scope and may still be plaintext.
 
+## Operating the gateway
+
+Once the bot is live you will reach for these commands to inspect it,
+stop it cleanly, restart it after a config change, or keep it running
+persistently as a macOS LaunchAgent.
+
+### Three layers of state to keep straight
+
+| State | What it means | How to check |
+|---|---|---|
+| **installed** | The LaunchAgent plist is on disk (`~/Library/LaunchAgents/com.pmk.gateway.plist`) | `pmk gateway install-service` wrote it |
+| **loaded** | The plist is registered with launchd (`launchctl print` succeeds) | `launchctl print gui/$(id -u)/com.pmk.gateway` (note: `pmk gateway status` shows `supervised: launchd` only for a *live supervised process*, not a loaded-but-stopped service) |
+| **live** | A gateway process is actually running and the Slack socket is connected | `pmk gateway status` + `/pmk admin doctor` |
+
+A service can be installed but not loaded (e.g. after `pmk gateway stop`). A
+service can be loaded but not live if launchd is between restart attempts.
+These distinctions drive the `stop` and `restart` decision trees below.
+
+### `pmk gateway status`
+
+Reads persisted state from disk — no live socket access required. Works
+even when the gateway is down.
+
+```
+pmk gateway status
+```
+
+**Example output:**
+
+```
+pmk gateway status
+🟡 degraded — process + heartbeat ok, live socket unknown — see /pmk admin doctor
+  running:    yes (pid 12345)
+  supervised: launchd (com.pmk.gateway)
+  heartbeat:  8s ago
+  uptime:    3620s
+  turns/30m: 14
+  last offline reason: —
+  mra workspace: /Users/you/work
+  live socket: use `/pmk admin doctor` in Slack
+```
+
+**Why `status` caps at 🟡 (never 🟢):** the CLI reads only files on
+disk and cannot see inside the live process. It can confirm the pid is
+alive and the heartbeat is fresh, but cannot confirm the Slack Socket
+Mode connection. For a 🟢 healthy verdict you need `/pmk admin doctor`,
+which runs *inside* the daemon and has direct access to the socket and
+watchdog state.
+
+**Verdict legend:**
+
+| Emoji | Level | Condition |
+|---|---|---|
+| 🔴 | down | pid dead or heartbeat stale (≥ 60 s) |
+| 🟡 | degraded | pid alive + fresh heartbeat, but socket unconfirmable from CLI |
+| 🟢 | healthy | only reachable via `/pmk admin doctor` (live socket confirmed) |
+
+`status` never resolves `{cmd}` or `{env}` secret references in
+`gateway.json` — it reads raw config for metadata only.
+
+### `pmk gateway stop`
+
+Stops the gateway cleanly. Auto-detects whether the process is
+supervised by launchd and takes the appropriate path.
+
+```
+pmk gateway stop
+```
+
+**Decision tree:**
+
+1. **launchd-supervised** (run-state says `supervised: launchd`, or the
+   service is currently loaded) → `launchctl bootout gui/<uid>/com.pmk.gateway`
+   — launchd tears down the unit; KeepAlive is suspended until next load.
+2. **Not running, no plist loaded** → prints "gateway is not running."
+   with no side effects.
+3. **Standalone process** → sends `SIGTERM` then polls every second for
+   up to 30 seconds, confirming the pid is gone. The gateway drains
+   in-flight turns before exiting (25 s budget).
+
+If a plist is installed on disk but is already booted-out, `stop` does
+not issue a redundant `bootout`.
+
+### `pmk gateway restart`
+
+Restarts the gateway. Like `stop`, it auto-detects the supervision mode.
+
+```
+pmk gateway restart
+```
+
+**Decision tree:**
+
+1. **Service loaded in launchd** → `launchctl kickstart -k gui/<uid>/com.pmk.gateway`
+   (terminates the old unit and starts fresh in one step).
+2. **Plist installed but NOT loaded** → `launchctl bootstrap gui/<uid> <plist>`
+   (RunAtLoad brings it up). `kickstart` on an unloaded service would error —
+   this is why `restart` uses `bootstrap` here, not `kickstart`.
+3. **Standalone** → `SIGTERM` the live process, then spawns a detached
+   `gateway start`, then polls the run-state file until the new process
+   writes `phase: "ready"` — confirming Slack is connected, not just
+   that the process started (`phase: "starting"` is written earlier and
+   must not be mistaken for success). Times out after 15 s with a hint
+   to check `~/.pmk/logs/gateway.err.log`.
+
+### `/pmk admin doctor` (Slack)
+
+A Slack slash command for admins that runs **inside the live daemon** and
+reports real-time socket and watchdog state. Because it executes in the
+same process as the Slack connection, it can confirm what `pmk gateway status`
+cannot.
+
+```
+/pmk admin doctor
+```
+
+**Example reply:**
+
+```
+🟢 *gateway healthy* — connected
+• socket: connected (pong-timeouts 0, unstable 0s)
+• watchdog: 0 flaps, 0 confirmed-fail
+• heartbeat: 6s ago
+• uptime: 3624s
+• turns/30m: 14
+```
+
+The snapshot is read at command time (not captured when the daemon
+started), so repeated calls always reflect the current connection state.
+
+**DM-only, admin-restricted.** You must be in `gateway.json`'s `admins`
+list to run admin commands. The first admin is bootstrapped with
+`pmk gateway init`; subsequent admins are added via
+`/pmk admin admins add @user`.
+
+### `pmk gateway install-service`
+
+Installs a macOS LaunchAgent so the gateway starts automatically at
+login and restarts after crashes (KeepAlive).
+
+```bash
+# Write the plist only (inspect before loading):
+pmk gateway install-service
+
+# Write and load in one step:
+pmk gateway install-service --load
+
+# Overwrite an existing plist:
+pmk gateway install-service --force
+
+# Remove the plist and unload the service:
+pmk gateway install-service --uninstall
+```
+
+**What it generates:**
+
+- `~/Library/LaunchAgents/com.pmk.gateway.plist` with `KeepAlive: true`
+  and `RunAtLoad: true`.
+- Logs to `~/.pmk/logs/gateway.out.log` / `gateway.err.log`.
+- Sets `PMK_SERVICE=launchd` and `PMK_SERVICE_LABEL=com.pmk.gateway` in
+  `EnvironmentVariables` so the gateway knows it is supervised.
+- `WorkingDirectory` is set to `mraWorkspace` if valid, otherwise `cwd`
+  at install time — mra-ask needs this to find `.collab/repos.json`.
+
+**No secrets in the plist.** Tokens are never written to the plist. They
+stay in `~/.pmk/gateway.json` via the v0.20.0 secret-references mechanism
+(`{cmd}` / `{env}` / literal). The LaunchAgent inherits `HOME` and a
+sanitised `PATH`, but nothing else from your shell.
+
+**`{env}` secret caveat.** If any of `slack.appToken`, `slack.botToken`,
+or `apiKey` in `gateway.json` uses an `{env}` reference,
+`install-service` will print a warning:
+
+```
+⚠️  slack.appToken is an {env:MY_APP_TOKEN} reference — the LaunchAgent
+     has no such env; use a {cmd} ref / literal, or add it to the plist yourself.
+```
+
+A LaunchAgent's `EnvironmentVariables` dict is the only environment it
+sees — your shell's exported variables are not inherited. Use a `{cmd}`
+reference (e.g. `op read`) or a literal value instead, or add the
+variable manually to the plist's `EnvironmentVariables` dict.
+
+**Loading manually (if you did not pass `--load`):**
+
+```bash
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.pmk.gateway.plist
+launchctl enable gui/$(id -u)/com.pmk.gateway
+```
+
 ## Where this sits in the 30-day path
 
 Onboarding is the **Week 1** milestone in the README adoption path.

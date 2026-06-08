@@ -44,12 +44,29 @@ import {
   rejectAtom,
 } from "../knowledge";
 import { appendAdminLog, readAdminLog } from "../admin-log";
+import { verdict } from "../health-verdict";
+import { lastHeartbeatAt } from "../heartbeat";
+import { readGatewayEvents, RECENT_ACTIVITY_WINDOW_MS } from "../events";
+import type { ConnState } from "../socket-health";
+
+/** Live snapshot injected by the SlackAdapter via a provider closure. */
+export interface RuntimeHealthSnapshot {
+  socket?: { state: ConnState; pongTimeoutsInWindow: number; unstableMs: number };
+  watchdog?: { flaps: number; confirmedFailures: number };
+  startedAt: number;
+}
 
 export interface AdminSlashArgs {
   /** Slack user ID of the admin running the command. */
   actor: string;
   /** Tokens after `admin ` — e.g. ["audience", "set", "<@U0X>", "pm"]. */
   tokens: string[];
+  /**
+   * Provider function read at COMMAND time (not captured at construction).
+   * Injected by SlashCommandHandler when operating inside the live daemon.
+   * Absent in CLI-only contexts (e.g., `pmk gateway status`).
+   */
+  getRuntimeHealthSnapshot?: () => RuntimeHealthSnapshot;
 }
 
 export interface AdminSlashResult {
@@ -118,6 +135,8 @@ export async function handleAdminSlash(
       return adminAdmins(args.actor, rest);
     case "audit":
       return adminAudit(args.actor, rest);
+    case "doctor":
+      return adminDoctor(args);
     default:
       return {
         text: `:question: 未知的 admin 子指令 \`${head}\`。\n${helpText()}`,
@@ -145,6 +164,7 @@ function helpText(): string {
     "• `/pmk admin admins add @user`",
     "• `/pmk admin admins remove @user`",
     "• `/pmk admin audit [N]` — last N admin actions (default 20)",
+    "• `/pmk admin doctor` — live runtime health report",
   ].join("\n");
 }
 
@@ -647,6 +667,40 @@ function adminAudit(_actor: string, tokens: string[]): AdminSlashResult {
       `\`${at}\`  ${ok}  ${e.origin}  ${e.actor}  \`${e.action}\`${tail}${reason}`,
     );
   }
+  return { text: lines.join("\n") };
+}
+
+// ────────────────── doctor ──────────────────
+
+/**
+ * `/pmk admin doctor` — live runtime health report.
+ *
+ * The provider is invoked HERE (command time) not at construction,
+ * so repeated calls reflect the current daemon state rather than a
+ * frozen snapshot from when SlashCommandHandler was built.
+ */
+function adminDoctor(args: AdminSlashArgs): AdminSlashResult {
+  const now = Date.now();
+  // Command-time read: each call to adminDoctor invokes the provider fresh.
+  const snap = args.getRuntimeHealthSnapshot?.();
+  const hbAt = lastHeartbeatAt();
+  const heartbeatAge = hbAt === undefined ? undefined : now - hbAt;
+  const live = snap?.socket
+    ? { socketState: snap.socket.state, flaps: snap.watchdog?.flaps ?? 0 }
+    : undefined;
+  // pidAlive: true — this runs inside the live daemon answering a slash command
+  const v = verdict({ pidAlive: true, heartbeatAge, live });
+  const events = readGatewayEvents({ sinceMs: now - RECENT_ACTIVITY_WINDOW_MS });
+  const turns = events.filter((e) => e.type === "turn.processed").length;
+  const lines = [
+    `${v.emoji} *gateway ${v.level}* — ${v.note}`,
+    `• socket: ${snap?.socket ? `${snap.socket.state} (pong-timeouts ${snap.socket.pongTimeoutsInWindow}, unstable ${Math.round(snap.socket.unstableMs / 1000)}s)` : "unknown"}`,
+    `• watchdog: ${snap?.watchdog ? `${snap.watchdog.flaps} flaps, ${snap.watchdog.confirmedFailures} confirmed-fail` : "unknown"}`,
+    `• heartbeat: ${heartbeatAge === undefined ? "none" : `${Math.round(heartbeatAge / 1000)}s ago`}`,
+    `• uptime: ${snap ? `${Math.round((now - snap.startedAt) / 1000)}s` : "—"}`,
+    `• turns/30m: ${turns}`,
+  ];
+  logAdmin(args.actor, "doctor", true);
   return { text: lines.join("\n") };
 }
 

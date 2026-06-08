@@ -134,6 +134,15 @@ export function markGracefulShutdown(): void {
 }
 
 /**
+ * Read the last heartbeat timestamp from disk. Returns undefined if the
+ * file is absent or unparseable. Useful for CLI-side status reporting
+ * where there is no live heartbeat loop running.
+ */
+export function lastHeartbeatAt(): number | undefined {
+  return readEpochFile(gatewayHeartbeatPath());
+}
+
+/**
  * Best-effort cleanup: delete the heartbeat file. Used on startup
  * failure (so a half-bound start doesn't poison the next try) and
  * by tests.

@@ -84,10 +84,19 @@ export function makeAdapterWatchdogDeps(
 export class SocketWatchdog {
   private timer?: ReturnType<typeof setInterval>;
   private failedReconnects = 0;
+  private flaps = 0;        // watchdog-initiated reconnects (each = an unhealthy reaction)
   private inFlight = false;
   private pendingEvaluation = false;
 
   constructor(private readonly deps: SocketWatchdogDeps) {}
+
+  /** Read-only watchdog snapshot for `/pmk admin doctor`. */
+  snapshot(): { flaps: number; confirmedFailures: number } {
+    return {
+      flaps: this.flaps,
+      confirmedFailures: this.failedReconnects,
+    };
+  }
 
   start(): void {
     this.timer = setInterval(() => void this.tick(), WATCHDOG_INTERVAL_MS);
@@ -150,6 +159,7 @@ export class SocketWatchdog {
       // is equivalent-or-stricter for the only thing the cap must guarantee
       // — that a wedged reconnect can never pin `inFlight` forever — and it
       // bounds the *total* reconnect time rather than 2× a per-step budget.
+      this.flaps += 1;
       await withTimeout(this.deps.reconnect(), timeoutMs);
       this.deps.health.reset(this.deps.now());
       this.pendingEvaluation = true;

@@ -52,6 +52,27 @@ export class SocketHealth {
   }
 
   /**
+   * Read-only health snapshot for `/pmk admin doctor`. Never mutates.
+   * `pongTimeoutsInWindow` is computed fresh by filtering (no side-effect /
+   * no prune), so it may include entries `assess()` has not yet pruned —
+   * fine for diagnostics.
+   */
+  snapshot(nowMs: number): {
+    state: ConnState;
+    pongTimeoutsInWindow: number;
+    unstableMs: number;
+  } {
+    const inWindow = this.pongTimeouts.filter(
+      (t) => nowMs - t <= PONG_TIMEOUT_WINDOW_MS,
+    ).length;
+    return {
+      state: this.state,
+      pongTimeoutsInWindow: inWindow,
+      unstableMs: this.state === "connected" ? 0 : nowMs - this.stateSince,
+    };
+  }
+
+  /**
    * Clear ONLY the pong-timeout evidence (so the flood window restarts
    * fresh after a forced reconnect). The conn-state machine is
    * event-driven and is deliberately NOT touched — right after a

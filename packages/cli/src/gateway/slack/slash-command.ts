@@ -2,6 +2,7 @@ import { WebClient } from "@slack/web-api";
 import type { GatewayConfig } from "../config";
 import { isAdmin } from "../config";
 import { handleAdminSlash } from "./admin";
+import type { RuntimeHealthSnapshot } from "./admin";
 import {
   channelCasesDir,
   loadChannelMeta,
@@ -66,15 +67,23 @@ export function slashCommandArgsFromBody(
 export interface SlashCommandHandlerOptions {
   web: WebClient;
   config: GatewayConfig;
+  /**
+   * Provider read at COMMAND time (not construction time) so the doctor
+   * subcommand always reflects the live daemon state, not a frozen snapshot.
+   * Absent in test setups that don't exercise `admin doctor`.
+   */
+  getRuntimeHealthSnapshot?: () => RuntimeHealthSnapshot;
 }
 
 export class SlashCommandHandler {
   private readonly web: WebClient;
   private readonly config: GatewayConfig;
+  private readonly getRuntimeHealthSnapshot?: () => RuntimeHealthSnapshot;
 
   constructor(opts: SlashCommandHandlerOptions) {
     this.web = opts.web;
     this.config = opts.config;
+    this.getRuntimeHealthSnapshot = opts.getRuntimeHealthSnapshot;
   }
 
   /**
@@ -203,6 +212,7 @@ export class SlashCommandHandler {
         const result = await handleAdminSlash({
           actor: userId,
           tokens,
+          getRuntimeHealthSnapshot: this.getRuntimeHealthSnapshot,
         });
         await reply(result.text);
         return;

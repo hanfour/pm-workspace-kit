@@ -26,6 +26,9 @@ import { appendJsonl, monthlyPath, readJsonl } from "./monthly-jsonl";
 // admin.log has the same gap; a single rotation helper covering both
 // is the right shape when we get there.
 
+/** Activity window for status/doctor "turns/30m" + recent-events queries. */
+export const RECENT_ACTIVITY_WINDOW_MS = 30 * 60_000;
+
 /**
  * `mra ask` round outcome. `retried=true` means the call succeeded or
  * failed only after the v0.7.3 retry-once kicked in. `durationMs`

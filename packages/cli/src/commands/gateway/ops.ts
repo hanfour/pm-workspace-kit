@@ -1,13 +1,13 @@
 import * as readline from "node:readline/promises";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { execFileSync, spawn } from "node:child_process";
 import chalk from "chalk";
 import { println } from "../../io";
 import {
   type RawGatewayConfig,
   gatewayConfigPath,
-  hasValidSlackTokens,
-  loadGatewayConfig,
+  gatewayDir,
   loadRawGatewayConfig,
   saveGatewayConfig,
 } from "../../gateway/config";
@@ -27,6 +27,17 @@ import {
   seedDemoAtom,
   unseedDemoAtoms,
 } from "../../gateway/demo-seed";
+import {
+  readGatewayRunStateRaw,
+  gatewayLiveRunState,
+  installedPlist,
+  loadedService,
+  serviceLabelValid,
+  SERVICE_LABEL,
+} from "../../gateway/run-state";
+import { lastHeartbeatAt } from "../../gateway/heartbeat";
+import { readGatewayEvents, RECENT_ACTIVITY_WINDOW_MS } from "../../gateway/events";
+import { verdict } from "../../gateway/health-verdict";
 
 /**
  * `pmk gateway demo <seed|unseed>` — smoke-test data for onboarding.
@@ -351,32 +362,48 @@ export async function startCmd(rest: string[] = []): Promise<void> {
   }
 }
 
+function isPidAlive(pid: number): boolean {
+  try { process.kill(pid, 0); return true; } catch { return false; }
+}
+
+/**
+ * Build a persisted-health status report. Pure and testable — reads only
+ * files on disk, never resolves a {cmd}/{env} secret reference.
+ *
+ * `now` is passed in so tests can control the clock.
+ */
+export function buildStatusReport(now: number): { level: string; text: string } {
+  const run = readGatewayRunStateRaw();
+  const pidAlive = run ? isPidAlive(run.pid) : false;
+  const hbAt = lastHeartbeatAt();
+  const heartbeatAge = hbAt === undefined ? undefined : now - hbAt;
+  const v = verdict({ pidAlive, heartbeatAge }); // no live → caps at 🟡
+  // NOTE: loadRawGatewayConfig — MUST NEVER resolve a {cmd}/{env} secret here.
+  const cfg = loadRawGatewayConfig();
+  const events = readGatewayEvents({ sinceMs: now - RECENT_ACTIVITY_WINDOW_MS });
+  const turns = events.filter((e) => e.type === "turn.processed").length;
+  const lastOffline = [...events].reverse().find(
+    (e): e is typeof e & { type: "gateway.offline"; reason: string } =>
+      e.type === "gateway.offline",
+  );
+  const lines = [
+    `${v.emoji} ${v.level} — ${v.note}`,
+    `  running:    ${pidAlive ? `yes (pid ${run!.pid})` : "no"}`,
+    `  supervised: ${run?.supervised ?? "no"}${run?.serviceLabel ? ` (${run.serviceLabel})` : ""}`,
+    `  heartbeat:  ${heartbeatAge === undefined ? "none" : `${Math.round(heartbeatAge / 1000)}s ago`}`,
+    `  uptime:    ${run && pidAlive ? `${Math.round((now - run.startedAt) / 1000)}s` : "—"}`,
+    `  turns/30m: ${turns}`,
+    `  last offline reason: ${lastOffline?.reason ?? "—"}`,
+    `  mra workspace: ${cfg.mraWorkspace ?? "(not configured)"}`,
+    `  live socket: use \`/pmk admin doctor\` in Slack`,
+  ];
+  return { level: v.level, text: lines.join("\n") };
+}
+
 export function statusCmd(): void {
-  const pid = gatewayRunningPid();
-  const cfg = loadGatewayConfig();
+  const r = buildStatusReport(Date.now());
   println(chalk.bold("\npmk gateway status"));
-  println(`  config:    ${gatewayConfigPath()}`);
-  println(
-    `  configured: ${hasValidSlackTokens(cfg) ? chalk.green("yes") : chalk.red("no — run `pmk gateway init`")}`,
-  );
-  println(
-    `  running:   ${pid ? chalk.green(`yes (pid ${pid})`) : chalk.gray("no")}`,
-  );
-  if (cfg.mraWorkspace) {
-    const valid = fs.existsSync(
-      path.join(cfg.mraWorkspace, ".collab", "repos.json"),
-    );
-    println(
-      `  mra ws:    ${cfg.mraWorkspace} ${valid ? chalk.green("(ok)") : chalk.red("(no .collab/repos.json)")}`,
-    );
-  } else {
-    println(
-      `  mra ws:    ${chalk.gray("not set — falls back to launch cwd walk")}`,
-    );
-  }
-  if (cfg.blocklist.length) {
-    println(`  blocklist: ${cfg.blocklist.join(", ")}`);
-  }
+  println(r.text);
 }
 
 export function statsCmd(rest: string[]): void {
@@ -395,4 +422,188 @@ export function statsCmd(rest: string[]): void {
     const tokens = s.approxTokens.toLocaleString().padStart(8);
     println(`  ${id}  ${turns}   ${tokens}   ${last}`);
   }
+}
+
+// ---------------------------------------------------------------------------
+// pmk gateway stop
+// ---------------------------------------------------------------------------
+
+/** Gateway SIGTERM drain budget is 25 s; ~5 s margin. */
+const STOP_POLL_MAX = 30;
+
+function requireUid(): number {
+  const uid = process.getuid?.();
+  if (uid === undefined) throw new Error("launchd commands require macOS");
+  return uid;
+}
+
+/** Poll until the pid is gone (signal-0), up to STOP_POLL_MAX seconds. Returns true if it exited. */
+async function awaitProcessExit(pid: number, d: OpsDeps): Promise<boolean> {
+  for (let i = 0; i < STOP_POLL_MAX; i++) {
+    await d.sleep(1000);
+    try { d.kill(pid, 0); } catch { return true; }
+  }
+  return false;
+}
+
+export interface OpsDeps {
+  /** Spawn a file synchronously; throws on non-zero exit. */
+  execFile: (file: string, args: string[]) => void;
+  /** Send a signal to a pid; throw if the pid does not exist (signal 0). */
+  kill: (pid: number, signal: NodeJS.Signals | 0) => void;
+  sleep: (ms: number) => Promise<void>;
+}
+
+const realDeps: OpsDeps = {
+  execFile: (f, a) => { execFileSync(f, a, { stdio: "ignore" }); },
+  kill: (p, s) => process.kill(p, s),
+  sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+};
+
+/**
+ * Decide if the gateway is (or was) managed by launchd and return the
+ * service label to target with `launchctl bootout`, plus whether the
+ * service is currently loaded (i.e. bootout is valid to issue).
+ *
+ * Priority:
+ *   1. The live run-state says `supervised: "launchd"` with a valid label
+ *      → treat as loaded (the process is running under launchd).
+ *   2. The service is currently loaded (launchctl print succeeds).
+ *   3. A plist file is installed on disk (booted-out but persisted)
+ *      → loaded: false; caller must NOT issue bootout.
+ */
+function launchctlTarget(): { label: string; loaded: boolean } | undefined {
+  const live = gatewayLiveRunState();
+  if (live?.supervised === "launchd" && live.serviceLabel && serviceLabelValid(live.serviceLabel)) {
+    return { label: live.serviceLabel, loaded: true };
+  }
+  if (loadedService(SERVICE_LABEL)) return { label: SERVICE_LABEL, loaded: true };
+  if (installedPlist(SERVICE_LABEL)) return { label: SERVICE_LABEL, loaded: false };
+  return undefined;
+}
+
+/**
+ * Core stop logic — injectable deps make launchctl/kill testable.
+ *
+ * Decision tree:
+ *   a) launchd-managed (running supervised OR service is loaded) → `launchctl bootout`
+ *   b) no run-state at all → "not running" message, no side effects
+ *   c) standalone process → SIGTERM + 30-poll to confirm exit
+ */
+export async function stopCmdImpl(d: OpsDeps = realDeps): Promise<string> {
+  const live = gatewayLiveRunState();
+  const lc = launchctlTarget();
+
+  // launchd path: only issue bootout when the service is actually loaded.
+  // A plist that exists but is already booted-out doesn't need (or
+  // tolerate) a second bootout — lc.loaded handles that distinction.
+  if (lc?.loaded) {
+    try {
+      d.execFile("launchctl", ["bootout", `gui/${requireUid()}/${lc.label}`]);
+    } catch {
+      return `failed to bootout ${lc.label} — it may already be stopped.`;
+    }
+    return `stopped launchd service ${lc.label}`;
+  }
+
+  if (!live) return "gateway is not running.";
+
+  // Standalone process path
+  d.kill(live.pid, "SIGTERM");
+  return (await awaitProcessExit(live.pid, d)) ? "gateway stopped (graceful)." : "gateway still running after 30s — check ~/.pmk/logs/gateway.err.log";
+}
+
+export async function stopCmd(): Promise<void> {
+  println(await stopCmdImpl());
+}
+
+// ---------------------------------------------------------------------------
+// pmk gateway restart
+// ---------------------------------------------------------------------------
+
+export interface RestartDeps extends OpsDeps {
+  /** Returns true when the launchd service label is currently loaded. */
+  isLoaded: (label: string) => boolean;
+  /** Spawns `gateway start` detached; returns the child pid. */
+  spawnDetached: () => number;
+  /** Reads run-state raw from disk (may be undefined or stale). */
+  readReady: () => { pid: number; phase: string } | undefined;
+}
+
+/** Max polls (~1 s each) waiting for the new daemon to reach phase:"ready". */
+const STANDALONE_READY_POLL_MAX = 15;
+
+/**
+ * Core restart logic — injectable deps make launchctl/spawn testable.
+ *
+ * Decision tree:
+ *   a) Service is currently LOADED in launchd (or supervised live process)
+ *      → `launchctl kickstart -k` (terminates the old unit and starts fresh)
+ *   b) Plist is INSTALLED but NOT loaded (e.g. after a `stop`/bootout)
+ *      → `launchctl bootstrap` (RunAtLoad will start it); kickstart would fail here
+ *   c) Standalone (no plist, no loaded service)
+ *      → SIGTERM the live process + detached respawn + poll for phase:"ready"
+ *        Only phase:"ready" confirms Slack is connected; pid/heartbeat are
+ *        written early during "starting" and must not be mistaken for success.
+ */
+export async function restartCmdImpl(d: RestartDeps): Promise<string> {
+  const live = gatewayLiveRunState();
+  const installed = installedPlist(SERVICE_LABEL);
+  const uid = requireUid();
+
+  if (d.isLoaded(SERVICE_LABEL) || live?.supervised === "launchd") {
+    const kickLabel = (live?.serviceLabel && serviceLabelValid(live.serviceLabel)) ? live.serviceLabel : SERVICE_LABEL;
+    d.execFile("launchctl", ["kickstart", "-k", `gui/${uid}/${kickLabel}`]);
+    return `restarted launchd service ${kickLabel}`;
+  }
+
+  if (installed) {
+    // Plist exists but is not loaded — bootstrap brings it into the launchd
+    // domain and RunAtLoad starts the process. `kickstart` on an unloaded
+    // service would error.
+    d.execFile("launchctl", ["bootstrap", `gui/${uid}`, installed.plistPath]);
+    return `bootstrapped launchd service ${SERVICE_LABEL}`;
+  }
+
+  // Standalone path: stop the live process (if any), then respawn detached
+  // and wait for the new daemon to write phase:"ready" to run-state.
+  if (live) {
+    try { d.kill(live.pid, "SIGTERM"); } catch { /* already gone */ }
+    await awaitProcessExit(live.pid, d);
+  }
+
+  const childPid = d.spawnDetached();
+  for (let i = 0; i < STANDALONE_READY_POLL_MAX; i++) {
+    await d.sleep(1000);
+    const r = d.readReady();
+    if (r && r.pid === childPid && r.phase === "ready") {
+      return `gateway restarted (pid ${childPid}).`;
+    }
+  }
+  return "start may have failed — see ~/.pmk/logs/gateway.err.log";
+}
+
+export async function restartCmd(): Promise<void> {
+  const logsDir = path.join(gatewayDir(), "..", "logs"); // ~/.pmk/logs
+  fs.mkdirSync(logsDir, { recursive: true });
+
+  const deps: RestartDeps = {
+    ...realDeps,
+    isLoaded: loadedService,
+    readReady: readGatewayRunStateRaw,
+    spawnDetached: () => {
+      const out = fs.openSync(path.join(logsDir, "gateway.out.log"), "a");
+      const err = fs.openSync(path.join(logsDir, "gateway.err.log"), "a");
+      const child = spawn(
+        process.execPath,
+        [path.resolve(__dirname, "../../index.js"), "gateway", "start"],
+        { detached: true, stdio: ["ignore", out, err] },
+      );
+      child.unref();
+      fs.closeSync(out);
+      fs.closeSync(err);
+      return child.pid ?? -1;
+    },
+  };
+  println(await restartCmdImpl(deps));
 }

@@ -138,10 +138,6 @@ export function gatewayHeartbeatPath(): string {
   return path.join(gatewayDir(), "heartbeat");
 }
 
-export function gatewayPidPath(): string {
-  return path.join(gatewayDir(), "gateway.pid");
-}
-
 /**
  * v0.10.x (#44): single-use marker dropped during graceful shutdown
  * so the next start can distinguish "kill -> restart" from a true
