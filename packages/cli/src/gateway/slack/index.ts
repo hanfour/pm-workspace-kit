@@ -412,10 +412,14 @@ export class SlackAdapter {
     this.dedup.remember(payload.envelope_id);
 
     // replyThreadTs: where Slack should anchor the bot's response.
-    // sessionThreadTs: which conversation history to load — undefined
-    // means "main" (top-level DM, no Slack thread); a thread_ts means
-    // an in-thread reply, which gets its own isolated session so
-    // contexts don't bleed across threads.
+    // sessionThreadTs MUST equal replyThreadTs: the bot threads its reply
+    // (anchored at event.ts for a top-level message), so the user's
+    // follow-up arrives with thread_ts = that ts. Keying the session by
+    // raw event.thread_ts (undefined for the opening message) would store
+    // turn 1 under "main" but load turn 2 under the thread → the bot
+    // forgets its own first turn. Aligning them means each top-level
+    // message opens its own thread-scoped session that its replies
+    // continue. (Channel mention path mirrors this below.)
     const replyThreadTs = event.thread_ts ?? event.ts;
     if (!replyThreadTs) return;
 
@@ -439,7 +443,7 @@ export class SlackAdapter {
           userId,
           text,
           threadTs: replyThreadTs,
-          sessionThreadTs: event.thread_ts,
+          sessionThreadTs: replyThreadTs,
         });
       } catch (err) {
         this.onLog(
@@ -499,6 +503,12 @@ export class SlackAdapter {
     // replyThreadTs anchors the bot's response. sessionThreadTs (raw
     // thread_ts, may be undefined) decides which conversation history
     // to load — undefined = channel main; a value = isolated thread.
+    // NOTE: unlike the DM path (which aligns these to fix the top-level/
+    // thread session split), the channel path keeps the raw thread_ts:
+    // channels carry a channel-wide message log + case meta and multiple
+    // concurrent users, so a top-level mention legitimately shares the
+    // channel-main session. The same latent split exists here but is a
+    // separate, more entangled decision — left as-is intentionally.
     const replyThreadTs = event.thread_ts ?? event.ts;
     if (!channelId || !userId || !replyThreadTs) return;
     const sessionThreadTs = event.thread_ts;

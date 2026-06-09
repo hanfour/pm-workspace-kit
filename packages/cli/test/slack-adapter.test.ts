@@ -94,6 +94,52 @@ describe("SlackAdapter integration: DM happy-path", () => {
     );
   });
 
+  it("threaded DM reply continues the SAME session as the top-level message (no thread-split)", async () => {
+    // The bot threads its replies, so a user naturally replies inside the
+    // bot's thread. Turn 1 is top-level (thread_ts undefined); turn 2 is a
+    // reply in the thread the bot's turn-1 answer anchored (thread_ts = T1).
+    // Both must resolve to ONE session, or the bot forgets turn 1.
+    h.llm.script(
+      "Noted — your project is codenamed Zaphod.",
+      "Your project is codenamed Zaphod.",
+    );
+    await h.adapter.start();
+
+    const T1 = "1700000200.000001";
+    await h.socket.emit(
+      "message",
+      dmMessagePayload({
+        user: "U-USER",
+        channel: "D-USER-DM",
+        text: "Remember: my project is codenamed Zaphod.",
+        ts: T1,
+      }),
+    );
+    await h.flush();
+
+    await h.socket.emit(
+      "message",
+      dmMessagePayload({
+        user: "U-USER",
+        channel: "D-USER-DM",
+        text: "What is my project codenamed?",
+        ts: "1700000300.000002",
+        thread_ts: T1, // reply inside the bot's turn-1 thread
+      }),
+    );
+    await h.flush();
+
+    assert.equal(h.llm.calls.length, 2, "both turns reach the LLM");
+    const secondCallText = h.llm.calls[1].messages
+      .map((m) => m.content)
+      .join("\n");
+    assert.match(
+      secondCallText,
+      /Zaphod/,
+      "turn 2 must carry turn 1's history — a top-level msg and its threaded reply share one session",
+    );
+  });
+
   it("non-DM channel message is ignored (app_mention covers that path)", async () => {
     h.llm.script("should never be called");
     await h.adapter.start();
@@ -1035,21 +1081,28 @@ describe("SlackAdapter integration: msg_too_long hardening (v0.11.1)", () => {
   let h: Harness;
 
   /** Seed a paired DM history so `forcePruneToMinimum` has turns to drop. */
+  // A top-level DM now keys its session by the opening message's ts (the
+  // bot threads its reply there), so seed under the dmMessagePayload default
+  // ts rather than "main" — otherwise the handler loads an empty session.
+  const DM_DEFAULT_TS = "1700000100.000100";
   function seedPairedHistory(userId: string) {
-    saveUserSession({
-      userId,
-      messages: [
-        { role: "user", content: "Q1: walk me through the order schema" },
-        { role: "assistant", content: "A1: orders has columns a, b, c…" },
-        { role: "user", content: "Q2: and the payments table?" },
-        { role: "assistant", content: "A2: payments has fields x, y, z…" },
-        { role: "user", content: "Q3: any indexes I should know?" },
-        { role: "assistant", content: "A3: idx_orders_status, idx_payments_id…" },
-      ],
-      lastActiveAt: Date.now(),
-      approxTokens: 30_000,
-      turns: 3,
-    });
+    saveUserSession(
+      {
+        userId,
+        messages: [
+          { role: "user", content: "Q1: walk me through the order schema" },
+          { role: "assistant", content: "A1: orders has columns a, b, c…" },
+          { role: "user", content: "Q2: and the payments table?" },
+          { role: "assistant", content: "A2: payments has fields x, y, z…" },
+          { role: "user", content: "Q3: any indexes I should know?" },
+          { role: "assistant", content: "A3: idx_orders_status, idx_payments_id…" },
+        ],
+        lastActiveAt: Date.now(),
+        approxTokens: 30_000,
+        turns: 3,
+      },
+      DM_DEFAULT_TS,
+    );
   }
 
   beforeEach(() => {
