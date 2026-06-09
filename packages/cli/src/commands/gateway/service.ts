@@ -40,7 +40,12 @@ export function buildPlist(o: { nodePath: string; distEntry: string; home: strin
   </array>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
-  <key>ProcessType</key><string>Background</string>
+  <!-- Interactive (NOT Background): the gateway holds a Slack Socket-Mode
+       connection that must answer pings/pongs within seconds. Background
+       process-type opts into App Nap / resource throttling, which starves
+       the socket → pong timeouts → endless watchdog reconnects. Interactive
+       runs at app-level priority and is never throttled. -->
+  <key>ProcessType</key><string>Interactive</string>
   <key>WorkingDirectory</key><string>${workingDir}</string>
   <key>StandardOutPath</key><string>${outLog}</string>
   <key>StandardErrorPath</key><string>${errLog}</string>

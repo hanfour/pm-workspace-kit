@@ -30,6 +30,12 @@ describe("install-service plist", () => {
     assert.equal(warns.length, 0);
   });
 
+  it("ProcessType is Interactive, not Background (socket daemon must not be App-Nap throttled)", () => {
+    const xml = buildPlist({ nodePath: "/usr/bin/node", distEntry: "/abs/dist/index.js", home: "/Users/x", workingDir: "/ws" });
+    assert.match(xml, /<key>ProcessType<\/key>\s*<string>Interactive<\/string>/);
+    assert.doesNotMatch(xml, /<string>Background<\/string>/);
+  });
+
   it("XML-escapes special chars in path values (&, <, >, \")", () => {
     const xml = buildPlist({
       nodePath: "/usr/bin/node",
