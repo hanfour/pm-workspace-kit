@@ -22,6 +22,7 @@ import {
   type DryRunStats,
   type DryRunStubLogger,
 } from "./dry-run-wrapper";
+import { wrapWebClientWithTextCap } from "./text-cap-wrapper";
 import { SocketHealth, type ConnState } from "../socket-health";
 import { createPongTapLogger } from "./socket-logger";
 import { SocketWatchdog, makeAdapterWatchdogDeps } from "./socket-watchdog";
@@ -179,8 +180,13 @@ export class SlackAdapter {
     // do NOT branch on dry-run — the proxy is the single source of
     // truth. Read methods (auth.test, users.info, etc.) still pass
     // through to the real client.
+    // Defense-in-depth: cap every outgoing chat.* `text` at Slack's hard
+    // limit so no call site can leak `msg_too_long` (see text-cap-wrapper).
+    // Applied to the real client first; dry-run then wraps the capped one
+    // (writes short-circuit under dry-run, so the cap is a no-op there).
+    const cappedWeb = wrapWebClientWithTextCap(rawWeb);
     const dryRun = opts.dryRun ?? isDryRunActive();
-    this.web = dryRun ? wrapWebClientForDryRun(rawWeb, opts.dryRunOpts) : rawWeb;
+    this.web = dryRun ? wrapWebClientForDryRun(cappedWeb, opts.dryRunOpts) : cappedWeb;
     if (opts.llm) {
       this.llm = opts.llm;
     } else {
