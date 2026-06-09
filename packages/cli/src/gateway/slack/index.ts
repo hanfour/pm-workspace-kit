@@ -500,18 +500,20 @@ export class SlackAdapter {
     this.dedup.remember(payload.envelope_id);
     const channelId = event.channel;
     const userId = event.user;
-    // replyThreadTs anchors the bot's response. sessionThreadTs (raw
-    // thread_ts, may be undefined) decides which conversation history
-    // to load — undefined = channel main; a value = isolated thread.
-    // NOTE: unlike the DM path (which aligns these to fix the top-level/
-    // thread session split), the channel path keeps the raw thread_ts:
-    // channels carry a channel-wide message log + case meta and multiple
-    // concurrent users, so a top-level mention legitimately shares the
-    // channel-main session. The same latent split exists here but is a
-    // separate, more entangled decision — left as-is intentionally.
+    // replyThreadTs anchors the bot's response; sessionThreadTs MUST match
+    // it (same fix + rationale as the DM path): the bot threads its reply at
+    // event.ts for a top-level mention, so the user's in-thread follow-up
+    // keys to that ts. Raw event.thread_ts (undefined for the opening
+    // mention) would split turn 1 ("channel main") from turn 2 (the thread).
+    // Aligning them: each top-level mention opens a thread-scoped free-chat
+    // session that its replies continue. The per-conversation turn history
+    // (loadChannelTurns/appendChannelTurns → messages.jsonl) is thread-scoped
+    // by this key — that's exactly the split being fixed. Case meta
+    // (loadChannelMeta: activeCase, lastActiveAt) stays channel-rooted, and
+    // the gateway-wide event/audit log is unaffected.
     const replyThreadTs = event.thread_ts ?? event.ts;
     if (!channelId || !userId || !replyThreadTs) return;
-    const sessionThreadTs = event.thread_ts;
+    const sessionThreadTs = replyThreadTs;
 
     // Strip the leading <@BOTID> mention so the model doesn't see it.
     const text = (event.text ?? "")

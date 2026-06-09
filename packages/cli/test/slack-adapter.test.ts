@@ -389,6 +389,50 @@ describe("SlackAdapter integration: channel @-mention", () => {
     );
   });
 
+  it("threaded channel mention continues the SAME session as the top-level mention (no thread-split)", async () => {
+    // Same split as the DM path: a top-level mention's reply is threaded,
+    // the user replies in that thread, and turn 2 must still see turn 1.
+    h.llm.script(
+      "Noted — the channel codename is Vogon.",
+      "The channel codename is Vogon.",
+    );
+    await h.adapter.start();
+
+    const T1 = "1700000500.000001";
+    await h.socket.emit(
+      "app_mention",
+      appMentionPayload({
+        user: "U-PM",
+        channel: "C-CONT",
+        text: "<@UBOTID> remember: the channel codename is Vogon",
+        ts: T1,
+      }),
+    );
+    await h.flush();
+
+    await h.socket.emit(
+      "app_mention",
+      appMentionPayload({
+        user: "U-PM",
+        channel: "C-CONT",
+        text: "<@UBOTID> what is the channel codename?",
+        ts: "1700000600.000002",
+        thread_ts: T1, // reply inside the bot's turn-1 thread
+      }),
+    );
+    await h.flush();
+
+    assert.equal(h.llm.calls.length, 2, "both turns reach the LLM");
+    const secondCallText = h.llm.calls[1].messages
+      .map((m) => m.content)
+      .join("\n");
+    assert.match(
+      secondCallText,
+      /Vogon/,
+      "turn 2 must carry turn 1 — a top-level mention and its threaded reply share one channel session",
+    );
+  });
+
   it("channel mention with active case → routes to case path, appends turns", async () => {
     const channelId = "C-INCIDENT";
     const caseName = "2026-05-19-payments-outage";
@@ -1545,6 +1589,11 @@ describe("SlackAdapter integration: inflight queue (v0.13)", () => {
     // Bob's saveChannelChatSession would have overwritten Alice's turn
     // on disk (Slack-side messages still posted, but channel context
     // would lose Alice's turn for future LLM calls).
+    //
+    // Post thread-split fix: a shared channel conversation is now a shared
+    // THREAD (top-level mentions are isolated per-thread), so the race
+    // scenario is two users mentioning concurrently IN THE SAME THREAD.
+    const SHARED_THREAD = "1700000900.000009";
     let releaseFirst: () => void = () => {};
     const firstGate = new Promise<void>((resolve) => {
       releaseFirst = resolve;
@@ -1565,6 +1614,8 @@ describe("SlackAdapter integration: inflight queue (v0.13)", () => {
         user: "U-ALICE",
         channel: "C-LOG",
         text: "<@UBOTID> alice prompt",
+        ts: "1700000901.000001",
+        thread_ts: SHARED_THREAD,
         envelope_id: "env-a",
       }),
     );
@@ -1575,6 +1626,8 @@ describe("SlackAdapter integration: inflight queue (v0.13)", () => {
         user: "U-BOB",
         channel: "C-LOG",
         text: "<@UBOTID> bob prompt",
+        ts: "1700000902.000002",
+        thread_ts: SHARED_THREAD,
         envelope_id: "env-b",
       }),
     );
@@ -1583,7 +1636,7 @@ describe("SlackAdapter integration: inflight queue (v0.13)", () => {
     releaseFirst();
     await h.flush();
 
-    const entries = loadChannelTurns("C-LOG");
+    const entries = loadChannelTurns("C-LOG", SHARED_THREAD);
     const userTurns = entries.filter((e) => e.role === "user" && e.userId);
     const userIds = userTurns.map((e) => e.userId);
     assert.ok(
