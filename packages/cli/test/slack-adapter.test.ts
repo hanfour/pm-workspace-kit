@@ -158,6 +158,50 @@ describe("SlackAdapter integration: DM happy-path", () => {
     assert.equal(h.web.updated.length, 0, "no update should fire");
   });
 
+  it("attachment context reaches the LLM call and persists across the thread", async () => {
+    const att = {
+      summary: "_read: spec.md_",
+      messages: [{ role: "user" as const, content: "[參考文件…] ZAPHOD_SPEC" }],
+      entries: [{ fileId: "F1", name: "spec.md", mimetype: "text/markdown", text: "ZAPHOD_SPEC", at: 1 }],
+    };
+    h.cleanup();
+    h = buildHarness({ attachmentIngest: async () => att });
+    h.llm.script("Got the spec.", "Still got it.");
+    await h.adapter.start();
+
+    const T1 = "1700000800.000001";
+    await h.socket.emit("message", dmMessagePayload({
+      user: "U-USER", channel: "D-USER-DM", text: "read this", ts: T1, files: [{ id: "F1" }],
+    }));
+    await h.flush();
+    const call1 = h.llm.calls[0].messages.map((m) => m.content).join("\n");
+    assert.match(call1, /ZAPHOD_SPEC/, "attachment context present in the turn's LLM call");
+
+    await h.socket.emit("message", dmMessagePayload({
+      user: "U-USER", channel: "D-USER-DM", text: "what was the codename?", ts: "1700000800.000002", thread_ts: T1,
+    }));
+    await h.flush();
+    const call2 = h.llm.calls[1].messages.map((m) => m.content).join("\n");
+    assert.match(call2, /ZAPHOD_SPEC/, "attachment context persists across the thread");
+  });
+
+  it("file-only DM (no caption) is NOT dropped — ingests and runs a synthetic-prompt turn", async () => {
+    let ingestedFiles: any[] = [];
+    h.cleanup();
+    h = buildHarness({
+      attachmentIngest: async (files) => {
+        ingestedFiles = files;
+        return { summary: "_read: a.md_", messages: [{ role: "user" as const, content: "ATT_BODY" }], entries: [{ fileId: "F1", name: "a.md", mimetype: "text/markdown", text: "ATT_BODY", at: 1 }] };
+      },
+    });
+    h.llm.script("I read your file.");
+    await h.adapter.start();
+    await h.socket.emit("message", dmMessagePayload({ user: "U-USER", channel: "D-USER-DM", text: "", files: [{ id: "F1" }] }));
+    await h.flush();
+    assert.equal(h.llm.calls.length, 1, "file-only DM must reach the LLM, not be dropped");
+    assert.equal(ingestedFiles.length, 1);
+  });
+
   it("blocklisted user gets the rejection notice and no LLM call", async () => {
     // Drop the beforeEach default before re-creating with a different
     // config — otherwise the old tmp HOME leaks (its cleanup never
@@ -343,6 +387,98 @@ describe("SlackAdapter integration: mra-ask escalate round", () => {
       finalText,
       /對話太長.*重新提問/,
       "post-mra synthesise blow-up surfaces new-thread guidance, not a crash",
+    );
+  });
+
+  it("synthesise retry re-evaluates ephemeralPrefix closure → attachment context shrinks on retry", async () => {
+    // This test verifies Fix 1: the synthesise `buildMessages` closure calls
+    // `buildEphemeralPrefix()` per-attempt so `onBeforeRetry`'s budget halving
+    // actually shrinks the attachment portion sent to the LLM on retry.
+    //
+    // We use TWO entries whose combined text exceeds the halved budget (15 000)
+    // but each individual entry is under it.  assembleFromEntries drops the
+    // OLDEST entry when the full body exceeds the budget, so on retry the
+    // rendered attachment block is shorter.
+    //
+    // Setup: TWO entries, each ~10 000 chars (combined ~20 000, above
+    // MAX/2 = 15 000).  The first-call succeeds (mra-ask directive).
+    // First synthesise attempt throws PmkContextTooLongError; budget halves
+    // from 30 000 → 15 000; retry succeeds.
+    //
+    // Assertions:
+    //   (a) message.capped {kind:"attachment"} event was emitted
+    //   (b) the attachment user-message in synthesise call[2] is strictly
+    //       shorter than in synthesise call[1]
+    const TEXT_A = "A".repeat(10_000);
+    const TEXT_B = "B".repeat(10_000);
+    const entries = [
+      { fileId: "F-OLD", name: "old.txt", mimetype: "text/plain", text: TEXT_A, at: 1 },
+      { fileId: "F-NEW", name: "new.txt", mimetype: "text/plain", text: TEXT_B, at: 2 },
+    ];
+    const att = {
+      summary: "_read: old.txt, new.txt_",
+      messages: [{ role: "user" as const, content: "[參考文件] " + TEXT_A + TEXT_B }],
+      entries,
+    };
+    h.cleanup();
+    h = buildHarness({ attachmentIngest: async () => att });
+
+    let synthesiseCallCount = 0;
+    h.llm.script(
+      // First-call: emit mra-ask directive
+      "Consulting the repo.\n```mra-ask\nrepo: erp\nquestion: where is X?\n```",
+      // First synthesise attempt: throws context-too-long
+      () => { synthesiseCallCount++; throw new PmkContextTooLongError(new Error("msg_too_long")); },
+      // Second synthesise attempt (after budget halve): succeeds
+      () => { synthesiseCallCount++; return "Here is the synthesised answer."; },
+    );
+    h.mra.scriptAsk({
+      ok: true,
+      stdout: "scope :foo defined in models/x.rb:1",
+      stderr: "",
+      attempts: 1,
+    });
+
+    await h.adapter.start();
+    await h.socket.emit(
+      "message",
+      dmMessagePayload({
+        user: "U-PM",
+        channel: "D-PM-DM",
+        text: "where is X?",
+        files: [{ id: "F-OLD" }, { id: "F-NEW" }],
+      }),
+    );
+    await h.flush();
+
+    // Should be: first-call (1) + first synthesise (2) + retry synthesise (3)
+    assert.equal(h.llm.calls.length, 3, "first-call + 2 synthesise attempts = 3 LLM calls");
+    assert.equal(synthesiseCallCount, 2, "synthesise was attempted twice");
+
+    // (a) A message.capped {kind:"attachment"} event was emitted
+    const cappedEvents = readGatewayEvents().filter(
+      (e) => (e as { type: string; kind?: string }).type === "message.capped" &&
+              (e as { type: string; kind?: string }).kind === "attachment",
+    );
+    assert.ok(cappedEvents.length >= 1, "message.capped {kind:attachment} event must be emitted");
+
+    // (b) The attachment user-message (the ephemeral prefix user turn carrying
+    // the [參考文件] block) in the synthesise retry must be strictly shorter
+    // than in the first synthesise attempt, because assembleFromEntries dropped
+    // the older entry when the budget was halved.
+    const FRAME = "[參考文件";
+    const attachLen = (callIdx: number): number =>
+      h.llm.calls[callIdx].messages
+        .filter((m) => m.role === "user" && m.content.startsWith(FRAME))
+        .reduce((acc, m) => acc + m.content.length, 0);
+
+    const synth1Len = attachLen(1);
+    const synth2Len = attachLen(2);
+
+    assert.ok(synth1Len > 0, "first synthesise call must include an attachment user-message");
+    assert.ok(
+      synth2Len < synth1Len,
+      `synthesise retry attachment content (${synth2Len}) must be shorter than first attempt (${synth1Len})`,
     );
   });
 });
@@ -596,6 +732,42 @@ describe("SlackAdapter integration: channel @-mention", () => {
       /對話太長.*重新提問/,
       "case hard-fail surfaces new-thread guidance, not a generic error",
     );
+  });
+
+  it("mention-only channel upload (no caption) is NOT dropped", async () => {
+    h.cleanup();
+    h = buildHarness({ attachmentIngest: async () => ({ summary: "_read: a.md_", messages: [{ role: "user" as const, content: "ATT" }], entries: [{ fileId: "F1", name: "a.md", mimetype: "text/markdown", text: "ATT", at: 1 }] }) });
+    h.llm.script("read it");
+    await h.adapter.start();
+    await h.socket.emit("app_mention", appMentionPayload({ user: "U-PM", channel: "C-AT", text: "<@UBOTID>", files: [{ id: "F1" }] }));
+    await h.flush();
+    assert.equal(h.llm.calls.length, 1, "mention-only file upload must reach the LLM");
+  });
+
+  it("active-case channel upload does NOT ingest attachments", async () => {
+    let ingestCalled = false;
+    h.cleanup();
+    h = buildHarness({ attachmentIngest: async () => { ingestCalled = true; return { summary: "", messages: [], entries: [] }; } });
+    h.llm.script("case reply");
+    await h.adapter.start();
+    // Set up an active case in C-CASE — same setup as the "channel mention with active case" test.
+    const channelId = "C-CASE";
+    const caseName = "2026-06-09-active-case";
+    const dir = channelCasesDir(channelId);
+    const seed = newCase({
+      name: caseName,
+      title: "Active case",
+      symptom: "test",
+    });
+    saveCase(seed, dir);
+    saveChannelMeta({
+      channelId,
+      activeCase: caseName,
+      lastActiveAt: Date.now(),
+    });
+    await h.socket.emit("app_mention", appMentionPayload({ user: "U-PM", channel: "C-CASE", text: "<@UBOTID> note this", files: [{ id: "F1" }] }));
+    await h.flush();
+    assert.equal(ingestCalled, false, "case mode must not ingest attachments");
   });
 });
 

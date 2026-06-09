@@ -19,6 +19,16 @@ export interface LlmProvider {
     messages: ChatMessage[],
     opts?: ChatOptions,
   ): Promise<string>;
+  /**
+   * Optional vision capability: describe an image to text. Providers that
+   * can't do vision (e.g. claude-login) leave this undefined; callers must
+   * check `typeof p.describeImage === "function"` and degrade gracefully.
+   */
+  describeImage?(
+    image: { data: Buffer; mimetype: string },
+    prompt: string,
+    opts?: ChatOptions,
+  ): Promise<string>;
 }
 
 export class NoProviderAvailableError extends Error {

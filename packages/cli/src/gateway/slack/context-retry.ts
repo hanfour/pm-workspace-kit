@@ -37,6 +37,13 @@ export interface ContextRetryArgs {
   retrievalAtoms: number;
   phase: ContextRetryPhase;
   chatOptions?: ChatOptions;
+  /**
+   * Optional hook called AFTER `forcePruneToMinimum(session)` and BEFORE the
+   * second `buildMessages()` + `llm.chat()` retry. The caller (e.g. the
+   * attachment turn handler) can use this to shrink an external prefix budget
+   * now that it knows the session has been pruned.
+   */
+  onBeforeRetry?: () => void;
 }
 
 export type ContextRetryResult =
@@ -75,6 +82,7 @@ export async function chatWithContextRetry(
     retrievalAtoms,
     phase,
     chatOptions,
+    onBeforeRetry,
   } = args;
   // v0.12.0: forward actor through to llm.chat() so AnthropicApiKeyProvider
   // can attribute the token.usage audit event without the helper having
@@ -105,6 +113,7 @@ export async function chatWithContextRetry(
       droppedPairs: dropped,
       tokensAfter: session.approxTokens,
     });
+    onBeforeRetry?.();
 
     try {
       const full = await llm.chat(systemPrompt, buildMessages(), opts);

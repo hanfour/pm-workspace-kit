@@ -158,7 +158,7 @@ export interface ContextForcePrunedEvent {
 export interface MessageCappedEvent {
   type: "message.capped";
   actor: string;
-  kind: "seed" | "mra-result";
+  kind: "seed" | "mra-result" | "attachment";
   originalChars: number;
   cappedChars: number;
 }

@@ -361,6 +361,19 @@ launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.pmk.gateway.plist
 launchctl enable gui/$(id -u)/com.pmk.gateway
 ```
 
+## Reading uploaded files
+
+Attach files to a DM or @-mention and the bot reads them as reference context for
+that thread. Supported: text/markdown/code, PDF, and images (PNG/JPEG/GIF/WebP,
+read via Claude vision — needs the `ANTHROPIC_API_KEY` provider). Content persists
+for the whole thread; reply in the same thread to keep referencing it.
+
+**One-time setup:** attachments need the `files:read` scope, which is new — after
+updating, **reinstall the Slack app** (re-run the manifest/oauth flow) or downloads
+fail with a "needs files:read" notice. Limits: 10 MB/file, 5 MB/image, 10 files per
+message; images are read once and kept as a text description (pixel detail isn't
+retained for follow-ups); linked Google/Box files and Office formats aren't supported.
+
 ## Where this sits in the 30-day path
 
 Onboarding is the **Week 1** milestone in the README adoption path.

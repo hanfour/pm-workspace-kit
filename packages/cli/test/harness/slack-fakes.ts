@@ -23,7 +23,7 @@ import type {
   MraAskResult,
   MraDoctorReport,
 } from "../../src/adapters/mra";
-import { SlackAdapter } from "../../src/gateway/slack";
+import { SlackAdapter, type AttachmentIngestFn } from "../../src/gateway/slack";
 import {
   GATEWAY_CONFIG_VERSION,
   type GatewayConfig,
@@ -298,6 +298,8 @@ export interface BuildHarnessOptions {
   offlineDurationMs?: number;
   gracefulShutdown?: boolean;
   onLog?: (msg: string) => void;
+  /** Injectable attachment ingest seam; forwarded to SlackAdapter for test isolation. */
+  attachmentIngest?: AttachmentIngestFn;
 }
 
 /**
@@ -335,6 +337,7 @@ export function buildHarness(opts: BuildHarnessOptions = {}): Harness {
     llm,
     mraDoctor: mra.doctor,
     runMraAsk: mra.runAsk,
+    attachmentIngest: opts.attachmentIngest,
   });
 
   return {
@@ -371,6 +374,7 @@ export function dmMessagePayload(args: {
   thread_ts?: string;
   envelope_id?: string;
   retry_num?: number;
+  files?: unknown[];
 }): {
   ack: () => Promise<void>;
   envelope_id: string;
@@ -382,6 +386,7 @@ export function dmMessagePayload(args: {
     channel: string;
     ts: string;
     thread_ts?: string;
+    files?: unknown[];
   };
 } {
   const channel = args.channel ?? "D-USER-DM";
@@ -397,6 +402,7 @@ export function dmMessagePayload(args: {
       channel,
       ts,
       thread_ts: args.thread_ts,
+      files: args.files,
     },
   };
 }
@@ -475,6 +481,7 @@ export function appMentionPayload(args: {
   ts?: string;
   thread_ts?: string;
   envelope_id?: string;
+  files?: unknown[];
 }): {
   ack: () => Promise<void>;
   envelope_id: string;
@@ -486,6 +493,7 @@ export function appMentionPayload(args: {
     channel: string;
     ts: string;
     thread_ts?: string;
+    files?: unknown[];
   };
 } {
   const channel = args.channel ?? "C-CHANNEL";
@@ -501,6 +509,7 @@ export function appMentionPayload(args: {
       channel,
       ts,
       thread_ts: args.thread_ts,
+      files: args.files,
     },
   };
 }

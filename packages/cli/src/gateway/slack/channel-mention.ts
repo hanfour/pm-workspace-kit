@@ -35,6 +35,13 @@ import {
   type FreeChatSession,
 } from "./free-chat-turn";
 import { SlashCommandHandler } from "./slash-command";
+import { appendAttachment } from "../attachments/store";
+import { loadAttachmentContext } from "../attachments/assemble";
+import {
+  MAX_ATTACHMENT_CONTEXT_CHARS,
+  type SlackFile,
+} from "../attachments/types";
+import type { AttachmentIngestFn, AttachmentTurnContext } from "./index";
 
 /**
  * v0.13 tranche 4: channel `app_mention` handler extracted from
@@ -49,6 +56,7 @@ export interface ChannelMentionHandlerOptions {
   llm: LlmProvider;
   freeChatTurn: FreeChatTurnRunner;
   slashCommand: SlashCommandHandler;
+  attachmentIngest: AttachmentIngestFn;
 }
 
 export class ChannelMentionHandler {
@@ -56,12 +64,14 @@ export class ChannelMentionHandler {
   private readonly llm: LlmProvider;
   private readonly freeChatTurn: FreeChatTurnRunner;
   private readonly slashCommand: SlashCommandHandler;
+  private readonly attachmentIngest: AttachmentIngestFn;
 
   constructor(opts: ChannelMentionHandlerOptions) {
     this.web = opts.web;
     this.llm = opts.llm;
     this.freeChatTurn = opts.freeChatTurn;
     this.slashCommand = opts.slashCommand;
+    this.attachmentIngest = opts.attachmentIngest;
   }
 
   async run(args: {
@@ -70,8 +80,9 @@ export class ChannelMentionHandler {
     text: string;
     threadTs: string;
     sessionThreadTs?: string;
+    files?: SlackFile[];
   }): Promise<void> {
-    const { channelId, userId, text, threadTs, sessionThreadTs } = args;
+    const { channelId, userId, text, threadTs, sessionThreadTs, files } = args;
 
     if (text.startsWith("/pmk ")) {
       const rest = text.slice(5).trim();
@@ -101,6 +112,61 @@ export class ChannelMentionHandler {
       // turn's load, filtered by `(role, content)` so prune-trimmed
       // history (local to this request's LLM context) is NOT
       // re-appended.
+
+      // Attachment wiring (free-chat branch only): ingest new files when
+      // present, then load any previously stored context for this thread.
+      const threadKey: { kind: "channel"; channelId: string; threadTs: string } = {
+        kind: "channel",
+        channelId,
+        threadTs: sessionThreadTs ?? threadTs,
+      };
+      let attachment: AttachmentTurnContext | undefined;
+      let effectiveText = text;
+
+      if (files && files.length > 0) {
+        const progressRes = await this.web.chat
+          .postMessage({
+            channel: channelId,
+            thread_ts: threadTs,
+            text: `_正在讀取 ${files.length} 個檔案…_`,
+          })
+          .catch(() => undefined);
+        const progressTs = (progressRes as { ts?: string } | undefined)?.ts;
+
+        const ingested = await this.attachmentIngest(files, threadKey);
+
+        if (progressTs) {
+          const summary = ingested.summary || "_附件處理完成_";
+          await this.web.chat
+            .update({
+              channel: channelId,
+              ts: progressTs,
+              text: summary,
+            })
+            .catch(() => {});
+        }
+
+        // Ensure entries are persisted so subsequent turns can load them.
+        for (const entry of ingested.entries) {
+          appendAttachment(threadKey, entry);
+        }
+        attachment = ingested;
+
+        // Synthetic prompt when user sent files but no caption.
+        if (!text) {
+          effectiveText = "(使用者上傳了檔案但沒有附訊息) 請先讀附件,簡述每份內容並問使用者想用它做什麼。";
+        }
+      } else {
+        // No new files — check for previously stored attachments in this thread.
+        const { messages, entries } = loadAttachmentContext(
+          threadKey,
+          MAX_ATTACHMENT_CONTEXT_CHARS,
+        );
+        if (entries.length > 0) {
+          attachment = { summary: "", messages, entries };
+        }
+      }
+
       const loadedEntries = loadChannelTurns(channelId, sessionThreadTs);
       const initialMessages = entriesToMessages(loadedEntries);
       const initialKeys = new Set(
@@ -116,7 +182,7 @@ export class ChannelMentionHandler {
       await this.freeChatTurn.run({
         channelId,
         threadTs,
-        text,
+        text: effectiveText,
         userId,
         session,
         saveSession: (s) => {
@@ -132,17 +198,30 @@ export class ChannelMentionHandler {
             // Only the message whose content matches the turn's prompt
             // is attributed to the calling user; seed and mra-result
             // user-role messages stay unattributed.
-            ...(m.role === "user" && m.content === text
+            ...(m.role === "user" && m.content === effectiveText
               ? { userId }
               : {}),
           }));
           appendChannelTurns(channelId, sessionThreadTs, entries);
         },
+        attachment,
       });
       // Touch channel meta so listRecentChannels picks it up for the
       // offline / online broadcast list.
       saveChannelMeta(meta);
       return;
+    }
+
+    // Active-case branch: attachments are not supported — post a brief note
+    // and proceed with the case turn as usual. Do NOT ingest.
+    if (files && files.length > 0) {
+      await this.web.chat
+        .postMessage({
+          channel: channelId,
+          thread_ts: threadTs,
+          text: "_(附件在 case 模式下不支援，已忽略)_",
+        })
+        .catch(() => {});
     }
 
     const dir = channelCasesDir(channelId);

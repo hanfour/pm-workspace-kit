@@ -81,4 +81,38 @@ export class AnthropicApiKeyProvider implements LlmProvider {
 
     return full;
   }
+
+  async describeImage(
+    image: { data: Buffer; mimetype: string },
+    prompt: string,
+  ): Promise<string> {
+    const res = await this.client.messages.create({
+      model: this.config.model,
+      max_tokens: this.config.maxTokens,
+      messages: [
+        {
+          role: "user",
+          content: [
+            {
+              type: "image",
+              source: {
+                type: "base64",
+                media_type: image.mimetype as
+                  | "image/png"
+                  | "image/jpeg"
+                  | "image/gif"
+                  | "image/webp",
+                data: image.data.toString("base64"),
+              },
+            },
+            { type: "text", text: prompt },
+          ],
+        },
+      ],
+    });
+    return res.content
+      .filter((b) => b.type === "text")
+      .map((b) => (b as { type: "text"; text: string }).text)
+      .join("\n");
+  }
 }

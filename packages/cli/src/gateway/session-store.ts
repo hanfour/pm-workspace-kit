@@ -31,7 +31,7 @@ const PLATFORM_SLACK = "slack";
  * a `/`, `\`, `..`, or control char would let a crafted/forged event
  * escape `~/.pmk/gateway/`. Reject anything that isn't a flat segment.
  */
-function assertSafeSegment(value: string, kind: string): string {
+export function assertSafeSegment(value: string, kind: string): string {
   if (
     !value ||
     value === "." ||
@@ -264,6 +264,20 @@ export function userCasesDir(slackUserId: string): string {
 
 export function channelCasesDir(slackChannelId: string): string {
   return path.join(channelDir(slackChannelId), "cases");
+}
+
+/**
+ * Per-thread attachments.jsonl path. Flat params (kind/id/threadTs) so
+ * session-store.ts does not import the attachments/ module. Reuses
+ * userDir/channelDir → assertSafeSegment applies to id and threadTs.
+ */
+export function attachmentLogPath(
+  kind: "dm" | "channel",
+  id: string,
+  threadTs: string,
+): string {
+  const dir = kind === "dm" ? userDir(id, threadTs) : channelDir(id, threadTs);
+  return path.join(dir, "attachments.jsonl");
 }
 
 /**

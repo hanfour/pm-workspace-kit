@@ -497,6 +497,7 @@ describe("doctor — manifest-alignment check (FR2 #8)", () => {
             bot: [
               "app_mentions:read",
               "chat:write",
+              "files:read",
               "im:history",
               "im:read",
               "im:write",

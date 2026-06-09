@@ -14,6 +14,7 @@ export const MANIFEST_VERSION = "2026-05";
 const BOT_SCOPES = [
   "app_mentions:read",
   "chat:write",
+  "files:read",
   "im:history",
   "im:read",
   "im:write",

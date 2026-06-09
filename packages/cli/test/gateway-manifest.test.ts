@@ -15,6 +15,7 @@ import {
 const REQUIRED_BOT_SCOPES = [
   "app_mentions:read",
   "chat:write",
+  "files:read",
   "im:history",
   "im:read",
   "im:write",

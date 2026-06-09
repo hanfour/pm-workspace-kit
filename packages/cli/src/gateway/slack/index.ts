@@ -1,6 +1,28 @@
 import { SocketModeClient } from "@slack/socket-mode";
 import { WebClient } from "@slack/web-api";
 import type { GatewayConfig } from "../config";
+import { ingestAttachments, summarize } from "../attachments/ingest";
+import { fetchSlackFile } from "../attachments/download";
+import { loadAttachmentContext } from "../attachments/assemble";
+import { appendAttachment } from "../attachments/store";
+import {
+  MAX_ATTACHMENT_CONTEXT_CHARS,
+  type SlackFile,
+  type ThreadKey,
+  type ExtractedAttachment,
+} from "../attachments/types";
+import type { ChatMessage } from "@pmk/shared";
+
+export interface AttachmentTurnContext {
+  summary: string;
+  messages: ChatMessage[];
+  entries: ExtractedAttachment[];
+}
+
+export type AttachmentIngestFn = (
+  files: SlackFile[],
+  threadKey: ThreadKey,
+) => Promise<AttachmentTurnContext>;
 import { resolveGatewayApiKey } from "../config";
 import {
   loadUserSession,
@@ -100,6 +122,12 @@ export interface SlackAdapterOptions {
    */
   dryRun?: boolean;
   dryRunOpts?: { stats?: DryRunStats; log?: DryRunStubLogger };
+  /**
+   * File-attachment ingest seam. Defaults to the real pipeline
+   * (ingest → assemble). Tests can substitute a fake to avoid
+   * hitting the network or vision API.
+   */
+  attachmentIngest?: AttachmentIngestFn;
 }
 
 export class SlackAdapter {
@@ -143,6 +171,8 @@ export class SlackAdapter {
   private watchdog?: SocketWatchdog;
   /** Epoch ms when this adapter instance was constructed. Used by admin doctor. */
   private readonly startedAt = Date.now();
+  /** File-attachment ingest seam — injectable for tests, defaults to real pipeline. */
+  private attachmentIngest: AttachmentIngestFn;
 
   constructor(opts: SlackAdapterOptions) {
     // v0.13: token guard only fires on the prod construction path.
@@ -205,6 +235,22 @@ export class SlackAdapter {
     }
     this.mraDoctor = opts.mraDoctor ?? mraDoctorImpl;
     this.runMraAsk = opts.runMraAsk ?? runMraAskImpl;
+    this.attachmentIngest =
+      opts.attachmentIngest ??
+      (async (files, threadKey) => {
+        const statuses = await ingestAttachments({
+          files,
+          threadKey,
+          botToken: this.config.slack.botToken!,
+          llm: this.llm,
+          download: fetchSlackFile,
+        });
+        const { messages, entries } = loadAttachmentContext(
+          threadKey,
+          MAX_ATTACHMENT_CONTEXT_CHARS,
+        );
+        return { summary: summarize(statuses), messages, entries };
+      });
     this.dedup = new EnvelopeDedup();
     this.presence = new PresenceBroadcaster({
       web: this.web,
@@ -241,6 +287,7 @@ export class SlackAdapter {
       llm: this.llm,
       freeChatTurn: this.freeChatTurn,
       slashCommand: this.slashCommand,
+      attachmentIngest: this.attachmentIngest,
     });
     this.queue = new InFlightQueue({ onLog: this.onLog });
   }
@@ -398,8 +445,12 @@ export class SlackAdapter {
       return;
     }
 
+    const files = (event.files ?? []) as SlackFile[];
     const text = (event.text ?? "").trim();
-    if (!text) return;
+    // A file-only DM (no caption) must NOT be dropped — let it through
+    // so the attachment pipeline can ingest it. Only skip when both
+    // text AND files are absent (truly empty event).
+    if (!text && files.length === 0) return;
 
     // Slack retry of an event we already accepted? Drop silently —
     // we've either replied or are still processing the original.
@@ -444,6 +495,7 @@ export class SlackAdapter {
           text,
           threadTs: replyThreadTs,
           sessionThreadTs: replyThreadTs,
+          files,
         });
       } catch (err) {
         this.onLog(
@@ -519,7 +571,11 @@ export class SlackAdapter {
     const text = (event.text ?? "")
       .replace(new RegExp(`<@${this.botInfo.botUserId}>`, "g"), "")
       .trim();
-    if (!text) return;
+    const files = (event.files ?? []) as SlackFile[];
+    // A file-only mention (no caption) must NOT be dropped — let it through
+    // so the attachment pipeline can ingest it. Only skip when both text AND
+    // files are absent (truly empty event).
+    if (!text && files.length === 0) return;
 
     if (this.config.blocklist.includes(userId)) return;
 
@@ -553,6 +609,7 @@ export class SlackAdapter {
           text,
           threadTs: replyThreadTs,
           sessionThreadTs,
+          files,
         });
       } catch (err) {
         this.onLog(
@@ -603,8 +660,9 @@ export class SlackAdapter {
     text: string;
     threadTs: string;
     sessionThreadTs?: string;
+    files?: SlackFile[];
   }): Promise<void> {
-    const { channelId, userId, text, threadTs, sessionThreadTs } = args;
+    const { channelId, userId, text, threadTs, sessionThreadTs, files } = args;
 
     if (text.startsWith("/pmk ")) {
       const rest = text.slice(5).trim();
@@ -618,14 +676,75 @@ export class SlackAdapter {
       return;
     }
 
+    // Piece 2: synthetic prompt — when the user sent files but no caption,
+    // the turn must not run with an empty text. Override only when text is
+    // truly empty; a real caption must NOT be overridden.
+    let effectiveText = text;
+    if (files && files.length > 0 && !text) {
+      effectiveText = "(使用者上傳了檔案但沒有附訊息) 請先讀附件,簡述每份內容並問使用者想用它做什麼。";
+    }
+
+    // Attachment wiring: always load persisted context for this thread so
+    // prior uploads are visible even when no new files arrive on this
+    // turn. When new files ARE present, ingest first (writes to store),
+    // then persist any entries the ingest fn returned so fake/test
+    // implementations also land entries on disk for subsequent turns.
+    const threadKey: ThreadKey = { kind: "dm", userId, threadTs };
+    let attachment: AttachmentTurnContext | undefined;
+    if (files && files.length > 0) {
+      // Piece 3: progress message — post "reading N files…" before ingest,
+      // then update the message with the ingest summary (or a fallback)
+      // after, so the user sees live feedback during potentially-slow
+      // download + extraction.
+      const progressRes = await this.web.chat
+        .postMessage({
+          channel: channelId,
+          thread_ts: threadTs,
+          text: `_正在讀取 ${files.length} 個檔案…_`,
+        })
+        .catch(() => undefined);
+      const progressTs = (progressRes as { ts?: string } | undefined)?.ts;
+
+      const ingested = await this.attachmentIngest(files, threadKey);
+
+      if (progressTs) {
+        const summary = ingested.summary || "_附件處理完成_";
+        await this.web.chat
+          .update({
+            channel: channelId,
+            ts: progressTs,
+            text: summary,
+          })
+          .catch(() => {});
+      }
+
+      // Ensure entries are persisted (idempotent) so subsequent turns in
+      // the same thread can load them via loadAttachmentContext even when
+      // a fake ingest fn didn't write to disk itself.
+      for (const entry of ingested.entries) {
+        appendAttachment(threadKey, entry);
+      }
+      attachment = ingested;
+    } else {
+      // No new files — check for previously stored attachments in this thread.
+      const { messages, entries } = loadAttachmentContext(
+        threadKey,
+        MAX_ATTACHMENT_CONTEXT_CHARS,
+      );
+      if (entries.length > 0) {
+        attachment = { summary: "", messages, entries };
+      }
+    }
+
     const session = loadUserSession(userId, sessionThreadTs);
     await this.freeChatTurn.run({
       channelId,
       threadTs,
-      text,
+      text: effectiveText,
       userId,
       session,
       saveSession: (s) => saveUserSession(s, sessionThreadTs),
+      attachment,
     });
   }
 
@@ -802,6 +921,7 @@ declare namespace Slack {
     ts?: string;
     thread_ts?: string;
     subtype?: string;
+    files?: SlackFile[];
   }
   interface AppMentionEvent {
     type: "app_mention";
@@ -810,6 +930,7 @@ declare namespace Slack {
     channel?: string;
     ts?: string;
     thread_ts?: string;
+    files?: SlackFile[];
   }
   interface MessageEventPayload {
     ack?: (response?: unknown) => Promise<void>;

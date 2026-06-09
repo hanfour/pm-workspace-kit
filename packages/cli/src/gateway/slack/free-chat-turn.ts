@@ -29,6 +29,12 @@
 import type { WebClient } from "@slack/web-api";
 import type { ChatMessage } from "@pmk/shared";
 import { pickGatewayPrompt } from "@pmk/shared";
+import { assembleFromEntries } from "../attachments/assemble";
+import {
+  MAX_ATTACHMENT_CONTEXT_CHARS,
+  MIN_ATTACHMENT_CONTEXT_CHARS,
+  type ExtractedAttachment,
+} from "../attachments/types";
 import type { GatewayConfig } from "../config";
 import { pickAudience } from "../config";
 import type { LlmProvider } from "../../llm";
@@ -103,6 +109,14 @@ export class FreeChatTurnRunner {
     userId: string;
     session: S;
     saveSession: (s: S) => void;
+    /**
+     * Optional attachment context for this turn (and any retry). When
+     * present, the extracted-attachment messages are prepended after
+     * `retrievalPrefix` as an ephemeral context block. On
+     * `PmkContextTooLongError` the budget is halved in-memory (no disk
+     * read) and a `message.capped {kind:"attachment"}` event is emitted.
+     */
+    attachment?: { messages: ChatMessage[]; entries: ExtractedAttachment[] };
   }): Promise<void> {
     const { channelId, threadTs, text, userId, session, saveSession } = args;
     const { web, config, onLog, llm } = this.opts;
@@ -155,12 +169,27 @@ export class FreeChatTurnRunner {
         ]
       : [];
 
+    // Attachment ephemeral context: fold attachment messages after the
+    // retrieval prefix so they reach every LLM call in this turn
+    // (first-call AND synthesise round). The budget is tracked in a
+    // closure variable so `onBeforeRetry` can halve it in-memory
+    // without a disk re-read.
+    let attachmentBudget = MAX_ATTACHMENT_CONTEXT_CHARS;
+    const attachMsgs = (): ChatMessage[] =>
+      args.attachment
+        ? assembleFromEntries(args.attachment.entries, attachmentBudget)
+        : [];
+    const ephemeralPrefix = (): ChatMessage[] => [
+      ...retrievalPrefix,
+      ...attachMsgs(),
+    ];
+
     // v0.11.1: prune BEFORE the LLM call so a bloated session can be
     // trimmed on its way in, not after it has already triggered
-    // msg_too_long. Includes retrievalPrefix and the new user turn in
+    // msg_too_long. Includes ephemeralPrefix and the new user turn in
     // the budget check so the prune reflects what we'll actually send.
     const pruneReport = pruneSessionIfNeeded(session, {
-      extra: retrievalPrefix,
+      extra: ephemeralPrefix(),
       newUser: text,
     });
     if (pruneReport.pruned) {
@@ -187,11 +216,15 @@ export class FreeChatTurnRunner {
     // onto session.messages until AFTER the retry succeeds, so a failed
     // turn doesn't pollute persisted history (and so forcePruneToMinimum
     // operates on a coherent paired-history shape).
+    //
+    // onBeforeRetry: halve the attachment budget so the re-assembled
+    // attachment context is smaller on the retry attempt. Emits a
+    // message.capped event so operators can observe cap-firing frequency.
     const retryResult = await chatWithContextRetry({
       llm,
       systemPrompt,
       buildMessages: () => [
-        ...retrievalPrefix,
+        ...ephemeralPrefix(),
         ...session.messages,
         { role: "user", content: text },
       ],
@@ -199,6 +232,22 @@ export class FreeChatTurnRunner {
       actor: userId,
       retrievalAtoms: retrieved.length,
       phase: "first-call",
+      onBeforeRetry: () => {
+        const prev = attachmentBudget;
+        attachmentBudget = Math.max(
+          MIN_ATTACHMENT_CONTEXT_CHARS,
+          Math.floor(attachmentBudget / 2),
+        );
+        if (args.attachment && attachmentBudget < prev) {
+          appendGatewayEvent({
+            type: "message.capped",
+            actor: userId,
+            kind: "attachment",
+            originalChars: prev,
+            cappedChars: attachmentBudget,
+          });
+        }
+      },
     });
 
     if (!retryResult.ok) {
@@ -230,12 +279,28 @@ export class FreeChatTurnRunner {
           channelId,
           placeholderTs: String(placeholder.ts),
           session,
-          retrievalPrefix,
+          buildEphemeralPrefix: ephemeralPrefix,
           retrievalAtoms: retrieved.length,
           firstResponse: full,
           request: askReq,
           systemPrompt,
           actor: userId,
+          onBeforeRetry: () => {
+            const prev = attachmentBudget;
+            attachmentBudget = Math.max(
+              MIN_ATTACHMENT_CONTEXT_CHARS,
+              Math.floor(attachmentBudget / 2),
+            );
+            if (args.attachment && attachmentBudget < prev) {
+              appendGatewayEvent({
+                type: "message.capped",
+                actor: userId,
+                kind: "attachment",
+                originalChars: prev,
+                cappedChars: attachmentBudget,
+              });
+            }
+          },
         });
         full = mraResult.full;
         // T12: if the synthesise round ALSO needed force-prune, the
@@ -332,23 +397,27 @@ export class FreeChatTurnRunner {
     channelId: string;
     placeholderTs: string;
     session: FreeChatSession;
-    retrievalPrefix: ChatMessage[];
+    /** Closure so the synthesise retry picks up the post-halving budget. */
+    buildEphemeralPrefix: () => ChatMessage[];
     retrievalAtoms: number;
     firstResponse: string;
     request: { repo: string; question: string };
     systemPrompt: string;
     actor: string;
+    /** Forwarded to synthesiseAfterMra so the synthesise retry can also shrink the attachment budget. */
+    onBeforeRetry?: () => void;
   }): Promise<{ full: string; scissorsPrefix: string }> {
     const {
       channelId,
       placeholderTs,
       session,
-      retrievalPrefix,
+      buildEphemeralPrefix,
       retrievalAtoms,
       firstResponse,
       request,
       systemPrompt,
       actor,
+      onBeforeRetry,
     } = args;
     const { web, config, onLog, mraDoctor, runMraAsk } = this.opts;
     const doctor = mraDoctor({ workspace: config.mraWorkspace });
@@ -356,12 +425,13 @@ export class FreeChatTurnRunner {
       onLog(`mra-ask short-circuited: ${doctor.reason ?? "(no reason)"}`);
       return await this.synthesiseAfterMra({
         session,
-        retrievalPrefix,
+        buildEphemeralPrefix,
         retrievalAtoms,
         firstResponse,
         request,
         systemPrompt,
         actor,
+        onBeforeRetry,
         result: {
           ok: false,
           stdout: "",
@@ -449,13 +519,14 @@ export class FreeChatTurnRunner {
 
     return await this.synthesiseAfterMra({
       session,
-      retrievalPrefix,
+      buildEphemeralPrefix,
       retrievalAtoms,
       firstResponse,
       request,
       result,
       systemPrompt,
       actor,
+      onBeforeRetry,
     });
   }
 
@@ -473,23 +544,27 @@ export class FreeChatTurnRunner {
    */
   private async synthesiseAfterMra(args: {
     session: FreeChatSession;
-    retrievalPrefix: ChatMessage[];
+    /** Closure so each attempt re-evaluates the prefix with the current (possibly halved) budget. */
+    buildEphemeralPrefix: () => ChatMessage[];
     retrievalAtoms: number;
     firstResponse: string;
     request: { repo: string; question: string };
     result: { ok: boolean; stdout: string; stderr: string; reason?: string };
     systemPrompt: string;
     actor: string;
+    /** When present, called on context-too-long before the synthesise retry (attachment budget shrink). */
+    onBeforeRetry?: () => void;
   }): Promise<{ full: string; scissorsPrefix: string }> {
     const {
       session,
-      retrievalPrefix,
+      buildEphemeralPrefix,
       retrievalAtoms,
       firstResponse,
       request,
       result,
       systemPrompt,
       actor,
+      onBeforeRetry,
     } = args;
     const { llm } = this.opts;
     session.messages.push({ role: "assistant", content: firstResponse });
@@ -515,12 +590,13 @@ export class FreeChatTurnRunner {
     const retryResult = await chatWithContextRetry({
       llm,
       systemPrompt,
-      buildMessages: () => [...retrievalPrefix, ...session.messages],
+      buildMessages: () => [...buildEphemeralPrefix(), ...session.messages],
       session,
       actor,
       retrievalAtoms,
       phase: "synthesise",
       chatOptions: { onToken: () => {} },
+      onBeforeRetry,
     });
 
     if (!retryResult.ok) {
