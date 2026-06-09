@@ -1,6 +1,6 @@
 {
   "name": "@pmk/cli",
-  "version": "0.21.2",
+  "version": "0.21.3",
   "description": "pmk — command-line interface for pm-workspace-kit",
   "license": "MIT",
   "bin": {
