@@ -1,6 +1,6 @@
 {
   "name": "@pmk/shared",
-  "version": "0.21.3",
+  "version": "0.22.0",
   "description": "Shared types and utilities for pm-workspace-kit packages",
   "license": "MIT",
   "main": "dist/index.js",
