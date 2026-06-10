@@ -18,10 +18,7 @@
  * rest. Same rationale as the pre-extract `broadcast()` method.
  */
 import type { WebClient } from "@slack/web-api";
-import {
-  formatBackOnlineNotice,
-  formatOfflineNotice,
-} from "../formatters";
+import { formatBackOnlineNotice } from "../formatters";
 import { appendGatewayEvent } from "../events";
 import {
   listRecentChannels,
@@ -68,13 +65,18 @@ export class PresenceBroadcaster {
 
   async offline(): Promise<void> {
     const seq = ++this.seq;
-    const text = formatOfflineNotice();
-    await this.broadcast(text);
+    // Audit-only: record the going-down event but do NOT fan out a "暫離"
+    // notice to users. offline() only runs on a graceful shutdown (SIGTERM),
+    // which is almost always a fast restart/deploy — broadcasting "暫離" then
+    // spams every active DM while the matching back-online is suppressed
+    // (asymmetric). A genuine crash can't run this path at all (process is
+    // dead), so the user fan-out only ever fired when least useful. Operators
+    // still see the offline via this event / doctor.
     appendGatewayEvent({
       type: "gateway.offline",
       seq,
       reason: "shutdown",
-      broadcast: true,
+      broadcast: false,
     });
   }
 

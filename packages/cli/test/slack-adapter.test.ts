@@ -1277,19 +1277,31 @@ describe("SlackAdapter integration: presence broadcast (#44)", () => {
     );
   });
 
-  it("stop() emits gateway.offline (always broadcasts; suppression is online-only)", async () => {
+  it("stop() emits gateway.offline as an audit-only event (no user '暫離' fan-out)", async () => {
     h = buildHarness();
+    // Seed a recently-active DM so a fan-out WOULD have a recipient.
+    saveUserSession({
+      userId: "U-RECENT",
+      messages: [{ role: "user", content: "hi" }],
+      lastActiveAt: Date.now(),
+      approxTokens: 1,
+      turns: 0,
+    });
     await h.adapter.start();
-    // Stop after start: broadcastOffline always fires the audit event
-    // and posts the offline notice (the audit rationale is "operators
-    // want to see the going-down notice even when the corresponding
-    // back-up is suppressed").
+    const postsBefore = h.web.posted.length;
     await h.adapter.stop();
 
+    // Graceful shutdown records the audit event but does NOT spam users:
+    // a graceful stop is ~always a fast restart, and a real crash can't
+    // run this path at all. So broadcast:false and no offline-notice post.
     const offline = eventsOfType("gateway.offline");
     assert.equal(offline.length, 1);
-    assert.equal(offline[0].broadcast, true);
+    assert.equal(offline[0].broadcast, false);
     assert.equal(offline[0].reason, "shutdown");
+    const offlinePosts = h.web.posted
+      .slice(postsBefore)
+      .filter((p) => (p.text ?? "").includes("暫離"));
+    assert.equal(offlinePosts.length, 0, "no '暫離' notice should be posted on a graceful stop");
   });
 });
 
