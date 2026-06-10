@@ -38,7 +38,7 @@
     "commander": "^12.1.0",
     "dotenv": "^16.4.5",
     "gray-matter": "^4.0.3",
-    "unpdf": "0.12.1"
+    "unpdf": "1.6.2"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",
