@@ -125,7 +125,8 @@ export class SlashCommandHandler {
             "• `/pmk show <name>` — 顯示 case 全貌\n" +
             "• `/pmk close <name> [reason]` — 結案\n" +
             "• `/pmk cases` — 列出此 scope 的 cases\n" +
-            "• `/pmk help` — 這份說明",
+            "• `/pmk help` — 這份說明\n" +
+            "\n*附件*:直接附上檔案(文字 / markdown / 程式碼 / PDF / 圖片)我就會讀進來當這個對話的參考;在同一個 thread 裡接著問即可。",
         );
         return;
 
