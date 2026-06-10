@@ -1,6 +1,40 @@
-import { query } from "@anthropic-ai/claude-agent-sdk";
+import { query, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import type { ChatMessage, PmkConfig } from "@pmk/shared";
 import type { ChatOptions, LlmProvider } from "./provider";
+
+/**
+ * Build a one-shot SDKUserMessage carrying an inline base64 image plus a
+ * text instruction. The claude-agent SDK forwards this to the vision model
+ * (verified against real Claude). Pure / unit-testable — the construction
+ * is the part that's easy to get wrong.
+ */
+export function buildImageUserMessage(
+  image: { data: Buffer; mimetype: string },
+  prompt: string,
+): SDKUserMessage {
+  return {
+    type: "user",
+    parent_tool_use_id: null,
+    message: {
+      role: "user",
+      content: [
+        {
+          type: "image",
+          source: {
+            type: "base64",
+            media_type: image.mimetype as
+              | "image/png"
+              | "image/jpeg"
+              | "image/gif"
+              | "image/webp",
+            data: image.data.toString("base64"),
+          },
+        },
+        { type: "text", text: prompt },
+      ],
+    },
+  };
+}
 
 /**
  * Typed error wrapper for context-window-exhaustion failures coming out
@@ -88,32 +122,77 @@ export class ClaudeAgentSdkProvider implements LlmProvider {
         },
       });
 
-      let full = "";
-      for await (const msg of q) {
-        if (msg.type === "stream_event") {
-          const event = msg.event;
-          if (
-            event.type === "content_block_delta" &&
-            event.delta.type === "text_delta"
-          ) {
-            const chunk = event.delta.text;
-            full += chunk;
-            opts.onToken?.(chunk);
-          }
-        } else if (msg.type === "result") {
-          if (msg.subtype !== "success") {
-            throw new Error(
-              `[pmk] claude-agent returned non-success: ${msg.subtype}`,
-            );
-          }
-          break;
-        }
-      }
-      return full;
+      return await this.collectText(q, opts);
     } catch (err) {
       if (isContextTooLongError(err)) throw new PmkContextTooLongError(err);
       throw err;
     }
+  }
+
+  /**
+   * Vision: describe an image to text via the claude-agent SDK by passing a
+   * one-shot user message with an inline base64 image block. Lets the
+   * claude-login provider read images without an ANTHROPIC_API_KEY. (Verified
+   * against real Claude; the SDK forwards inline images to the vision model.)
+   */
+  async describeImage(
+    image: { data: Buffer; mimetype: string },
+    prompt: string,
+    opts: ChatOptions = {},
+  ): Promise<string> {
+    try {
+      const message = buildImageUserMessage(image, prompt);
+      async function* once(): AsyncGenerator<SDKUserMessage> {
+        yield message;
+      }
+      const q = query({
+        prompt: once(),
+        options: {
+          model: this.config.model,
+          systemPrompt:
+            "You describe images concisely for use as reference context; transcribe any text in the image verbatim. No tools.",
+          includePartialMessages: true,
+          allowedTools: [],
+          permissionMode: "default",
+          ...(this.executablePath
+            ? { pathToClaudeCodeExecutable: this.executablePath }
+            : {}),
+        },
+      });
+      return await this.collectText(q, opts);
+    } catch (err) {
+      if (isContextTooLongError(err)) throw new PmkContextTooLongError(err);
+      throw err;
+    }
+  }
+
+  /** Drain a query() stream, accumulating assistant text deltas. */
+  private async collectText(
+    q: ReturnType<typeof query>,
+    opts: ChatOptions,
+  ): Promise<string> {
+    let full = "";
+    for await (const msg of q) {
+      if (msg.type === "stream_event") {
+        const event = msg.event;
+        if (
+          event.type === "content_block_delta" &&
+          event.delta.type === "text_delta"
+        ) {
+          const chunk = event.delta.text;
+          full += chunk;
+          opts.onToken?.(chunk);
+        }
+      } else if (msg.type === "result") {
+        if (msg.subtype !== "success") {
+          throw new Error(
+            `[pmk] claude-agent returned non-success: ${msg.subtype}`,
+          );
+        }
+        break;
+      }
+    }
+    return full;
   }
 }
 
