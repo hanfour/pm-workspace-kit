@@ -1,6 +1,6 @@
 {
   "name": "@pmk/docs",
-  "version": "0.23.0",
+  "version": "0.23.1",
   "private": true,
   "description": "Docusaurus docs site for pm-workspace-kit",
   "license": "MIT",
