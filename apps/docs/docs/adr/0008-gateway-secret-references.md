@@ -11,7 +11,7 @@ related:
   confluence_page_id: null
 ---
 
-# ADR-0008: Gateway secret references — {cmd}/{env} instead of plaintext in gateway.json
+# ADR-0008: Gateway secret references — `{cmd}`/`{env}` instead of plaintext in gateway.json
 
 - **Status:** Accepted
 - **Date:** 2026-06-05
