@@ -182,6 +182,25 @@ export interface TokenUsageEvent {
   cacheCreationTokens?: number;
 }
 
+export interface GithubIssueCreatedEvent {
+  type: "github.issue.created";
+  /** Slack user id of the 🎫 reactor. */
+  actor: string;
+  /** owner/repo slug. */
+  repo: string;
+  /** Created issue URL. */
+  url: string;
+}
+
+export interface GithubIssueFailedEvent {
+  type: "github.issue.failed";
+  actor: string;
+  /** Optional — may fail before the slug resolves. */
+  repo?: string;
+  /** no-gh | token | slug | public-repo | gh-create-failed */
+  reason: string;
+}
+
 export type GatewayEvent =
   | MraAskEndEvent
   | TurnProcessedEvent
@@ -191,7 +210,9 @@ export type GatewayEvent =
   | ContextExceededEvent
   | ContextForcePrunedEvent
   | MessageCappedEvent
-  | TokenUsageEvent;
+  | TokenUsageEvent
+  | GithubIssueCreatedEvent
+  | GithubIssueFailedEvent;
 
 /** What lands on disk: the event plus the ISO timestamp added at append time. */
 export type StoredGatewayEvent = GatewayEvent & { at: string };
@@ -207,6 +228,8 @@ const VALID_TYPES: ReadonlySet<string> = new Set([
   "context.force-pruned",
   "message.capped",
   "token.usage",
+  "github.issue.created",
+  "github.issue.failed",
 ]);
 
 /**
