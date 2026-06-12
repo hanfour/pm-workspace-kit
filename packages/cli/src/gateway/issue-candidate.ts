@@ -146,7 +146,6 @@ export function recoverIssueClaims(
 ): void {
   const dir = issueCandidatesDir();
   if (!fs.existsSync(dir)) return;
-  const now = Date.now();
   for (const name of fs.readdirSync(dir)) {
     if (!name.endsWith(".claiming")) continue;
     const claiming = path.join(dir, name);
@@ -160,9 +159,13 @@ export function recoverIssueClaims(
     } catch {
       /* unreadable claiming file — fall through to staleness check */
     }
-    const ageMs = now - fs.statSync(claiming).mtimeMs;
-    if (ageMs >= staleMs) {
-      onWarn(`stale issue-candidate lock ${name} — verify on GitHub, then delete/restore`);
+    try {
+      const ageMs = Math.max(0, Date.now() - fs.statSync(claiming).mtimeMs);
+      if (ageMs >= staleMs) {
+        onWarn(`stale issue-candidate lock ${name} — verify on GitHub, then delete/restore`);
+      }
+    } catch {
+      /* file disappeared between listing and statSync — skip, don't abort the sweep */
     }
   }
 }
