@@ -48,11 +48,34 @@ src/adapters/github.ts        — gh-CLI wrapper:
   createIssue({ slug, title, body, token }) → issue URL (gh issue create, GH_TOKEN env, no-leak)
   githubDoctor({ token }) → { ok, reason } (gh installed + token resolves)
 src/gateway/config.ts         — RawGatewayConfig.github?: { token: SecretSource }; resolveGithubToken
-src/gateway/slack/issue.ts    — IssueFromThread: gather thread context → build issue title/body → createIssue → reply
-src/gateway/slack/index.ts    — reaction_added: 🎫 on an escalation-marked message → IssueFromThread
-src/gateway/slack/escalation.ts — pending marker ALREADY stores the repo (field `scope`) + threadTs + asker; add `issuedUrl?` (idempotency)
+src/gateway/issue-candidate.ts — DURABLE issue-candidate record (NEW; NOT the consumable
+  escalation marker). Persisted at escalation time with everything the issue needs
+  (snapshot). saveIssueCandidate / loadIssueCandidate / claimIssueCandidate (atomic).
+src/gateway/slack/issue.ts    — IssueFromCandidate: load record → build issue title/body
+  from the SNAPSHOT → atomic claim → createIssue → reply
+src/gateway/slack/index.ts    — reaction_added: 🎫 whose item.ts == candidate.anchorTs → IssueFromCandidate
+src/gateway/slack/escalation.ts — at escalate() time, ALSO write the issue-candidate record
+  (capturing the escalation message ts as anchorTs + mentionedUserIds snapshot)
+src/gateway/events.ts         — add github.issue.created / github.issue.failed to the
+  GatewayEvent union + VALID_TYPES whitelist + the reader/guard
 src/gateway/doctor.ts         — add a `github-token` check
 ```
+
+### Why a separate durable record (not the escalation marker) — resolves review findings
+
+The existing pending-escalation marker is **consumed/claimed** when a tagged tech
+replies (the absorb path atomically renames it away, session-store.ts ~356/368).
+So if a tech replies `@pmk …` FIRST and reacts 🎫 second, the marker is already
+gone → the issue flow would no-op. Therefore the 🎫 flow uses a SEPARATE, durable
+`issue-candidate` record that the absorb path does NOT touch. The record is a
+**snapshot taken at escalation time** carrying: `repo` (the escalate scope),
+`channelId`, `threadTs`, `anchorTs` (the bot's escalation message ts — the exact
+react target), `asker`, `mentionedUserIds` (the tech pool actually tagged for THIS
+thread), the user's `question`, and the bot's `diagnosis` text. Because the issue
+body is built from this snapshot, the 🎫 handler does NOT call
+`conversations.replies` — so **no new Slack history scope is needed** (only the
+existing `reactions:read`). (Pulling the tech's later discussion into the issue
+would need `channels:history`/`groups:history`; that is deferred to sub-project 2.)
 
 ### Config
 
@@ -68,34 +91,48 @@ mutators already load/save RAW (no materialisation) — `github.token` inherits 
 
 - The bot's escalation message (the one that @-mentions the tech pool with the
   diagnosis) gains a one-line affordance: `_確認是問題的話,在這則訊息上 react 🎫 我就開 issue_`.
-- A `reaction_added` for `🎫` (`:ticket:` — verify the exact Slack reaction name at implementation) is handled ONLY when the
-  reacted message corresponds to a thread with a **pending-escalation marker**
-  (so random 🎫 reactions elsewhere are ignored).
-- **Authorization:** the reactor MUST be in the escalation pool for that thread's
-  repo (or the `default` pool) — this is the "tech confirms" quality gate.
-  Non-pool / blocklisted reactors are ignored silently.
+  Its `ts` is saved as the issue-candidate's `anchorTs`.
+- A `reaction_added` for `🎫` (`:ticket:` — verify the exact Slack reaction name at
+  implementation) is handled ONLY when **`reaction.item.ts === candidate.anchorTs`**
+  for an existing issue-candidate record (Medium-4 fix: anchor-exact, not
+  any-bot-message-in-the-thread). Other 🎫 reactions are ignored.
+- **Authorization (Medium-5 fix — snapshot, not live pool):** the reactor MUST be in
+  the saved `candidate.mentionedUserIds` (the tech pool actually tagged for THIS
+  thread at escalation time) AND not in the blocklist. Authorizing against the LIVE
+  pool would let a later config change authorize someone never tagged here, or
+  de-authorize the tagged tech. Non-listed / blocklisted reactors are ignored silently.
 
 ## Data flow
 
-1. Bot escalates (existing): persists the pending marker — which ALREADY stores
-   the repo (field `scope`, from the escalate request), `threadTs`, and `asker`.
-   Add only an `issuedUrl?` field (for idempotency). Posts the diagnosis + the 🎫
-   affordance.
-2. Tech reacts 🎫 on that message.
+1. Bot escalates (existing path, extended): in `escalate()`, AFTER posting the
+   @-mention diagnosis message, capture that message's `ts` and write a durable
+   `issue-candidate` record `{ channelId, threadTs, anchorTs, repo (escalate scope),
+   asker, mentionedUserIds, question, diagnosis, issuedUrl? }`. Append the 🎫
+   affordance to the message. This record is independent of the consumable
+   escalation marker and is NOT cleared by the absorb path.
+2. Tech reacts 🎫 on that exact message.
 3. `reaction_added` handler:
-   a. Resolve the marker for the message's thread. If none (or reaction ≠ 🎫), ignore.
-   b. If `marker.issuedUrl` already set → reply with the existing URL (idempotent), stop.
-   c. Authorize: reactor ∈ escalation pool for `marker.repo` (or default). Else ignore.
-   d. Gather thread context via `conversations.replies(parentTs = marker.threadTs)`
-      (NOT `conversations.history` — threaded replies are omitted there; known bug).
-   e. Resolve the repo slug: `resolveRepoSlug(mraWorkspace, marker.repo)` → git origin
-      → `owner/repo`. If underivable, reply asking the tech to specify the repo; stop.
-   f. Resolve the work token via `resolveGithubToken` (`{cmd}`). If it fails, reply
-      "GitHub token 未設定 / 指令失敗" with NO `{cmd}` output leak; audit `github.issue.failed`; stop.
-   g. Build the issue title + body (structure below) from the thread context.
+   a. Ignore unless reaction == 🎫 AND an issue-candidate exists whose
+      `anchorTs == reaction.item.ts`.
+   b. If `candidate.issuedUrl` already set → reply with the existing URL (idempotent), stop.
+   c. Authorize: reactor ∈ `candidate.mentionedUserIds` ∧ not blocklisted. Else ignore silently.
+   d. **Atomic claim (idempotency/concurrency):** `claimIssueCandidate(candidate)` —
+      `fs.renameSync` the record to a `.claiming` lock (same atomic-rename pattern as
+      `claimThreadEscalation`, session-store.ts ~356). If the rename throws (another
+      reaction event / pool user already claimed) → stop; only the claim winner
+      proceeds. This prevents two events / two pool users from both creating an issue.
+   e. Resolve the repo slug: `resolveRepoSlug(mraWorkspace, candidate.repo)` → git
+      origin → `owner/repo`. If underivable → reply asking the tech to specify the
+      repo, release the claim, stop.
+   f. Resolve the work token via `resolveGithubToken` (`{cmd}`). On failure → reply
+      "GitHub token 未設定 / 指令失敗" (NO `{cmd}` output leak), release claim, audit
+      `github.issue.failed`, stop.
+   g. Build the issue title + body (structure below) from the SNAPSHOT
+      (`candidate.question` + `candidate.diagnosis`) — NO `conversations.replies`,
+      so no new Slack history scope is needed.
    h. `createIssue({ slug, title, body, token })` → issue URL.
-   i. Persist `marker.issuedUrl = url`. Post the URL back to the thread. Emit
-      `github.issue.created` (audit: actor = reactor, repo = slug, issue url).
+   i. Persist `candidate.issuedUrl = url` (finalise the claim). Post the URL back to
+      the thread. Emit `github.issue.created` (actor = reactor, repo = slug, issue url).
 
 ### Issue content
 
@@ -143,8 +180,9 @@ thread into the issue body (audience-neutral, technical — this is for engineer
 | `github.token` unset / `{cmd}` fails | reply: GitHub token 未設定 / 指令失敗 — NO `{cmd}` output leak. |
 | repo slug underivable | reply: 請 tech 指定 repo（無法從 git origin 推出）; stop. |
 | `gh issue create` fails (auth/perm/net) | reply friendly error, NO token/stderr leak; audit `github.issue.failed`. |
-| duplicate 🎫 (marker.issuedUrl set) | reply the existing issue URL; no duplicate. |
-| reactor not in escalation pool / blocklisted | ignore silently. |
+| duplicate 🎫 (`candidate.issuedUrl` set) | reply the existing issue URL; no duplicate. |
+| lost the atomic claim (concurrent 🎫) | the loser stops; only the claim winner creates the issue. |
+| reactor not in `candidate.mentionedUserIds` / blocklisted | ignore silently. |
 
 **No-leak (mandatory):** the work GitHub token never appears in a Slack reply, an
 audit event, or a host log line. `createIssue` and `resolveGithubToken` errors are
@@ -159,12 +197,22 @@ sanitised. `gh`'s env-passed `GH_TOKEN` is not logged.
 
 **Config:** `github.token` `{cmd}`/`{env}`/literal resolution via `resolveGithubToken`; a failing `{cmd}` → error with NO command-output leak (mirror the secret-source tests).
 
+**`issue-candidate.ts` unit:** save/load round-trip; `claimIssueCandidate` is atomic
+(second concurrent claim throws / returns false — the loser does NOT proceed); a
+claimed-then-finalised record carries `issuedUrl`.
+
+**`events.ts` unit:** `github.issue.created` / `github.issue.failed` typecheck as
+`GatewayEvent`, are in `VALID_TYPES`, and round-trip through the reader/guard.
+
 **Integration (slack-adapter harness; fake exec + reactionAddedPayload):**
-- tech (in the escalation pool) reacts 🎫 on an escalation-marked message → `createIssue` called with the right slug + a body containing the diagnosis + the issue URL posted to the thread + `github.issue.created` event.
-- duplicate 🎫 → existing URL reposted, `createIssue` NOT called again.
-- non-pool reactor 🎫 → ignored (no createIssue).
+- tech (∈ `candidate.mentionedUserIds`) reacts 🎫 on the **anchor** message → `createIssue` called with the right slug + a body containing the snapshot diagnosis + the URL posted + `github.issue.created` event.
+- **High-1:** tech replies `@pmk …` FIRST (absorb consumes the escalation marker), THEN reacts 🎫 → issue STILL created (the durable candidate survived).
+- **High-3:** two 🎫 reaction events for the same anchor (or two pool users) → `createIssue` called exactly ONCE (atomic claim); the loser reposts the existing URL or no-ops.
+- duplicate 🎫 after issued → existing URL reposted, `createIssue` NOT called again.
+- **Medium-4:** 🎫 on a DIFFERENT bot message in the same pending thread (not the anchor) → ignored.
+- **Medium-5:** a reactor NOT in `candidate.mentionedUserIds` (even if newly added to the live pool) → ignored; a blocklisted reactor → ignored.
 - token `{cmd}` fails → friendly error posted, NO leak; `github.issue.failed` event.
-- 🎫 on a non-escalation message → ignored.
+- 🎫 with no matching candidate → ignored.
 
 ## Out of scope (sub-project 1)
 
