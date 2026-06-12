@@ -116,6 +116,14 @@ export interface GatewayConfig {
    * so a gateway {cmd} never runs when the CLI config already supplies a key.
    */
   apiKey?: SecretSource;
+  /**
+   * Work GitHub credentials for the confirmed-problem → issue flow.
+   * `token` is a literal or {env}/{cmd} reference, resolved lazily at
+   * 🎫 time (see resolveGithubToken) so a {cmd} never runs at load.
+   * `allowPublicRepos` (default false) blocks opening issues on a PUBLIC
+   * repo — internal diagnosis content must not leak to a public repo.
+   */
+  github?: { token: SecretSource; allowPublicRepos?: boolean };
   slack: SlackConfig;
 }
 
@@ -255,6 +263,19 @@ function normaliseRawConfig(raw: unknown): RawGatewayConfig {
     botUserId: asString(sRaw.botUserId),
     workspaceName: asString(sRaw.workspaceName),
   };
+  const rawGithub = (r as { github?: unknown }).github;
+  const github =
+    rawGithub && typeof rawGithub === "object" && "token" in rawGithub
+      ? {
+          token: validateSecretSource(
+            (rawGithub as { token?: unknown }).token as never,
+            "github.token",
+          )!,
+          ...((rawGithub as { allowPublicRepos?: unknown }).allowPublicRepos === true
+            ? { allowPublicRepos: true as const }
+            : {}),
+        }
+      : undefined;
   return {
     version: GATEWAY_CONFIG_VERSION,
     admins: asStringArray(r.admins),
@@ -265,6 +286,7 @@ function normaliseRawConfig(raw: unknown): RawGatewayConfig {
     defaultIngest: asString(r.defaultIngest),
     mraWorkspace: asString(r.mraWorkspace),
     apiKey: validateSecretSource(r.apiKey, "apiKey"),
+    github,
   };
 }
 
@@ -340,6 +362,17 @@ export function resolveGatewayApiKey(
     return { value: cliApiKey, usedCliConfig: true };
   }
   return { value: resolveSecret(rawGatewayApiKey, "apiKey"), usedCliConfig: false };
+}
+
+/**
+ * Resolve the work GitHub token from the gateway config (literal or
+ * {env}/{cmd}). Mirrors resolveGatewayApiKey; returns undefined if unset.
+ * Resolved lazily at 🎫 time, never at load.
+ */
+export function resolveGithubToken(
+  github: GatewayConfig["github"],
+): string | undefined {
+  return resolveSecret(github?.token, "github.token");
 }
 
 /**
