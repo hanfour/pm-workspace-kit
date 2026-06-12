@@ -1,7 +1,7 @@
 # Confirmed Problem → GitHub Issue — Design
 
 **Date:** 2026-06-12
-**Status:** Draft v5 — v2 (6 user findings) + v3 (3-agent review) + v4 (5 follow-up findings) + v5 (nested-repo path validation, split created/failed event payloads, audit-before-Slack-reply); awaiting user review
+**Status:** Draft v6 — v2 (6 user findings) + v3 (3-agent review) + v4 (5) + v5 (3) + v6 (repo-less escalation gates the 🎫 path, safeRepoHint parser preserves nested repos, pre-create gh check releases the claim); awaiting user review
 **Component:** `packages/cli` gateway (Slack adapter + a new GitHub adapter)
 
 ## Context & scope
@@ -62,6 +62,12 @@ src/gateway/slack/issue.ts    — IssueFromCandidate: load record → authorize 
 src/gateway/slack/index.ts    — reaction_added: WIDEN the existing early-return gate (currently
   `if (!isApprove && !isReject && !isCitationFeedback) return`, ~line 783) so 🎫 (`ticket`)
   reaches IssueFromCandidate. Match a candidate whose anchorTs == reaction.item.ts.
+src/gateway/escalate.ts       — UPDATE `safeRepoHint` (escalate.ts:32): it currently
+  strips `/` (`erp/order` → `erporder`), which would defeat the nested-repo support in
+  resolveRepoSlug at the PARSER boundary. Relax it to the same safe-relative-path rule
+  (allow `/`-joined segments of `[A-Za-z0-9._-]`, reject `..` / empty segments / leading
+  `/`), still ≤64 chars. Add a parser test for `repo: erp/order`. (Defense-in-depth:
+  resolveRepoSlug re-validates regardless, but the parser must stop mangling valid hints.)
 src/gateway/slack/escalation.ts — at escalate() time, ALSO write the issue-candidate record
   (capturing the escalation message ts as anchorTs + mentionedUserIds snapshot). The
   saveIssueCandidate call is wrapped in try/catch (fail-soft): a write failure logs and is
@@ -187,7 +193,8 @@ mutators already load/save RAW (no materialisation) — `github.token` inherits 
 ## Data flow
 
 1. Bot escalates (existing path, extended): in `escalate()`, AFTER posting the
-   @-mention diagnosis message, capture that message's `ts` and write a durable
+   @-mention diagnosis message — **and ONLY when `request.repo` is present** —
+   capture that message's `ts` and write a durable
    `issue-candidate` record `{ channelId, threadTs, anchorTs, scope (= request.repo),
    askerUserId, mentionedUserIds, question, diagnosis, permalink?, issuedUrl? }`
    (mode 0600, key `<channelId>__<anchorTs>.json`; `diagnosis` = the stripped visible
@@ -202,7 +209,11 @@ mutators already load/save RAW (no materialisation) — `github.token` inherits 
    SUCCESS → `chat.update` to append the 🎫 affordance line. On save FAILURE → leave the
    message as-is WITHOUT the affordance (escalation still fully works; there is just no
    🎫 control advertised). This guarantees the 🎫 affordance is shown only when a
-   loadable candidate exists.
+   loadable candidate exists. **Repo-less escalations (default-pool, `request.repo`
+   undefined) get NO candidate and NO 🎫 affordance at all** — since repo override is
+   out of scope, a 🎫 there could only dead-end at "請 tech 指定 repo". The normal
+   escalation (mention + marker + audit) is unaffected; the issue path simply isn't
+   offered when there's no repo to file against.
 2. Tech reacts 🎫 on that exact message.
 3. `reaction_added` handler (after the widened early-return gate lets `ticket` through):
    a. Ignore unless reaction == 🎫 AND an issue-candidate exists whose
@@ -218,8 +229,10 @@ mutators already load/save RAW (no materialisation) — `github.token` inherits 
       block ENDS before step i. createIssue (i) and finalize (j) are OUTSIDE it, so a
       createIssue failure does NOT release (see the release-boundary rule).
    e. Resolve the repo slug: `resolveRepoSlug(mraWorkspace, candidate.scope)` → git
-      origin → `owner/repo`. If underivable → reply asking the tech to specify the
-      repo, release the claim, stop.
+      origin → `owner/repo`. (candidate.scope is always present — repo-less escalations
+      never reach here, step 1.) If underivable (no git origin / non-github / scope dir
+      missing) → reply 「無法從該 repo 的 git origin 推出 GitHub slug,未開 issue」,
+      release the claim, audit `github.issue.failed` (reason=slug), stop.
    f. Resolve the work token via `resolveGithubToken` (`{cmd}`). On failure → reply
       "GitHub token 未設定 / 指令失敗" (NO `{cmd}` output leak), release claim, audit
       `github.issue.failed`, stop.
@@ -229,10 +242,15 @@ mutators already load/save RAW (no materialisation) — `github.token` inherits 
       audit `github.issue.failed` (reason=public-repo), stop. `unknown` → treat as blocked too.
    h. Build the issue title + body (structure below) from the SNAPSHOT
       (`candidate.question` + `candidate.diagnosis`) — NO `conversations.replies`,
-      so no new Slack history scope is needed.
+      so no new Slack history scope is needed. THEN, as the LAST releasable check
+      before any side effect, verify `findGhBinary` resolves: if `gh` is missing →
+      reply 「host 需要 gh CLI」, release the claim, audit `github.issue.failed`
+      (reason=no-gh), stop. (A local install problem must release — NOT leave a
+      `.claiming` that doctor would misreport as a possible orphaned issue.)
    i. `createIssue({ slug, title, body, token })` (30 s timeout) → issue URL. On
       failure/timeout: do NOT release (GitHub may have accepted it) — reply a friendly
-      error, audit `github.issue.failed`, leave `.claiming` for doctor; stop.
+      error, audit `github.issue.failed` (reason=gh-create-failed), leave `.claiming`
+      for doctor; stop.
    j. **Finalize + audit + reply (in this order):** (1) write `issuedUrl = url` into the
       `.claiming` file, THEN rename `.claiming → .json` (commit order — see lifecycle);
       (2) emit `github.issue.created { actor: reactor, repo: slug, url }` (NO token);
@@ -303,9 +321,10 @@ creation.
 
 | Situation | Behaviour |
 |-----------|-----------|
-| `gh` not installed | reply: host needs the `gh` CLI; audit `github.issue.failed` (reason=no-gh). |
+| `gh` not installed | checked PRE-create (step h) → reply: host needs the `gh` CLI; release claim; audit `github.issue.failed` (reason=no-gh). Never leaves a `.claiming`. |
 | `github.token` unset / `{cmd}` fails | reply: GitHub token 未設定 / 指令失敗 — NO `{cmd}` output leak; release claim. |
-| repo slug underivable | reply: 請 tech 指定 repo（無法從 git origin 推出）; release claim; stop. |
+| repo slug underivable (repo set but no github origin) | reply: 無法從該 repo 的 git origin 推出 GitHub slug，未開 issue; release claim; audit `github.issue.failed` (reason=slug). |
+| escalation had no repo (default pool) | NO issue-candidate, NO 🎫 affordance created (issue path not offered). |
 | target repo is PUBLIC (and `allowPublicRepos` ≠ true) | reply: 已停止（內部資訊不外洩，repo 為 public）; release claim; audit `github.issue.failed` (reason=public-repo). |
 | `gh issue create` fails / times out (30 s) | reply friendly error, NO token/stderr leak; audit `github.issue.failed`; **do NOT release** — leave `.claiming` for doctor (GitHub may have accepted it). |
 | createIssue OK but finalize write/rename fails | `.claiming` persists (with or without url); doctor recovers it; NEVER re-create the issue on retry. |
@@ -329,6 +348,8 @@ sanitised. `gh`'s env-passed `GH_TOKEN` is not logged.
 
 **Config:** `github.token` `{cmd}`/`{env}`/literal resolution via `resolveGithubToken`; a failing `{cmd}` → error with NO command-output leak (mirror the secret-source tests). `allowPublicRepos` defaults to false.
 
+**Parser (`escalate.ts`):** `parseEscalate` with `repo: erp/order` → `request.repo === "erp/order"` (nested preserved); `repo: ../../etc` → traversal stripped/rejected; `repo:` absent → `request.repo` undefined.
+
 **`issue-candidate.ts` unit:**
 - save/load round-trip; saved file is mode 0600; storage key is `<channelId>__<anchorTs>.json` (two escalations in one thread → two distinct files, no overwrite).
 - `loadIssueCandidate`: missing → undefined (silent); corrupt/guard-fail → undefined BUT logs high-severity (distinguishable from missing).
@@ -350,6 +371,8 @@ sanitised. `gh`'s env-passed `GH_TOKEN` is not logged.
 - **Public-repo guard:** target repo resolves to `public` and `allowPublicRepos` false → issue NOT created, friendly stop reply, `github.issue.failed` (reason=public-repo), claim released; with `allowPublicRepos: true` → issue IS created.
 - **Finalize crash recovery:** createIssue succeeds but the finalize rename is stubbed to fail → record stays `.claiming` with `issuedUrl`; a subsequent recovery pass finalises it and does NOT call createIssue again (no duplicate).
 - **createIssue failure does NOT release (no duplicate):** createIssue stubbed to throw/timeout → record stays `.claiming` (NOT released); a second 🎫 then fails to claim (rename throws) and does NOT call createIssue a second time. Regression guard for the orphan-window duplicate.
+- **Repo-less escalation gate:** model escalates with NO `repo` (default pool) → NO issue-candidate written, NO 🎫 affordance appended; the normal escalation (mention + marker + audit) still happens.
+- **Pre-create gh check releases:** `findGhBinary` stubbed missing → at step h the claim is RELEASED (record back to `.json`, no `.claiming` left), `github.issue.failed` (reason=no-gh), createIssue NOT called; a later 🎫 (with gh present) succeeds.
 - **Gate widening:** a 🎫 reaction is actually delivered to `IssueFromCandidate` (regression guard against the `slack/index.ts` early-return gate dropping `ticket`).
 - **Diagnosis plumbed through:** `escalate()` is called with the stripped visible assistant text as `diagnosis`; the filed issue body's 診斷 section contains it (proves the call-boundary change is wired, not just the snapshot field existing).
 - **Affordance ordering:** save OK → `chat.update` appends the 🎫 affordance; `saveIssueCandidate` throws → message is left WITHOUT the affordance (no dead 🎫 control) AND the primary escalation (@-mention, marker, escalate audit event) is intact.
@@ -361,10 +384,11 @@ sanitised. `gh`'s env-passed `GH_TOKEN` is not logged.
 ## Out of scope (sub-project 1)
 
 - Development / PR creation (sub-project 2).
-- Tech overriding the target repo at confirm time — the 🎫 reaction carries no repo
-  argument; the core flow uses the auto-derived repo, and asks the tech to specify
-  only when the slug is underivable. A `/pmk issue <repo>` override command is a
-  later enhancement.
+- Tech overriding / supplying the target repo at confirm time — the 🎫 reaction carries
+  no repo argument; the core flow uses the repo from the escalation (`request.repo`).
+  Because override is out of scope, the 🎫 path is **only offered when the escalation
+  already carries a repo** (repo-less default-pool escalations get no 🎫). A
+  `/pmk issue <repo>` override command is a later enhancement.
 - Issue labels / assignee / severity — the body carries attribution; structured
   fields can be added later if a real need emerges (YAGNI).
 - octokit / a GitHub App — `gh` CLI + a `{cmd}`-provided work token is sufficient
