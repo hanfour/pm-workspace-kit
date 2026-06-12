@@ -1,7 +1,7 @@
 # Confirmed Problem → GitHub Issue — Design
 
 **Date:** 2026-06-12
-**Status:** Draft v6 — v2 (6 user findings) + v3 (3-agent review) + v4 (5) + v5 (3) + v6 (repo-less escalation gates the 🎫 path, safeRepoHint parser preserves nested repos, pre-create gh check releases the claim); awaiting user review
+**Status:** Draft v6.1 — v2 (6 user findings) + v3 (3-agent review) + v4 (5) + v5 (3) + v6 (3) + v6.1 (move the gh-availability check ahead of repoVisibility so no-gh isn't misclassified as public-repo); awaiting user review
 **Component:** `packages/cli` gateway (Slack adapter + a new GitHub adapter)
 
 ## Context & scope
@@ -228,11 +228,17 @@ mutators already load/save RAW (no materialisation) — `github.token` inherits 
       try/finally that RELEASES the claim on any early-return or throw — but that guarded
       block ENDS before step i. createIssue (i) and finalize (j) are OUTSIDE it, so a
       createIssue failure does NOT release (see the release-boundary rule).
-   e. Resolve the repo slug: `resolveRepoSlug(mraWorkspace, candidate.scope)` → git
-      origin → `owner/repo`. (candidate.scope is always present — repo-less escalations
-      never reach here, step 1.) If underivable (no git origin / non-github / scope dir
-      missing) → reply 「無法從該 repo 的 git origin 推出 GitHub slug,未開 issue」,
-      release the claim, audit `github.issue.failed` (reason=slug), stop.
+   e. **gh availability FIRST** (before anything that shells out to `gh`): verify
+      `findGhBinary` resolves. If `gh` is missing → reply 「host 需要 gh CLI」, release
+      the claim, audit `github.issue.failed` (reason=no-gh), stop. This MUST precede
+      `repoVisibility` (step g) — repoVisibility also shells to `gh` and would otherwise
+      return `unknown` for a missing `gh`, misclassifying a no-gh install as the
+      public-repo block. Then resolve the repo slug:
+      `resolveRepoSlug(mraWorkspace, candidate.scope)` → git origin → `owner/repo`.
+      (candidate.scope is always present — repo-less escalations never reach here,
+      step 1.) If underivable (no git origin / non-github / scope dir missing) → reply
+      「無法從該 repo 的 git origin 推出 GitHub slug,未開 issue」, release the claim,
+      audit `github.issue.failed` (reason=slug), stop.
    f. Resolve the work token via `resolveGithubToken` (`{cmd}`). On failure → reply
       "GitHub token 未設定 / 指令失敗" (NO `{cmd}` output leak), release claim, audit
       `github.issue.failed`, stop.
@@ -242,11 +248,9 @@ mutators already load/save RAW (no materialisation) — `github.token` inherits 
       audit `github.issue.failed` (reason=public-repo), stop. `unknown` → treat as blocked too.
    h. Build the issue title + body (structure below) from the SNAPSHOT
       (`candidate.question` + `candidate.diagnosis`) — NO `conversations.replies`,
-      so no new Slack history scope is needed. THEN, as the LAST releasable check
-      before any side effect, verify `findGhBinary` resolves: if `gh` is missing →
-      reply 「host 需要 gh CLI」, release the claim, audit `github.issue.failed`
-      (reason=no-gh), stop. (A local install problem must release — NOT leave a
-      `.claiming` that doctor would misreport as a possible orphaned issue.)
+      so no new Slack history scope is needed. (gh availability was already verified at
+      step e, so a no-gh install never reaches createIssue — it releases the claim
+      rather than leaving a `.claiming` that doctor would misreport as an orphan.)
    i. `createIssue({ slug, title, body, token })` (30 s timeout) → issue URL. On
       failure/timeout: do NOT release (GitHub may have accepted it) — reply a friendly
       error, audit `github.issue.failed` (reason=gh-create-failed), leave `.claiming`
@@ -321,7 +325,7 @@ creation.
 
 | Situation | Behaviour |
 |-----------|-----------|
-| `gh` not installed | checked PRE-create (step h) → reply: host needs the `gh` CLI; release claim; audit `github.issue.failed` (reason=no-gh). Never leaves a `.claiming`. |
+| `gh` not installed | checked FIRST (step e, before repoVisibility) → reply: host needs the `gh` CLI; release claim; audit `github.issue.failed` (reason=no-gh). Never leaves a `.claiming`; never misclassified as public-repo. |
 | `github.token` unset / `{cmd}` fails | reply: GitHub token 未設定 / 指令失敗 — NO `{cmd}` output leak; release claim. |
 | repo slug underivable (repo set but no github origin) | reply: 無法從該 repo 的 git origin 推出 GitHub slug，未開 issue; release claim; audit `github.issue.failed` (reason=slug). |
 | escalation had no repo (default pool) | NO issue-candidate, NO 🎫 affordance created (issue path not offered). |
@@ -372,7 +376,7 @@ sanitised. `gh`'s env-passed `GH_TOKEN` is not logged.
 - **Finalize crash recovery:** createIssue succeeds but the finalize rename is stubbed to fail → record stays `.claiming` with `issuedUrl`; a subsequent recovery pass finalises it and does NOT call createIssue again (no duplicate).
 - **createIssue failure does NOT release (no duplicate):** createIssue stubbed to throw/timeout → record stays `.claiming` (NOT released); a second 🎫 then fails to claim (rename throws) and does NOT call createIssue a second time. Regression guard for the orphan-window duplicate.
 - **Repo-less escalation gate:** model escalates with NO `repo` (default pool) → NO issue-candidate written, NO 🎫 affordance appended; the normal escalation (mention + marker + audit) still happens.
-- **Pre-create gh check releases:** `findGhBinary` stubbed missing → at step h the claim is RELEASED (record back to `.json`, no `.claiming` left), `github.issue.failed` (reason=no-gh), createIssue NOT called; a later 🎫 (with gh present) succeeds.
+- **No-gh checked before repoVisibility (no misclassification):** `findGhBinary` stubbed missing AND `allowPublicRepos` false → fails with reason=**no-gh** (NOT public-repo), claim RELEASED (no `.claiming` left), `repoVisibility`/createIssue NOT called; a later 🎫 (with gh present) succeeds.
 - **Gate widening:** a 🎫 reaction is actually delivered to `IssueFromCandidate` (regression guard against the `slack/index.ts` early-return gate dropping `ticket`).
 - **Diagnosis plumbed through:** `escalate()` is called with the stripped visible assistant text as `diagnosis`; the filed issue body's 診斷 section contains it (proves the call-boundary change is wired, not just the snapshot field existing).
 - **Affordance ordering:** save OK → `chat.update` appends the 🎫 affordance; `saveIssueCandidate` throws → message is left WITHOUT the affordance (no dead 🎫 control) AND the primary escalation (@-mention, marker, escalate audit event) is intact.
