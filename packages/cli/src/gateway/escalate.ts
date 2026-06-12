@@ -25,13 +25,20 @@ export interface EscalateRequest {
 const FENCE_RE = /```escalate\n([\s\S]*?)```/;
 
 /**
- * Restrict the LLM-supplied repo hint to a safe subset of characters.
- * Mirrors `safeScope` so traversal sequences like "../../etc" can't
- * survive even one parsing layer.
+ * Restrict the LLM-supplied repo hint to a safe relative path. mra repo
+ * ids are legitimately nested (e.g. `erp/order`), so we allow `/`-joined
+ * segments of [A-Za-z0-9._-] — but reject traversal, empty segments, and
+ * a leading `/`, and drop any other character. Capped at 64 chars.
  */
 function safeRepoHint(s: string): string | undefined {
-  const cleaned = s.replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 64);
-  return cleaned || undefined;
+  const cleaned = s
+    .replace(/[^a-zA-Z0-9._/-]/g, "")
+    .replace(/\/{2,}/g, "/")
+    .replace(/^\/+/, "")
+    .slice(0, 64);
+  const segs = cleaned.split("/").filter((seg) => seg.length > 0 && seg !== "..");
+  const safe = segs.join("/");
+  return safe || undefined;
 }
 
 export function parseEscalate(response: string): EscalateRequest | undefined {
