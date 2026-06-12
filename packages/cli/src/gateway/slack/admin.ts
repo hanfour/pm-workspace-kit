@@ -148,9 +148,9 @@ function helpText(): string {
   return [
     "*pmk admin commands* (DM-only, admin-restricted)",
     "• `/pmk admin status` — gateway status",
-    "• `/pmk admin audience set @user <tech|pm|biz|exec>`",
-    "• `/pmk admin audience set-channel #channel <tech|pm|biz|exec>` (#23)",
-    "• `/pmk admin audience default <tech|pm|biz|exec>`",
+    "• `/pmk admin audience set @user <tech|pm|biz|sales|exec>`",
+    "• `/pmk admin audience set-channel #channel <tech|pm|biz|sales|exec>` (#23)",
+    "• `/pmk admin audience default <tech|pm|biz|sales|exec>`",
     "• `/pmk admin audience example add <biz|pm> <techForm> = <targetForm>` (v0.15)",
     "• `/pmk admin audience example remove <biz|pm> <techForm>`",
     "• `/pmk admin audience example list [biz|pm]`",
@@ -206,11 +206,11 @@ function adminAudience(
       const userId = extractUserId(userToken);
       if (!userId || !key) {
         logAdmin(actor, "audience.set", false, undefined, "missing args");
-        return { text: ":x: usage: `/pmk admin audience set @user <tech|pm|biz|exec>`" };
+        return { text: ":x: usage: `/pmk admin audience set @user <tech|pm|biz|sales|exec>`" };
       }
       if (!isAudienceKey(key)) {
         logAdmin(actor, "audience.set", false, `${userId} ${key}`, "invalid audience");
-        return { text: `:x: invalid audience \`${key}\` — must be tech, pm, biz, or exec` };
+        return { text: `:x: invalid audience \`${key}\` — must be tech, pm, biz, sales, or exec` };
       }
       cfg.audience.users[userId] = key;
       saveGatewayConfig(cfg);
@@ -236,7 +236,7 @@ function adminAudience(
       const [key] = args;
       if (!key || !isAudienceKey(key)) {
         logAdmin(actor, "audience.default", false, key, "invalid audience");
-        return { text: ":x: usage: `/pmk admin audience default <tech|pm|biz|exec>`" };
+        return { text: ":x: usage: `/pmk admin audience default <tech|pm|biz|sales|exec>`" };
       }
       cfg.audience.default = key;
       saveGatewayConfig(cfg);
@@ -248,11 +248,11 @@ function adminAudience(
       const channelId = extractChannelId(channelToken);
       if (!channelId || !key) {
         logAdmin(actor, "audience.set-channel", false, undefined, "missing args");
-        return { text: ":x: usage: `/pmk admin audience set-channel #channel <tech|pm|biz|exec>`" };
+        return { text: ":x: usage: `/pmk admin audience set-channel #channel <tech|pm|biz|sales|exec>`" };
       }
       if (!isAudienceKey(key)) {
         logAdmin(actor, "audience.set-channel", false, `${channelId} ${key}`, "invalid audience");
-        return { text: `:x: invalid audience \`${key}\` — must be tech, pm, biz, or exec` };
+        return { text: `:x: invalid audience \`${key}\` — must be tech, pm, biz, sales, or exec` };
       }
       cfg.audience.channels[channelId] = key;
       saveGatewayConfig(cfg);

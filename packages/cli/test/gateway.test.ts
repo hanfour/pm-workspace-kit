@@ -62,6 +62,7 @@ import {
   PROMPT_GATEWAY_DM_BIZ,
   PROMPT_GATEWAY_DM_EXEC,
   PROMPT_GATEWAY_DM_PM,
+  PROMPT_GATEWAY_DM_SALES,
   PROMPT_GATEWAY_DM_TECH,
 } from "@pmk/shared";
 import {
@@ -1223,6 +1224,7 @@ describe("audience picker", () => {
     assert.equal(pickGatewayPrompt("tech"), PROMPT_GATEWAY_DM_TECH);
     assert.equal(pickGatewayPrompt("pm"), PROMPT_GATEWAY_DM_PM);
     assert.equal(pickGatewayPrompt("biz"), PROMPT_GATEWAY_DM_BIZ);
+    assert.equal(pickGatewayPrompt("sales"), PROMPT_GATEWAY_DM_SALES);
     assert.equal(pickGatewayPrompt("exec"), PROMPT_GATEWAY_DM_EXEC);
     // Unknown / undefined falls back to tech.
     assert.equal(pickGatewayPrompt(undefined), PROMPT_GATEWAY_DM_TECH);
@@ -1246,8 +1248,8 @@ describe("audience picker", () => {
     assert.match(PROMPT_GATEWAY_DM_PM, /對廣告主報的成本|網域.*版位/);
   });
 
-  it("AUDIENCE_KEYS lists all 4 keys including pm", () => {
-    assert.deepEqual([...AUDIENCE_KEYS], ["tech", "pm", "biz", "exec"]);
+  it("AUDIENCE_KEYS lists all 5 keys including pm and sales", () => {
+    assert.deepEqual([...AUDIENCE_KEYS], ["tech", "pm", "biz", "sales", "exec"]);
   });
 
   it("pickAudience honours per-user pm setting", () => {

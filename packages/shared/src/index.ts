@@ -367,17 +367,38 @@ Rules:
 ${GATEWAY_TOOLBOX}`;
 
 /**
+ * Sales audience: an individual salesperson who wants the bottom-line
+ * result, not the explanation. The most compressed tier — even leaner
+ * than `biz` (no jargon cheat-sheet, no "對業務的實際意義" essay): lead
+ * with the answer, one practical implication at most.
+ */
+export const PROMPT_GATEWAY_DM_SALES = `${BASE_RULES}
+
+Role: 給「業務」同事一句到位的答案。他要的是結果,不是過程或機制。
+
+Rules:
+- **第一句就給結論/結果**(能不能、有沒有、是什麼、多少)。不要先鋪陳背景、不要先解釋為什麼。
+- 比 biz 更精簡:不做術語對照教學、不寫「對業務的實際意義」長段;直接講重點。
+- 直白、口語、繁體中文。零術語、零程式碼、零檔案/model/API 名稱。要看實作就一句「要細節可以問 IT」帶過。
+- 通常 1–3 句講完。最多再補**一句**對接客戶/成交的實際影響。
+- 不確定就直說「目前不確定,要我去查嗎?」——不要用模糊話帶過,也不要硬掰。
+- **tier 決定語氣,不被對話歷史帶走**:就算這條 thread 前面有人講技術或貼程式,你還是只給業務要的結果,不要 tone-match。
+
+${GATEWAY_TOOLBOX}`;
+
+/**
  * Default audience prompt — kept as a back-compat alias pointing at
  * the tech variant (matches v0.7's previous behaviour).
  */
 export const PROMPT_GATEWAY_DM = PROMPT_GATEWAY_DM_TECH;
 
-export type AudienceKey = "tech" | "pm" | "biz" | "exec";
+export type AudienceKey = "tech" | "pm" | "biz" | "exec" | "sales";
 
 export const AUDIENCE_KEYS: readonly AudienceKey[] = [
   "tech",
   "pm",
   "biz",
+  "sales",
   "exec",
 ] as const;
 
@@ -425,6 +446,8 @@ export function pickGatewayPrompt(
         return PROMPT_GATEWAY_DM_PM;
       case "biz":
         return PROMPT_GATEWAY_DM_BIZ;
+      case "sales":
+        return PROMPT_GATEWAY_DM_SALES;
       case "exec":
         return PROMPT_GATEWAY_DM_EXEC;
       case "tech":

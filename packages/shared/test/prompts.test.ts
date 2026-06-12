@@ -40,6 +40,7 @@ import {
   PROMPT_GATEWAY_DM_BIZ,
   PROMPT_GATEWAY_DM_EXEC,
   PROMPT_GATEWAY_DM_PM,
+  PROMPT_GATEWAY_DM_SALES,
   PROMPT_GATEWAY_DM_TECH,
   PROMPT_INGEST,
   PROMPT_PROPOSE,
@@ -65,6 +66,7 @@ describe("audience prompts", () => {
     ["tech", PROMPT_GATEWAY_DM_TECH],
     ["pm", PROMPT_GATEWAY_DM_PM],
     ["biz", PROMPT_GATEWAY_DM_BIZ],
+    ["sales", PROMPT_GATEWAY_DM_SALES],
     ["exec", PROMPT_GATEWAY_DM_EXEC],
   ];
 
@@ -101,6 +103,14 @@ describe("audience prompts", () => {
     assert.match(PROMPT_GATEWAY_DM_EXEC, /建議行動/);
   });
 
+  it("sales prompt leads with 結論/結果 and stays ultra-compressed (業務 tier)", () => {
+    assert.match(PROMPT_GATEWAY_DM_SALES, /業務/);
+    // Must open with answer-first rule
+    assert.match(PROMPT_GATEWAY_DM_SALES, /第一句就給結論/);
+    // Must reference the anti-bleed / tier-dictates-style guardrail
+    assert.match(PROMPT_GATEWAY_DM_SALES, /tier 決定語氣/);
+  });
+
   it("PROMPT_GATEWAY_DM is the tech alias (back-compat for v0.7 callers)", () => {
     assert.equal(PROMPT_GATEWAY_DM, PROMPT_GATEWAY_DM_TECH);
   });
@@ -109,13 +119,21 @@ describe("audience prompts", () => {
     assert.equal(pickGatewayPrompt("tech"), PROMPT_GATEWAY_DM_TECH);
     assert.equal(pickGatewayPrompt("pm"), PROMPT_GATEWAY_DM_PM);
     assert.equal(pickGatewayPrompt("biz"), PROMPT_GATEWAY_DM_BIZ);
+    assert.equal(pickGatewayPrompt("sales"), PROMPT_GATEWAY_DM_SALES);
     assert.equal(pickGatewayPrompt("exec"), PROMPT_GATEWAY_DM_EXEC);
     // Unknown / undefined falls back to tech (safest default).
     assert.equal(pickGatewayPrompt(undefined), PROMPT_GATEWAY_DM_TECH);
   });
 
-  it("AUDIENCE_KEYS lists exactly the 4 keys pickGatewayPrompt knows", () => {
-    assert.deepEqual([...AUDIENCE_KEYS], ["tech", "pm", "biz", "exec"]);
+  it("AUDIENCE_KEYS includes 'sales'", () => {
+    assert.ok(
+      (AUDIENCE_KEYS as readonly string[]).includes("sales"),
+      "AUDIENCE_KEYS must contain 'sales'",
+    );
+  });
+
+  it("AUDIENCE_KEYS lists exactly the 5 keys pickGatewayPrompt knows", () => {
+    assert.deepEqual([...AUDIENCE_KEYS], ["tech", "pm", "biz", "sales", "exec"]);
   });
 
   it("audience prompts have distinct bodies (cross-wire regression)", () => {
@@ -123,9 +141,10 @@ describe("audience prompts", () => {
       PROMPT_GATEWAY_DM_TECH,
       PROMPT_GATEWAY_DM_PM,
       PROMPT_GATEWAY_DM_BIZ,
+      PROMPT_GATEWAY_DM_SALES,
       PROMPT_GATEWAY_DM_EXEC,
     ]);
-    assert.equal(bodies.size, 4, "all four audience prompts must be distinct");
+    assert.equal(bodies.size, 5, "all five audience prompts must be distinct");
   });
 
   // v0.15.0 — `pickGatewayPrompt` gains an optional `extras` arg so
