@@ -21,4 +21,8 @@ describe("parseEscalate repo hint", () => {
     const r = parseEscalate(fence("question: q"));
     assert.equal(r?.repo, undefined);
   });
+  it("drops single-dot segments", () => {
+    const r = parseEscalate("```escalate\nrepo: erp/./secret\nquestion: q\n```");
+    assert.equal(r?.repo, "erp/secret");
+  });
 });

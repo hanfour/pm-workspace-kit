@@ -36,7 +36,7 @@ function safeRepoHint(s: string): string | undefined {
     .replace(/\/{2,}/g, "/")
     .replace(/^\/+/, "")
     .slice(0, 64);
-  const segs = cleaned.split("/").filter((seg) => seg.length > 0 && seg !== "..");
+  const segs = cleaned.split("/").filter((seg) => seg.length > 0 && seg !== "." && seg !== "..");
   const safe = segs.join("/");
   return safe || undefined;
 }
