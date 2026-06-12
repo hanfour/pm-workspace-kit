@@ -8,6 +8,7 @@ import { pkbContentCheck } from "./pkb-content";
 import { channelAclCheck } from "./channel-acl";
 import { manifestAlignmentCheck } from "./manifest-alignment";
 import { secretSourcesCheck } from "./secret-sources";
+import { githubTokenCheck } from "./github-token";
 
 export {
   configFileCheck,
@@ -19,6 +20,7 @@ export {
   channelAclCheck,
   manifestAlignmentCheck,
   secretSourcesCheck,
+  githubTokenCheck,
 };
 
 // Order matters for output legibility: config-file first (blocks
@@ -36,4 +38,5 @@ export const DEFAULT_CHECKS: DoctorCheck[] = [
   pkbContentCheck,
   channelAclCheck,
   manifestAlignmentCheck,
+  githubTokenCheck,
 ];

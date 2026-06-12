@@ -677,8 +677,8 @@ describe("doctor — secret-sources check", () => {
 });
 
 describe("doctor — DEFAULT_CHECKS shape", () => {
-  it("exports exactly 9 checks (FR2 + secret-sources)", () => {
-    assert.equal(DEFAULT_CHECKS.length, 9);
+  it("exports exactly 10 checks (FR2 + secret-sources + github-token)", () => {
+    assert.equal(DEFAULT_CHECKS.length, 10);
     const names = DEFAULT_CHECKS.map((c) => c.name);
     assert.deepEqual(names, [
       "configFileCheck",
@@ -690,6 +690,7 @@ describe("doctor — DEFAULT_CHECKS shape", () => {
       "pkbContentCheck",
       "channelAclCheck",
       "manifestAlignmentCheck",
+      "githubTokenCheck",
     ]);
   });
 });
