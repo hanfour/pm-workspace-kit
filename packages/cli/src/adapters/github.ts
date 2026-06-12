@@ -27,6 +27,7 @@ export type GithubExec = (
 
 export interface GithubDeps {
   exec?: GithubExec;
+  findBinary?: () => string | undefined;
 }
 
 const defaultExec: GithubExec = async (file, args, opts) => {
@@ -35,7 +36,7 @@ const defaultExec: GithubExec = async (file, args, opts) => {
     timeout: opts.timeoutMs,
     encoding: "utf8",
   });
-  return { stdout: stdout.toString() };
+  return { stdout };
 };
 
 const FALLBACK_GH_PATHS = [
@@ -74,7 +75,7 @@ export function isSafeRepoPath(repo: string): boolean {
   if (!repo || repo.includes("\0") || repo.includes("\\")) return false;
   if (path.isAbsolute(repo)) return false;
   const segs = repo.split("/");
-  return segs.every((s) => s.length > 0 && s !== ".." && SAFE_SEGMENT.test(s));
+  return segs.every((s) => s.length > 0 && s !== "." && s !== ".." && SAFE_SEGMENT.test(s));
 }
 
 function parseGithubSlug(originUrl: string): string | undefined {
@@ -115,7 +116,8 @@ export async function repoVisibility(
   deps: GithubDeps = {},
 ): Promise<"public" | "private" | "unknown"> {
   const exec = deps.exec ?? defaultExec;
-  const gh = findGhBinary() ?? "gh";
+  const findBinary = deps.findBinary ?? findGhBinary;
+  const gh = findBinary() ?? "gh";
   try {
     const { stdout } = await exec(
       gh,
@@ -137,7 +139,8 @@ export async function createIssue(
   deps: GithubDeps = {},
 ): Promise<string> {
   const exec = deps.exec ?? defaultExec;
-  const gh = findGhBinary() ?? "gh";
+  const findBinary = deps.findBinary ?? findGhBinary;
+  const gh = findBinary() ?? "gh";
   try {
     const { stdout } = await exec(
       gh,
@@ -157,12 +160,11 @@ export async function githubDoctor(
   args: { token: string | undefined },
   deps: GithubDeps = {},
 ): Promise<{ ok: boolean; reason?: string }> {
-  if (!findGhBinary()) return { ok: false, reason: "gh CLI not found on PATH" };
+  const findBinary = deps.findBinary ?? findGhBinary;
+  const gh = findBinary();
+  if (!gh) return { ok: false, reason: "gh CLI not found on PATH" };
   if (!args.token) return { ok: false, reason: "github.token unset / unresolved" };
-  // exit-code-only auth probe; discard stdout/stderr so the authed
-  // username / scopes never reach a log.
   const exec = deps.exec ?? defaultExec;
-  const gh = findGhBinary() ?? "gh";
   try {
     await exec(gh, ["auth", "status", "--hostname", "github.com"], {
       env: { ...process.env, GH_TOKEN: args.token },

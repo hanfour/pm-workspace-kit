@@ -6,7 +6,6 @@ import {
   repoVisibility,
   createIssue,
   githubDoctor,
-  findGhBinary,
   type GithubExec,
 } from "../src/adapters/github";
 
@@ -24,6 +23,8 @@ describe("isSafeRepoPath", () => {
     assert.equal(isSafeRepoPath("a\0b"), false);
     assert.equal(isSafeRepoPath(""), false);
     assert.equal(isSafeRepoPath(".."), false);
+    assert.equal(isSafeRepoPath("."), false);
+    assert.equal(isSafeRepoPath("a/./b"), false);
   });
 });
 
@@ -118,29 +119,23 @@ describe("createIssue", () => {
 });
 
 describe("githubDoctor", () => {
-  it("not ok when gh is missing (PMK_SKIP_GH_PROBE)", async () => {
-    const prev = process.env.PMK_SKIP_GH_PROBE;
-    process.env.PMK_SKIP_GH_PROBE = "1";
-    try {
-      const r = await githubDoctor({ token: "T" });
-      assert.equal(r.ok, false);
-      assert.match(r.reason ?? "", /gh/i);
-    } finally {
-      if (prev === undefined) delete process.env.PMK_SKIP_GH_PROBE;
-      else process.env.PMK_SKIP_GH_PROBE = prev;
-    }
-  });
-
-  it("not ok when token is empty (only meaningful if gh is present)", async () => {
-    if (!findGhBinary()) return; // environment without gh — skip the gh-present assertion
-    const r = await githubDoctor({ token: undefined });
+  it("not ok when token is empty", async () => {
+    const r = await githubDoctor({ token: undefined }, { findBinary: () => "/usr/bin/gh" });
     assert.equal(r.ok, false);
     assert.match(r.reason ?? "", /token/i);
   });
 
-  it("ok via injected exec when gh present + token + auth succeeds", async () => {
-    if (!findGhBinary()) return;
-    const r = await githubDoctor({ token: "T" }, { exec: async () => ({ stdout: "ok" }) });
+  it("ok when gh present + token + auth succeeds", async () => {
+    const r = await githubDoctor(
+      { token: "T" },
+      { findBinary: () => "/usr/bin/gh", exec: async () => ({ stdout: "ok" }) },
+    );
     assert.equal(r.ok, true);
+  });
+
+  it("not ok when gh missing", async () => {
+    const r = await githubDoctor({ token: "T" }, { findBinary: () => undefined });
+    assert.equal(r.ok, false);
+    assert.match(r.reason ?? "", /gh/i);
   });
 });
