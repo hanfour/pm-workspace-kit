@@ -1,7 +1,7 @@
 # Confirmed Problem → GitHub Issue — Design
 
 **Date:** 2026-06-12
-**Status:** Draft v4 — v2 (6 user findings) + v3 (3-agent review) + v4 (5 follow-up findings: release-boundary, diagnosis plumbing, snapshot-only consistency, permalink source, affordance ordering); awaiting user review
+**Status:** Draft v5 — v2 (6 user findings) + v3 (3-agent review) + v4 (5 follow-up findings) + v5 (nested-repo path validation, split created/failed event payloads, audit-before-Slack-reply); awaiting user review
 **Component:** `packages/cli` gateway (Slack adapter + a new GitHub adapter)
 
 ## Context & scope
@@ -78,7 +78,11 @@ src/gateway/slack/escalation.ts — at escalate() time, ALSO write the issue-can
   come from `request.question`.
 src/gateway/events.ts         — add github.issue.created / github.issue.failed to the
   GatewayEvent union + VALID_TYPES whitelist (the isStoredGatewayEvent guard delegates to
-  VALID_TYPES, so no third edit). Event payload carries actor/repo/url — NEVER the token.
+  VALID_TYPES, so no third edit). TWO distinct, explicitly token-free payloads:
+    github.issue.created { actor, repo, url }
+    github.issue.failed  { actor, repo?, reason }   // reason ∈ no-gh | token | slug
+                                                     // | public-repo | gh-create-failed
+  (failed carries NO url and repo is optional — it may fail before the slug resolves.)
 src/gateway/doctor.ts         — add a `github-token` check; also surface stale `.claiming`
   locks (older than N min, or with issuedUrl already set → finalize) and warn on any
   configured escalation repo that resolves to a PUBLIC GitHub repo.
@@ -229,9 +233,12 @@ mutators already load/save RAW (no materialisation) — `github.token` inherits 
    i. `createIssue({ slug, title, body, token })` (30 s timeout) → issue URL. On
       failure/timeout: do NOT release (GitHub may have accepted it) — reply a friendly
       error, audit `github.issue.failed`, leave `.claiming` for doctor; stop.
-   j. **Finalize:** write `issuedUrl = url` into the `.claiming` file, THEN rename
-      `.claiming → .json` (commit order — see lifecycle). Post the URL back to the
-      thread. Emit `github.issue.created` (actor = reactor, repo = slug, issue url — NO token).
+   j. **Finalize + audit + reply (in this order):** (1) write `issuedUrl = url` into the
+      `.claiming` file, THEN rename `.claiming → .json` (commit order — see lifecycle);
+      (2) emit `github.issue.created { actor: reactor, repo: slug, url }` (NO token);
+      (3) best-effort `chat` reply posting the URL to the thread. The issue already
+      exists and is finalized after (1), so a Slack reply failure at (3) must NOT
+      suppress the audit event at (2) — audit precedes the reply and is not gated on it.
 
 ### Issue content
 
@@ -270,10 +277,14 @@ creation.
 - `resolveRepoSlug(workspace, repo)`: **`execFile("git", ["-C", path.join(workspace,
   repo), "remote", "get-url", "origin"])`** — arg-array, NO shell, so no command
   injection even if config values are hostile. `repo` (from `candidate.scope`, which
-  derives from a model directive over user Slack input) is **validated as a single
-  path segment first** — `/^[A-Za-z0-9._-]+$/`, reject `..` / separators — before
-  `path.join`. Parse both `git@github.com:owner/repo.git` and
-  `https://github.com/owner/repo(.git)` → `owner/repo`. Undefined if no origin / non-github.
+  derives from a model directive over user Slack input) is **validated as a safe
+  relative path first** — mra repo IDs are legitimately nested (e.g. `erp/order`,
+  mra.ts:171), so single-segment-only would reject valid targets. Rule: split on `/`;
+  EVERY segment must match `/^[A-Za-z0-9._-]+$/` and be non-empty and `!== ".."`;
+  reject absolute paths (`path.isAbsolute`), any backslash, and NUL. Only then
+  `path.join(workspace, repo)` (which stays inside the workspace). Parse both
+  `git@github.com:owner/repo.git` and `https://github.com/owner/repo(.git)` →
+  `owner/repo`. Undefined if no origin / non-github.
 - `repoVisibility({ slug, token }, deps?)`: `execFile("gh", ["repo", "view", slug,
   "--json", "visibility", "-q", ".visibility"], { env: { ...process.env, GH_TOKEN: token } })`
   → `"public"` | `"private"`; any error / unrecognised → `"unknown"`. No-leak on error.
@@ -311,7 +322,7 @@ sanitised. `gh`'s env-passed `GH_TOKEN` is not logged.
 ## Testing (TDD)
 
 **Unit (`github.ts`, injected exec):**
-- `resolveRepoSlug`: `git@github.com:onead/erp.git` → `onead/erp`; `https://github.com/onead/erp.git` → `onead/erp`; non-github / no origin → undefined. Uses `execFile` (arg-array), and a `repo` with `..` / `/` / shell metacharacters is REJECTED before any exec (path-segment validation).
+- `resolveRepoSlug`: `git@github.com:onead/erp.git` → `onead/erp`; `https://github.com/onead/erp.git` → `onead/erp`; non-github / no origin → undefined. Uses `execFile` (arg-array). Path validation: a NESTED id like `erp/order` is ACCEPTED; while `../etc`, an absolute path, a backslash, a NUL, or an empty segment is REJECTED before any exec.
 - `repoVisibility`: stubbed `private` → `"private"`; `public` → `"public"`; gh error → `"unknown"`; no token leak in any error path.
 - `createIssue`: builds the exact `gh issue create -R … --title … --body …` argv with `GH_TOKEN` in env and a 30 s timeout; returns the URL from stubbed stdout; on non-zero exit / timeout → error WITHOUT the token/stderr (assert the token string never appears in the thrown message).
 - `githubDoctor`: gh-missing → not ok; token-empty → not ok; `gh auth status` output is never surfaced in the result.
@@ -343,6 +354,8 @@ sanitised. `gh`'s env-passed `GH_TOKEN` is not logged.
 - **Diagnosis plumbed through:** `escalate()` is called with the stripped visible assistant text as `diagnosis`; the filed issue body's 診斷 section contains it (proves the call-boundary change is wired, not just the snapshot field existing).
 - **Affordance ordering:** save OK → `chat.update` appends the 🎫 affordance; `saveIssueCandidate` throws → message is left WITHOUT the affordance (no dead 🎫 control) AND the primary escalation (@-mention, marker, escalate audit event) is intact.
 - **Permalink best-effort:** `chat.getPermalink` OK → snapshot stores it and the 來源 line renders the permalink; `getPermalink` throws → snapshot falls back to channel/thread IDs, issue is STILL created with the ID-based 來源 line.
+- **Audit not gated on Slack reply:** after a successful createIssue+finalize, the final `chat` reply is stubbed to throw → `github.issue.created` is STILL emitted (audit precedes the best-effort reply).
+- **Event payloads:** `github.issue.created` has `{actor,repo,url}` and `github.issue.failed` has `{actor,repo?,reason}` with NO url and NO token in either (assert the token string is absent).
 - 🎫 with no matching candidate → ignored; 🎫 on a candidate file that exists but is corrupt → ignored BUT logged (not a silent swallow).
 
 ## Out of scope (sub-project 1)
