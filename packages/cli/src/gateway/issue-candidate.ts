@@ -153,7 +153,11 @@ export function recoverIssueClaims(
     try {
       const parsed = JSON.parse(fs.readFileSync(claiming, "utf8")) as IssueCandidate;
       if (parsed.issuedUrl) {
-        fs.renameSync(claiming, finalName);
+        try {
+          fs.renameSync(claiming, finalName);
+        } catch {
+          /* concurrent move / permission — skip, don't abort the sweep */
+        }
         continue;
       }
     } catch {

@@ -263,6 +263,7 @@ function defaultGatewayConfig(): GatewayConfig {
     blocklist: [],
     audience: { default: "tech", users: {}, channels: {} },
     escalation: { default: [], repos: {} },
+    mraWorkspace: "/fake/workspace",
     github: { token: "ghp-test-token" },
     slack: {
       appToken: "xapp-test",

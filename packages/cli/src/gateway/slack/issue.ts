@@ -90,7 +90,10 @@ export class IssueCoordinator {
         await this.reply(channelId, candidate.threadTs, "host 需要安裝 gh CLI，未開 issue");
         failAudit("no-gh"); release(); return;
       }
-      const maybeSlug = await github.resolveRepoSlug(config.mraWorkspace ?? "", candidate.scope);
+      const workspace = config.mraWorkspace;
+      const maybeSlug = workspace
+        ? await github.resolveRepoSlug(workspace, candidate.scope)
+        : undefined;
       if (!maybeSlug) {
         await this.reply(channelId, candidate.threadTs, "無法從該 repo 的 git origin 推出 GitHub slug，未開 issue");
         failAudit("slug"); release(); return;
@@ -127,15 +130,21 @@ export class IssueCoordinator {
       return; // NOTE: no release()
     }
 
-    finalizeIssueCandidate(channelId, anchorTs, url);
+    try {
+      finalizeIssueCandidate(channelId, anchorTs, url);
+    } catch (err) {
+      onLog(
+        `issue: finalize failed (issue ${url} already created; left for doctor): ${(err as Error).message}`,
+      );
+    }
     appendGatewayEvent({ type: "github.issue.created", actor: reactorUserId, repo: slug, url });
     await this.reply(channelId, candidate.threadTs, `已開 issue：${url}`);
   }
 }
 
 function buildTitle(c: IssueCandidate): string {
-  const firstLine = c.question.split("\n")[0].slice(0, 80);
-  return `[pmk] ${firstLine}`;
+  const firstLine = c.question.split("\n")[0].trim().slice(0, 80);
+  return `[pmk] ${firstLine || "(問題待補)"}`;
 }
 
 function buildBody(c: IssueCandidate, slug: string): string {

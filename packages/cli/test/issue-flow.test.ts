@@ -101,6 +101,19 @@ describe("🎫 issue flow", () => {
     assert.equal(calls, 1);
   });
 
+  it("no mraWorkspace configured → slug failure, createIssue not called", async () => {
+    let created = false;
+    // defaultGatewayConfig now sets mraWorkspace for other tests; override to undefined here
+    // to exercise the explicit guard that short-circuits before calling resolveRepoSlug
+    h = buildHarness({ config: { mraWorkspace: undefined }, github: fakeGithub({ createIssue: async () => { created = true; return "x"; } }) });
+    seedCandidate("200.8");
+    await h.adapter.start();
+    await react("200.8");
+    assert.equal(created, false);
+    const ev = readGatewayEvents().find((e) => e.type === "github.issue.failed");
+    assert.equal((ev as { reason?: string })?.reason, "slug");
+  });
+
   it("🎫 with no candidate is ignored", async () => {
     h = buildHarness({ github: fakeGithub() });
     await h.adapter.start();
