@@ -268,7 +268,7 @@ function normaliseRawConfig(raw: unknown): RawGatewayConfig {
     rawGithub && typeof rawGithub === "object" && "token" in rawGithub
       ? {
           token: validateSecretSource(
-            (rawGithub as { token?: unknown }).token as never,
+            (rawGithub as { token?: unknown }).token,
             "github.token",
           )!,
           ...((rawGithub as { allowPublicRepos?: unknown }).allowPublicRepos === true
