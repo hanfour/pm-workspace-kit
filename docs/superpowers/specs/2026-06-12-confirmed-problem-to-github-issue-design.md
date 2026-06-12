@@ -1,7 +1,7 @@
 # Confirmed Problem → GitHub Issue — Design
 
 **Date:** 2026-06-12
-**Status:** Draft v3 — incorporates 6 user findings (v2) + 3-agent review (architecture / security / adversarial); awaiting user review
+**Status:** Draft v4 — v2 (6 user findings) + v3 (3-agent review) + v4 (5 follow-up findings: release-boundary, diagnosis plumbing, snapshot-only consistency, permalink source, affordance ordering); awaiting user review
 **Component:** `packages/cli` gateway (Slack adapter + a new GitHub adapter)
 
 ## Context & scope
@@ -68,6 +68,14 @@ src/gateway/slack/escalation.ts — at escalate() time, ALSO write the issue-can
   swallowed — it must NEVER disrupt the primary escalation (the @-mention, the escalation
   marker, the escalate audit event). Field names mirror ThreadEscalation: askerUserId
   (NOT `asker`); the repo comes from `request.repo` and is stored as `scope`.
+  **Call-boundary change (required):** `escalate()` today takes only
+  `{ channelId, threadTs, askerUserId, request:{repo?,question,reason?} }`
+  (escalation.ts:75). The issue body's diagnosis is NOT in that shape. So add a
+  `diagnosis: string` arg = the **stripped visible assistant text** — in
+  free-chat-turn.ts:356 this is `stripEscalateBlock(stripMraAskBlock(stripCaseUpdateBlock(full)))`,
+  which currently is computed AFTER the escalate() call (line 356, call at line 338);
+  hoist that computation above the call and pass it through. `question` continues to
+  come from `request.question`.
 src/gateway/events.ts         — add github.issue.created / github.issue.failed to the
   GatewayEvent union + VALID_TYPES whitelist (the isStoredGatewayEvent guard delegates to
   VALID_TYPES, so no third edit). Event payload carries actor/repo/url — NEVER the token.
@@ -111,17 +119,26 @@ uses an explicit **lock-then-finalize** state machine:
   serialization barrier; the earlier `issuedUrl` pre-check is just an optimisation
   to skip a doomed claim, not a guard against concurrency.
 - **createIssue** runs with a **30 s timeout** (so a hung `gh` can't pin the lock).
+- **The release boundary is the createIssue launch.** This is the crux: a timeout
+  or error from `gh issue create` does NOT mean GitHub rejected the request — the
+  issue may already have been created server-side. So once createIssue is INVOKED,
+  no failure (timeout, non-zero exit, throw, or a finalize-write failure) may
+  release the lock; the `.claiming` file is LEFT IN PLACE for doctor recovery.
+  Releasing here would let the next 🎫 open a **duplicate**. RELEASE is therefore
+  allowed ONLY for early-returns that happen strictly BEFORE createIssue is called.
+- **RELEASE** (`releaseIssueCandidate`): only on the pre-createIssue early-returns
+  (slug underivable, token fail, repo-visibility blocked, or any throw in steps
+  d–h) → `fs.renameSync(.claiming → .json)` so a later 🎫 can retry. Structure the
+  handler so the try/finally that auto-releases wraps ONLY steps d–h; createIssue
+  (step i) and finalize (step j) run AFTER that guarded block, where failures
+  deliberately leave `.claiming`. If release itself throws, log high-severity and
+  proceed.
 - **FINALIZE** (`finalizeIssueCandidate`): write `issuedUrl` INTO the `.claiming`
   file FIRST, then `fs.renameSync(.claiming → .json)` as the commit. Ordering
-  matters: a crash after createIssue but before the write leaves a `.claiming`
-  with NO url (recoverable by hand / by doctor as "orphan — an issue may already
-  exist"); a crash after the write but before the rename leaves a `.claiming`
-  WITH a url (doctor finalizes it by renaming, NEVER re-creating the issue).
-- **RELEASE** (`releaseIssueCandidate`): on every early-return BEFORE createIssue
-  (slug underivable, token fail, repo-visibility blocked) → `fs.renameSync(
-  .claiming → .json)` so a later 🎫 can retry. The whole claim→finalize body is
-  wrapped in try/finally: any unhandled throw releases. If release itself throws,
-  log high-severity and proceed (nothing more can be done in-handler).
+  matters: a failure/crash after createIssue but before the write leaves a
+  `.claiming` with NO url (doctor surfaces it as "orphan — an issue may already
+  exist; verify on GitHub"); a crash after the write but before the rename leaves a
+  `.claiming` WITH a url (doctor finalizes it by renaming, NEVER re-creating the issue).
 - **Recovery (doctor):** a `.claiming` with `issuedUrl` set → finalize (rename to
   `.json`). A `.claiming` older than N minutes with NO url → warn ("possible
   orphaned issue; verify on GitHub, then delete or restore the record"). We accept
@@ -145,7 +162,9 @@ mutators already load/save RAW (no materialisation) — `github.token` inherits 
 
 - The bot's escalation message (the one that @-mentions the tech pool with the
   diagnosis) gains a one-line affordance: `_確認是問題的話,在這則訊息上 react 🎫 我就開 issue_`.
-  Its `ts` is saved as the issue-candidate's `anchorTs`.
+  Its `ts` is saved as the issue-candidate's `anchorTs`. The affordance is appended
+  (via `chat.update`) ONLY after the candidate is saved (data-flow step 1a), so a
+  visible 🎫 control never advertises a missing record.
 - A `reaction_added` for `🎫` (`:ticket:` — verify the exact Slack reaction name at
   implementation) is handled ONLY when **`reaction.item.ts === candidate.anchorTs`**
   for an existing issue-candidate record (Medium-4 fix: anchor-exact, not
@@ -166,11 +185,20 @@ mutators already load/save RAW (no materialisation) — `github.token` inherits 
 1. Bot escalates (existing path, extended): in `escalate()`, AFTER posting the
    @-mention diagnosis message, capture that message's `ts` and write a durable
    `issue-candidate` record `{ channelId, threadTs, anchorTs, scope (= request.repo),
-   askerUserId, mentionedUserIds, question, diagnosis, issuedUrl? }` (mode 0600, key
-   `<channelId>__<anchorTs>.json`). Append the 🎫 affordance to the message. The
-   `saveIssueCandidate` call is **fail-soft** (try/catch): a write error logs and is
-   swallowed so the primary escalation is never disrupted. This record is independent
-   of the consumable escalation marker and is NOT cleared by the absorb path.
+   askerUserId, mentionedUserIds, question, diagnosis, permalink?, issuedUrl? }`
+   (mode 0600, key `<channelId>__<anchorTs>.json`; `diagnosis` = the stripped visible
+   assistant text passed in via the call-boundary change; `permalink` = best-effort
+   `chat.getPermalink` of anchorTs). The 🎫 affordance is appended to the message ONLY
+   after the candidate is saved (see step 1a) so a visible 🎫 never points at a missing
+   record. The `saveIssueCandidate` call is **fail-soft** (try/catch): a write error logs
+   and is swallowed so the primary escalation is never disrupted. This record is
+   independent of the consumable escalation marker and is NOT cleared by the absorb path.
+1a. **Affordance ordering (fail-soft, no dead control):** post the @-mention diagnosis
+   message FIRST (its `ts` becomes `anchorTs`), THEN `saveIssueCandidate`. On save
+   SUCCESS → `chat.update` to append the 🎫 affordance line. On save FAILURE → leave the
+   message as-is WITHOUT the affordance (escalation still fully works; there is just no
+   🎫 control advertised). This guarantees the 🎫 affordance is shown only when a
+   loadable candidate exists.
 2. Tech reacts 🎫 on that exact message.
 3. `reaction_added` handler (after the widened early-return gate lets `ticket` through):
    a. Ignore unless reaction == 🎫 AND an issue-candidate exists whose
@@ -181,8 +209,10 @@ mutators already load/save RAW (no materialisation) — `github.token` inherits 
       silently (and write one host-log line so repeated unauthorized attempts are visible).
    d. **Atomic claim:** `claimIssueCandidate` (rename `.json → .claiming`). If it throws →
       stop (someone else holds/finalized it). This rename is the true serializer (step b is
-      only an optimisation). See "Atomic claim lifecycle". From here, every early-return
-      RELEASES the claim (rename back to `.json`); the body is wrapped in try/finally.
+      only an optimisation). See "Atomic claim lifecycle". Steps e–h run inside a
+      try/finally that RELEASES the claim on any early-return or throw — but that guarded
+      block ENDS before step i. createIssue (i) and finalize (j) are OUTSIDE it, so a
+      createIssue failure does NOT release (see the release-boundary rule).
    e. Resolve the repo slug: `resolveRepoSlug(mraWorkspace, candidate.scope)` → git
       origin → `owner/repo`. If underivable → reply asking the tech to specify the
       repo, release the claim, stop.
@@ -196,7 +226,9 @@ mutators already load/save RAW (no materialisation) — `github.token` inherits 
    h. Build the issue title + body (structure below) from the SNAPSHOT
       (`candidate.question` + `candidate.diagnosis`) — NO `conversations.replies`,
       so no new Slack history scope is needed.
-   i. `createIssue({ slug, title, body, token })` (30 s timeout) → issue URL.
+   i. `createIssue({ slug, title, body, token })` (30 s timeout) → issue URL. On
+      failure/timeout: do NOT release (GitHub may have accepted it) — reply a friendly
+      error, audit `github.issue.failed`, leave `.claiming` for doctor; stop.
    j. **Finalize:** write `issuedUrl = url` into the `.claiming` file, THEN rename
       `.claiming → .json` (commit order — see lifecycle). Post the URL back to the
       thread. Emit `github.issue.created` (actor = reactor, repo = slug, issue url — NO token).
@@ -216,13 +248,22 @@ Title: [pmk] <one-line problem summary>
 <1–3 suggested directions>
 
 ## 來源
-- Slack thread: <permalink>
-- 提問者：@asker · 確認者（tech）：@confirmer
+- Slack thread: <permalink (snapshot.permalink) — falls back to channel/thread IDs if unavailable>
+- 提問者：<@askerUserId> · 確認者（tech）：<@reactor>
 - repo: owner/repo
 ```
-The title/問題/診斷/建議方向 come from the thread context (the user's question, the
-bot's diagnosis message). The bot composes them with one LLM call summarising the
-thread into the issue body (audience-neutral, technical — this is for engineers).
+The title/問題/診斷/建議方向 are composed by ONE LLM call over the **snapshot only**
+(`candidate.question` + `candidate.diagnosis`) — NOT the live thread. This is the same
+no-`conversations.replies`, snapshot-only rule as the data flow; the issue body never
+reads Slack history (keeps the scope surface unchanged). Output is audience-neutral,
+technical — this is for engineers. 確認者 is the 🎫 reactor (resolved at confirm time);
+提問者 is `askerUserId` from the snapshot.
+
+**Permalink source:** capture it at escalate() time via `chat.getPermalink({ channel,
+message_ts: anchorTs })` and store it as `candidate.permalink` in the snapshot. If that
+call fails (network / scope), fall back to storing the raw `channelId`/`threadTs` and
+render the 來源 line with those IDs — the permalink is best-effort, never blocks issue
+creation.
 
 ## `github.ts` (gh CLI wrapper)
 
@@ -255,7 +296,7 @@ thread into the issue body (audience-neutral, technical — this is for engineer
 | `github.token` unset / `{cmd}` fails | reply: GitHub token 未設定 / 指令失敗 — NO `{cmd}` output leak; release claim. |
 | repo slug underivable | reply: 請 tech 指定 repo（無法從 git origin 推出）; release claim; stop. |
 | target repo is PUBLIC (and `allowPublicRepos` ≠ true) | reply: 已停止（內部資訊不外洩，repo 為 public）; release claim; audit `github.issue.failed` (reason=public-repo). |
-| `gh issue create` fails / times out (30 s) | reply friendly error, NO token/stderr leak; release claim; audit `github.issue.failed`. |
+| `gh issue create` fails / times out (30 s) | reply friendly error, NO token/stderr leak; audit `github.issue.failed`; **do NOT release** — leave `.claiming` for doctor (GitHub may have accepted it). |
 | createIssue OK but finalize write/rename fails | `.claiming` persists (with or without url); doctor recovers it; NEVER re-create the issue on retry. |
 | stale `.claiming` lock (crash mid-flow) | doctor surfaces it: finalize if url present, else warn (possible orphan — verify on GitHub). |
 | `saveIssueCandidate` fails at escalate() time | fail-soft: log + swallow; primary escalation unaffected; 🎫 will no-op (no record). |
@@ -297,8 +338,11 @@ sanitised. `gh`'s env-passed `GH_TOKEN` is not logged.
 - token `{cmd}` fails → friendly error posted, NO leak; `github.issue.failed` event; claim RELEASED (a later 🎫 with a working token succeeds).
 - **Public-repo guard:** target repo resolves to `public` and `allowPublicRepos` false → issue NOT created, friendly stop reply, `github.issue.failed` (reason=public-repo), claim released; with `allowPublicRepos: true` → issue IS created.
 - **Finalize crash recovery:** createIssue succeeds but the finalize rename is stubbed to fail → record stays `.claiming` with `issuedUrl`; a subsequent recovery pass finalises it and does NOT call createIssue again (no duplicate).
+- **createIssue failure does NOT release (no duplicate):** createIssue stubbed to throw/timeout → record stays `.claiming` (NOT released); a second 🎫 then fails to claim (rename throws) and does NOT call createIssue a second time. Regression guard for the orphan-window duplicate.
 - **Gate widening:** a 🎫 reaction is actually delivered to `IssueFromCandidate` (regression guard against the `slack/index.ts` early-return gate dropping `ticket`).
-- **escalate() fail-soft:** `saveIssueCandidate` stubbed to throw → escalation still posts the @-mention, writes the escalation marker, emits the escalate audit event (primary flow intact).
+- **Diagnosis plumbed through:** `escalate()` is called with the stripped visible assistant text as `diagnosis`; the filed issue body's 診斷 section contains it (proves the call-boundary change is wired, not just the snapshot field existing).
+- **Affordance ordering:** save OK → `chat.update` appends the 🎫 affordance; `saveIssueCandidate` throws → message is left WITHOUT the affordance (no dead 🎫 control) AND the primary escalation (@-mention, marker, escalate audit event) is intact.
+- **Permalink best-effort:** `chat.getPermalink` OK → snapshot stores it and the 來源 line renders the permalink; `getPermalink` throws → snapshot falls back to channel/thread IDs, issue is STILL created with the ID-based 來源 line.
 - 🎫 with no matching candidate → ignored; 🎫 on a candidate file that exists but is corrupt → ignored BUT logged (not a silent swallow).
 
 ## Out of scope (sub-project 1)
