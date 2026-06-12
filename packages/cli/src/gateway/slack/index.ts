@@ -54,6 +54,7 @@ import {
   mraDoctor as mraDoctorImpl,
   runMraAsk as runMraAskImpl,
 } from "../../adapters/mra";
+import { IssueCoordinator, realGithubGateway, type GithubGateway } from "./issue";
 import {
   approveAtom,
   findAtomByApprovalMessage,
@@ -114,6 +115,11 @@ export interface SlackAdapterOptions {
   mraDoctor?: typeof mraDoctorImpl;
   runMraAsk?: typeof runMraAskImpl;
   /**
+   * Injectable GitHub gateway (DI seam for tests). Defaults to the real
+   * gh-CLI-backed adapter (`realGithubGateway`).
+   */
+  github?: GithubGateway;
+  /**
    * v0.16 (M3 / FR3): when true (or when `PMK_DRY_RUN=1` is set in the
    * env), the constructed WebClient is wrapped by
    * `wrapWebClientForDryRun` so all Slack writes are stubbed. Read
@@ -159,6 +165,8 @@ export class SlackAdapter {
   private readonly slashCommand: SlashCommandHandler;
   /** Outbound escalate + inbound absorb + asker-synthesis follow-up. */
   private readonly escalation: EscalationCoordinator;
+  /** 🎫 reaction → GitHub issue coordinator. */
+  private readonly issue: IssueCoordinator;
   /** End-to-end free-chat turn: seed + retrieval + LLM + mra-ask + escalate + reply. */
   private readonly freeChatTurn: FreeChatTurnRunner;
   /** Channel @mention dispatcher (slash / free-chat / case-mode). */
@@ -272,6 +280,12 @@ export class SlackAdapter {
       config: this.config,
       onLog: this.onLog,
       llm: this.llm,
+    });
+    this.issue = new IssueCoordinator({
+      web: this.web,
+      config: this.config,
+      onLog: this.onLog,
+      github: opts.github ?? realGithubGateway,
     });
     this.freeChatTurn = new FreeChatTurnRunner({
       web: this.web,
@@ -780,12 +794,18 @@ export class SlackAdapter {
     // `thumbsdown` is not an approval-reject reaction but is used for
     // citation feedback in the !found branch below.
     const isCitationFeedback = reaction === "thumbsdown";
-    if (!isApprove && !isReject && !isCitationFeedback) return;
+    const isTicket = reaction === "ticket";
+    if (!isApprove && !isReject && !isCitationFeedback && !isTicket) return;
 
     const channelId = event.item?.channel;
     const messageTs = event.item?.ts;
     const reactorUserId = event.user;
     if (!channelId || !messageTs || !reactorUserId) return;
+
+    if (isTicket) {
+      await this.issue.fromCandidate({ channelId, anchorTs: messageTs, reactorUserId });
+      return;
+    }
 
     const found = findAtomByApprovalMessage(channelId, messageTs);
     if (!found) {
