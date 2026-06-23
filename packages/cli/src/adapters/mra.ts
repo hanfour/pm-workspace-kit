@@ -544,9 +544,16 @@ export function buildReviewArgv(
 /**
  * Pure: pull status + comment count from `mra review` stdout.
  *
- * NOTE: regex is provisional — based on the expected output shape
- * described in the brief. Update once the Task 0 live spike captures
- * real `mra review` output and confirms the exact format.
+ * Verified against the real mra source (read-only, 2026-06-23): the
+ * success path logs both lines to STDOUT via log_progress/log_info
+ * (only log_error → stderr; multi-repo-agent lib/colors.sh:21-28), and
+ * _log emits `<ansi>[review]<reset> <message>` so the MESSAGE text is
+ * plain (no ANSI inside it). The two source lines are:
+ *   review.sh:695  `posting inline review to <slug>#<N> (<N> comments)...`
+ *   review.sh:710  `status: <STATUS> | comments: <N>`
+ * so the regexes below match the real format. Caveat: the batch-failed
+ * individual-comment fallback path (review.sh:712+) does not print the
+ * `status: …` line, so on that rarer path status falls back to COMMENT.
  *
  * Matches:
  *   `status: CHANGES_REQUESTED`  → status field
