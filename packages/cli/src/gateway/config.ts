@@ -292,6 +292,11 @@ function normaliseRawConfig(raw: unknown): RawGatewayConfig {
             : {}),
         }
       : undefined;
+  // `:cr:` review config. Carried through as a Partial<ReviewConfig>;
+  // `resolveReviewConfig` applies defaults / clamps / strategy guard at use
+  // time. Only the known, well-typed fields survive (unknown keys dropped).
+  const rawReview = (r as { review?: unknown }).review;
+  const review = normaliseReviewConfig(rawReview);
   return {
     version: GATEWAY_CONFIG_VERSION,
     admins: asStringArray(r.admins),
@@ -303,7 +308,32 @@ function normaliseRawConfig(raw: unknown): RawGatewayConfig {
     mraWorkspace: asString(r.mraWorkspace),
     apiKey: validateSecretSource(r.apiKey, "apiKey"),
     github,
+    review,
   };
+}
+
+/**
+ * Extract the known fields of a raw `review` config block into a typed
+ * Partial<ReviewConfig>. Returns undefined when absent/not-an-object.
+ * Lenient on value sanity (resolveReviewConfig clamps/guards downstream);
+ * strict on types so junk never reaches the runtime.
+ */
+function normaliseReviewConfig(raw: unknown): Partial<ReviewConfig> | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const o = raw as Record<string, unknown>;
+  const out: Partial<ReviewConfig> = {};
+  if (typeof o.enabled === "boolean") out.enabled = o.enabled;
+  if (typeof o.allowPublicRepos === "boolean")
+    out.allowPublicRepos = o.allowPublicRepos;
+  if (Array.isArray(o.repoAllowlist))
+    out.repoAllowlist = asStringArray(o.repoAllowlist);
+  if (typeof o.maxPrsPerTrigger === "number")
+    out.maxPrsPerTrigger = o.maxPrsPerTrigger;
+  if (o.strategy === "debate" || o.strategy === "personas")
+    out.strategy = o.strategy;
+  if (typeof o.expectedGhUser === "string")
+    out.expectedGhUser = o.expectedGhUser;
+  return out;
 }
 
 /** Test seam — exercises normaliseRawConfig without touching disk. */
