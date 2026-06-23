@@ -1444,21 +1444,23 @@ git commit -m "feat(gateway): wire :cr: reaction → ReviewCoordinator (routed b
 
 **Files:**
 - Create: `packages/cli/src/gateway/doctor-checks/review.ts` (mirror `doctor-checks/github-token.ts`)
-- Modify: wherever doctor checks are registered (the file that imports `github-token` check — find via `grep -rl "github-token" src/gateway`)
+- Modify: `packages/cli/src/gateway/doctor-checks/index.ts` (export + add to `DEFAULT_CHECKS`)
 - Test: `packages/cli/test/gateway-doctor.test.ts` (existing — add a case)
 
-**Interfaces:**
-- Produces: a doctor check returning `{ ok, reason }` that verifies, when `config.review.enabled`: `findMraBinary()` present; `findGhBinary()` present; `getAuthUser()` resolves and (if `expectedGhUser` set) equals it; `reviewWorkspaceDir()` parent writable. When review disabled → ok with "review off".
+**Interfaces (VERIFIED against the real doctor contract):**
+- The doctor-check contract is `DoctorCheck = (ctx: DoctorContext) => Promise<DoctorCheckResult>` (`doctor.ts:84`), where `DoctorCheckResult = { name: string; severity: "pass"|"warn"|"fail"; message: string; hint?: string }`. Checks read config via `ctx.config?.review`. Register by adding to `doctor-checks/index.ts` (export + `DEFAULT_CHECKS` array). The exact mirror is `doctor-checks/github-token.ts` (`export const githubTokenCheck: DoctorCheck = async (ctx) => {...}`).
+- Produces `reviewDoctorCheck: DoctorCheck`. When `review.enabled` is false → `pass` "review off". When enabled: `findMraBinary()` + `findGhBinary()` present → else `fail`; warn when `expectedGhUser` is unset (actor verification is skipped at review time → reviews could post under an unexpected gh identity). **Do NOT make a live `getAuthUser()` gh call here** — keep the check fast + side-effect-light like `github-token.ts` (presence/config only; live actor verification happens at review time in the coordinator).
 
-- [ ] **Step 1: Write the failing test** (mirror github-token doctor test style)
+- [ ] **Step 1: Write the failing test** (mirror the github-token doctor test style — `severity`/`message`, not `ok`/`reason`)
 
 ```typescript
 // add to test/gateway-doctor.test.ts
-it("review doctor: disabled → ok with 'off'", async () => {
+it("review doctor: disabled → pass with 'off'", async () => {
   const { reviewDoctorCheck } = await import("../src/gateway/doctor-checks/review");
-  const res = await reviewDoctorCheck({ review: { enabled: false } } as never);
-  assert.equal(res.ok, true);
-  assert.match(res.reason ?? "", /off|disabled/i);
+  const res = await reviewDoctorCheck({ config: { review: { enabled: false } } } as never);
+  assert.equal(res.name, "review");
+  assert.equal(res.severity, "pass");
+  assert.match(res.message, /off|disabled/i);
 });
 ```
 
@@ -1467,31 +1469,49 @@ it("review doctor: disabled → ok with 'off'", async () => {
 Run: `cd packages/cli && node --import tsx --test test/gateway-doctor.test.ts`
 Expected: FAIL — module not found.
 
-- [ ] **Step 3: Implement** `doctor-checks/review.ts`
+- [ ] **Step 3: Implement** `doctor-checks/review.ts` (conform to `DoctorCheck`; mirror `github-token.ts`'s shape)
 
 ```typescript
-import type { GatewayConfig } from "../config";
+import type { DoctorCheck, DoctorCheckResult } from "../doctor";
 import { resolveReviewConfig } from "../config";
 import { findMraBinary } from "../../adapters/mra";
-import { findGhBinary, getAuthUser } from "../../adapters/github";
+import { findGhBinary } from "../../adapters/github";
 
-export async function reviewDoctorCheck(
-  config: Pick<GatewayConfig, "review" | "github">,
-): Promise<{ ok: boolean; reason?: string }> {
-  const review = resolveReviewConfig(config.review);
-  if (!review.enabled) return { ok: true, reason: "review off (:cr: PR review disabled)" };
-  if (!findMraBinary()) return { ok: false, reason: "mra not on PATH (needed for :cr: review)" };
-  if (!findGhBinary()) return { ok: false, reason: "gh not on PATH (needed to post reviews)" };
-  const actor = await getAuthUser();
-  if (!actor) return { ok: false, reason: "gh not authenticated (gh api user failed)" };
-  if (review.expectedGhUser && actor !== review.expectedGhUser) {
-    return { ok: false, reason: `gh actor '${actor}' != expectedGhUser '${review.expectedGhUser}'` };
+/**
+ * review check for the :cr: PR-review flow. PASS when review is disabled
+ * (flow off). When enabled: mra + gh present → pass; missing → fail. Warns
+ * when expectedGhUser is unset (actor verification is skipped at review time,
+ * so a review could post under an unexpected gh identity). Presence/config
+ * only — no live gh call (kept fast like github-token).
+ */
+export const reviewDoctorCheck: DoctorCheck = async (
+  ctx,
+): Promise<DoctorCheckResult> => {
+  const review = resolveReviewConfig(ctx.config?.review);
+  if (!review.enabled) {
+    return { name: "review", severity: "pass", message: "review off (:cr: PR review disabled)" };
   }
-  return { ok: true, reason: `review ready (gh actor: ${actor}, strategy: ${review.strategy})` };
-}
+  const mraPresent = !!findMraBinary();
+  const ghPresent = !!findGhBinary();
+  const problems: string[] = [];
+  if (!mraPresent) problems.push("mra not on PATH");
+  if (!ghPresent) problems.push("gh not on PATH");
+  const warnings: string[] = [];
+  if (!review.expectedGhUser) {
+    warnings.push("review.expectedGhUser unset — actor verification skipped at review time");
+  }
+  const detail = `mra=${mraPresent ? "found" : "missing"}; gh=${ghPresent ? "found" : "missing"}; strategy=${review.strategy}`;
+  const severity = problems.length ? "fail" : warnings.length ? "warn" : "pass";
+  const message = problems.length
+    ? `${detail} — ${problems.join("; ")}`
+    : warnings.length
+      ? `${detail}; ${warnings.join("; ")}`
+      : detail;
+  return { name: "review", severity, message };
+};
 ```
 
-- [ ] **Step 4: Register** the check alongside the github-token check (follow the existing registration pattern in the doctor aggregator).
+- [ ] **Step 4: Register** in `doctor-checks/index.ts` — `import { reviewDoctorCheck } from "./review";`, add it to the `export { ... }` block, and append it to the `DEFAULT_CHECKS` array (after `githubTokenCheck`).
 
 - [ ] **Step 5: Run test to verify it passes**
 
@@ -1501,8 +1521,8 @@ Expected: PASS.
 - [ ] **Step 6: Commit**
 
 ```bash
-git add packages/cli/src/gateway/doctor-checks/review.ts packages/cli/test/gateway-doctor.test.ts
-git commit -m "feat(gateway): doctor review-readiness check (mra+gh+actor+workspace)"
+git add packages/cli/src/gateway/doctor-checks/review.ts packages/cli/src/gateway/doctor-checks/index.ts packages/cli/test/gateway-doctor.test.ts
+git commit -m "feat(gateway): doctor review-readiness check (mra+gh present, warn on unset expectedGhUser)"
 ```
 
 ---
