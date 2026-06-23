@@ -90,6 +90,15 @@ export interface ReviewConfig {
   maxPrsPerTrigger: number;
   strategy: "debate" | "personas";
   expectedGhUser?: string;           // gate: gh api user must equal this before posting
+  /**
+   * Pinned GitHub token for ALL review GitHub interactions (PR head, repo
+   * visibility, actor-verify) AND mra's review POST. Literal or {env}/{cmd}
+   * secret reference. When set, the review uses THIS token's identity —
+   * stable, independent of the host's active `gh` account. Recommended:
+   * `{ "cmd": "gh auth token --user <work-account>" }` (no raw token on disk,
+   * no active-account switch). Unset → host ambient gh (default).
+   */
+  ghToken?: SecretSource;
 }
 
 export interface GatewayConfig {
@@ -333,6 +342,8 @@ function normaliseReviewConfig(raw: unknown): Partial<ReviewConfig> | undefined 
     out.strategy = o.strategy;
   if (typeof o.expectedGhUser === "string")
     out.expectedGhUser = o.expectedGhUser;
+  const ghToken = validateSecretSource(o.ghToken, "review.ghToken");
+  if (ghToken !== undefined) out.ghToken = ghToken;
   return out;
 }
 
@@ -433,7 +444,20 @@ export function resolveReviewConfig(raw?: Partial<ReviewConfig>): ReviewConfig {
     maxPrsPerTrigger: Math.max(1, raw?.maxPrsPerTrigger ?? 5),
     strategy: raw?.strategy === "personas" ? "personas" : "debate",
     expectedGhUser: raw?.expectedGhUser,
+    ghToken: raw?.ghToken,
   };
+}
+
+/**
+ * Resolve the pinned review GitHub token (literal or {env}/{cmd}). When set,
+ * every review GitHub call AND mra's review POST uses this token — a stable
+ * identity independent of the host's active `gh` account. Returns undefined
+ * when unset (→ host ambient gh, the default). Resolved lazily at review time.
+ */
+export function resolveReviewGhToken(
+  review: Partial<ReviewConfig> | undefined,
+): string | undefined {
+  return resolveSecret(review?.ghToken, "review.ghToken");
 }
 
 /**

@@ -571,10 +571,18 @@ export function parseReviewStdout(stdout: string): {
   };
 }
 
-/** Clone process.env, strip secrets, optionally set personas flag. */
-function reviewEnv(strategy: "debate" | "personas"): NodeJS.ProcessEnv {
+/** Clone process.env, strip secrets, pin the review token (if any), set personas flag. */
+function reviewEnv(
+  strategy: "debate" | "personas",
+  ghToken?: string,
+): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...process.env };
   for (const k of REVIEW_SECRET_ENV_DENYLIST) delete env[k];
+  // Pin the GitHub token for mra's `gh` POST. Set AFTER the strip so it is the
+  // ONLY github token in the review env; `GH_TOKEN` takes priority over the
+  // host's active gh account, so the posting identity is stable regardless of
+  // which account is active. Unset → mra falls back to ambient gh.
+  if (ghToken) env.GH_TOKEN = ghToken;
   if (strategy === "personas") env.MRA_REVIEW_PERSONAS = "true";
   return env;
 }
@@ -716,6 +724,8 @@ export async function runMraReview(
     strategy: "debate" | "personas";
     cwd: string;
     timeoutMs?: number;
+    /** Pinned GitHub token for mra's POST (GH_TOKEN). Undefined → ambient gh. */
+    ghToken?: string;
   },
   opts: { onProgress?: (line: string) => void } = {},
 ): Promise<MraReviewResult> {
@@ -725,7 +735,7 @@ export async function runMraReview(
   }
   const timeoutMs = args.timeoutMs ?? 600_000;
   const argv = buildReviewArgv(args.project, args.pr, args.strategy);
-  const env = reviewEnv(args.strategy);
+  const env = reviewEnv(args.strategy, args.ghToken);
 
   const raw = await spawnMraCommand(binary, argv, args.cwd, env, timeoutMs, opts.onProgress);
   const parsed = raw.ok ? parseReviewStdout(raw.stdout) : {};

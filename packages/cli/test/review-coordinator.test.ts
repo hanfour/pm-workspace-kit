@@ -161,3 +161,33 @@ describe("ReviewCoordinator.fromMessage (B-lite inline trigger)", () => {
     assert.equal(coord(web, gw()).isEnabled(), true);
   });
 });
+
+describe("ReviewCoordinator pinned ghToken threading", () => {
+  it("threads review.ghToken to getAuthUser (actor-verify) AND runMraReview", async () => {
+    const web = new FakeWebClient();
+    let authOpts: { token?: string } | undefined;
+    let mraArgs: { ghToken?: string } | undefined;
+    const gateway = gw({
+      getAuthUser: async (opts: { token?: string }) => {
+        authOpts = opts;
+        return "expected-bot";
+      },
+      runMraReview: async (a: { ghToken?: string }) => {
+        mraArgs = a;
+        return { ok: true, status: "COMMENT", commentCount: 0, stdout: "", stderr: "" };
+      },
+    } as unknown as Partial<ReviewGateway>);
+    const config = {
+      version: 1, admins: [], blocklist: [], audience: {}, escalation: {}, slack: {},
+      mraWorkspace: path.join(tmp, "ws"),
+      review: { enabled: true, expectedGhUser: "expected-bot", ghToken: "gho_pinned" },
+    } as never;
+    const c = new ReviewCoordinator({ web: web as never, config, onLog: () => {}, gateway });
+    await c.fromMessage({
+      channelId: "C1", threadTs: "1.1", userId: "U1",
+      text: ":cr: https://github.com/onead/OnePixel/pull/12",
+    });
+    assert.equal(authOpts?.token, "gho_pinned", "actor-verify must use the pinned token");
+    assert.equal(mraArgs?.ghToken, "gho_pinned", "mra POST must use the pinned token");
+  });
+});

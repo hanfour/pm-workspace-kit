@@ -14,7 +14,12 @@
  */
 import type { WebClient } from "@slack/web-api";
 import type { GatewayConfig } from "../config";
-import { resolveReviewConfig, resolveGithubToken, reviewWorkspaceDir } from "../config";
+import {
+  resolveReviewConfig,
+  resolveGithubToken,
+  resolveReviewGhToken,
+  reviewWorkspaceDir,
+} from "../config";
 import { appendGatewayEvent } from "../events";
 import { parsePrRefs, type PrRef } from "../pr-ref";
 import { claimReview, finalizeReview, releaseReview } from "../review-claim";
@@ -154,7 +159,10 @@ export class ReviewCoordinator {
 
     const reviewWorkspace = reviewWorkspaceDir(); // ~/.pmk/review-workspace
     gateway.ensureReviewWorkspaceMeta(workspace, reviewWorkspace);
-    const token = resolveGithubToken(config.github);
+    // Pinned review token (stable identity, independent of the host's active
+    // gh account) takes priority; fall back to the issue-flow github token, else
+    // undefined → host ambient gh. Used for ALL review gh calls + mra's POST.
+    const token = resolveReviewGhToken(config.review) ?? resolveGithubToken(config.github);
 
     for (const ref of refs) {
       await this.reviewOne(ref, {
@@ -273,9 +281,12 @@ export class ReviewCoordinator {
         return;
       }
 
-      // Verify the HOST AMBIENT gh identity — that is what mra posts under
-      // (runMraReview strips GH_TOKEN/GITHUB_TOKEN from its env), NOT the work token.
-      const actor = await gateway.getAuthUser({});
+      // Verify the identity mra will POST under. With a pinned review token,
+      // mra posts as THAT token (reviewEnv sets GH_TOKEN), so we verify the
+      // token's identity. Without a pin, ctx.token is undefined → getAuthUser
+      // checks the HOST AMBIENT gh identity (what mra falls back to). Either
+      // way this checks "who the review will be posted as".
+      const actor = await gateway.getAuthUser({ token: ctx.token });
       if (ctx.review.expectedGhUser && actor !== ctx.review.expectedGhUser) {
         await skip(
           "gh-actor",
@@ -292,6 +303,7 @@ export class ReviewCoordinator {
           pr: ref.number,
           strategy: ctx.review.strategy,
           cwd: ctx.reviewWorkspace,
+          ghToken: ctx.token, // pin mra's POST identity (GH_TOKEN), stable vs active gh
         },
         { onProgress: (line) => onLog(`mra review ${slug}#${ref.number}: ${line}`) },
       );
