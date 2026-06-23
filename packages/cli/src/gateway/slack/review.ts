@@ -280,6 +280,7 @@ export class ReviewCoordinator {
         pr: ref.number,
         expectedHeadSha: head.sha,
         baseRef: head.baseRef,
+        ghToken: ctx.token, // pin git clone/fetch auth (stable vs active gh)
       });
       if (!prep.ok) {
         await skip(

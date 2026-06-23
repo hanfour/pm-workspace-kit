@@ -64,4 +64,18 @@ describe("prepareReviewClone", () => {
     assert.equal(res.ok, false);
     if (!res.ok) assert.match(res.reason, /head-mismatch/);
   });
+
+  it("still clones with a pinned ghToken (auth-env threading is non-breaking for non-github origins)", async () => {
+    // The extraheader only targets https://github.com/; a local file origin is
+    // unaffected, so passing a token must not break the clone. (Real github.com
+    // auth via the token is verified out-of-band; this locks the threading.)
+    ensureReviewWorkspaceMeta(mainWs, reviewWs);
+    const res = await prepareReviewClone({
+      mainClone, reviewWorkspace: reviewWs, project: "proj",
+      slug: "o/r", pr: 1, expectedHeadSha: headSha, baseRef: "main",
+      ghToken: "gho_faketoken_for_threading_test",
+    });
+    assert.equal(res.ok, true);
+    if (res.ok) assert.equal(g(res.cloneDir, "rev-parse", "HEAD"), headSha);
+  });
 });
