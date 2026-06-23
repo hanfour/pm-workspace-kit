@@ -502,6 +502,229 @@ function runMraAskOnce(
   });
 }
 
+// ---------------------------------------------------------------------------
+// mra review — write-protected, secrets-stripped subprocess
+// ---------------------------------------------------------------------------
+
+/** Keys removed from the child env before spawning `mra review`. */
+const REVIEW_SECRET_ENV_DENYLIST = [
+  "ANTHROPIC_API_KEY",
+  "GH_TOKEN",
+  "GITHUB_TOKEN",
+  "OPENAI_API_KEY",
+  "SLACK_APP_TOKEN",
+  "SLACK_BOT_TOKEN",
+  "AWS_SECRET_ACCESS_KEY",
+]; // strip secrets so an injected review prompt can't exfiltrate them
+
+export interface MraReviewResult {
+  ok: boolean;
+  status?: string;
+  commentCount?: number;
+  stdout: string;
+  stderr: string;
+  reason?: string;
+}
+
+/**
+ * Build the argv for `mra review <project> --pr <pr>`. For strategy
+ * "debate" appends `--strategy debate`; for "personas" the flag is
+ * omitted and the env var `MRA_REVIEW_PERSONAS=true` is used instead
+ * (see {@link reviewEnv}).
+ */
+export function buildReviewArgv(
+  project: string,
+  pr: number,
+  strategy: "debate" | "personas",
+): string[] {
+  const base = ["review", project, "--pr", String(pr)];
+  return strategy === "debate" ? [...base, "--strategy", "debate"] : base;
+}
+
+/**
+ * Pure: pull status + comment count from `mra review` stdout.
+ *
+ * NOTE: regex is provisional — based on the expected output shape
+ * described in the brief. Update once the Task 0 live spike captures
+ * real `mra review` output and confirms the exact format.
+ *
+ * Matches:
+ *   `status: CHANGES_REQUESTED`  → status field
+ *   `(3 comments)`               → commentCount field
+ */
+export function parseReviewStdout(stdout: string): {
+  status?: string;
+  commentCount?: number;
+} {
+  const status = /status:\s*([A-Z_]+)/.exec(stdout)?.[1];
+  const cc = /\((\d+)\s+comments?\)/.exec(stdout)?.[1];
+  return {
+    status,
+    commentCount: cc !== undefined ? Number(cc) : undefined,
+  };
+}
+
+/** Clone process.env, strip secrets, optionally set personas flag. */
+function reviewEnv(strategy: "debate" | "personas"): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...process.env };
+  for (const k of REVIEW_SECRET_ENV_DENYLIST) delete env[k];
+  if (strategy === "personas") env.MRA_REVIEW_PERSONAS = "true";
+  return env;
+}
+
+/**
+ * Shared spawn/line-buffer/timeout loop used by both `runMraAskOnce`
+ * and `spawnMraCommand`. Takes explicit `argv` + `env` so the caller
+ * can customise both without duplicating the machinery.
+ *
+ * Behaviour is identical to `runMraAskOnce` (chunks, overflow guard,
+ * SIGTERM on timeout, settle-once). On success, `parseResult` is called
+ * on the accumulated stdout and merged into the returned value.
+ */
+function spawnMraCommand(
+  binary: string,
+  argv: string[],
+  cwd: string,
+  env: NodeJS.ProcessEnv,
+  timeoutMs: number,
+  onProgress: ((line: string) => void) | undefined,
+): Promise<{ ok: boolean; stdout: string; stderr: string; reason?: string }> {
+  return new Promise((resolve) => {
+    let timeoutHandle: NodeJS.Timeout | undefined;
+    let settled = false;
+    const settle = (r: {
+      ok: boolean;
+      stdout: string;
+      stderr: string;
+      reason?: string;
+    }): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeoutHandle);
+      resolve(r);
+    };
+
+    let child: ReturnType<typeof spawn>;
+    try {
+      child = spawn(binary, argv, { cwd, stdio: ["ignore", "pipe", "pipe"], env });
+    } catch (err) {
+      settle({ ok: false, stdout: "", stderr: "", reason: (err as Error).message });
+      return;
+    }
+
+    const stdoutChunks: string[] = [];
+    const stderrChunks: string[] = [];
+    let stdoutBytes = 0;
+    let lineBuf = "";
+    let timedOut = false;
+    let stdoutOverflowed = false;
+
+    timeoutHandle = setTimeout(() => {
+      timedOut = true;
+      try {
+        child.kill("SIGTERM");
+      } catch {
+        /* already gone */
+      }
+    }, timeoutMs);
+
+    child.stdout?.setEncoding("utf8");
+    child.stdout?.on("data", (chunk: string) => {
+      if (!stdoutOverflowed) {
+        stdoutChunks.push(chunk);
+        stdoutBytes += Buffer.byteLength(chunk, "utf8");
+        if (stdoutBytes > MAX_MRA_STDOUT_BYTES) {
+          stdoutOverflowed = true;
+          try {
+            child.kill("SIGTERM");
+          } catch {
+            /* already gone */
+          }
+        }
+      }
+      lineBuf += chunk;
+      let idx: number;
+      while ((idx = lineBuf.indexOf("\n")) >= 0) {
+        const raw = lineBuf.slice(0, idx);
+        lineBuf = lineBuf.slice(idx + 1);
+        const line = raw.endsWith("\r") ? raw.slice(0, -1) : raw;
+        if (line.length === 0) continue;
+        try {
+          onProgress?.(line);
+        } catch {
+          /* sink failures must not tear down stdout reading */
+        }
+      }
+    });
+
+    child.stderr?.setEncoding("utf8");
+    child.stderr?.on("data", (chunk: string) => {
+      stderrChunks.push(chunk);
+    });
+
+    child.on("error", (err) => {
+      settle({
+        ok: false,
+        stdout: stdoutChunks.join(""),
+        stderr: stderrChunks.join(""),
+        reason: err.message,
+      });
+    });
+
+    child.on("close", (code, signal) => {
+      const stdout = stdoutChunks.join("");
+      const stderr = stderrChunks.join("");
+      const ok = !timedOut && !stdoutOverflowed && code === 0;
+      if (ok) {
+        settle({ ok: true, stdout, stderr });
+        return;
+      }
+      let reason: string;
+      if (stdoutOverflowed) {
+        reason = `mra stdout exceeded ${MAX_MRA_STDOUT_BYTES} bytes`;
+      } else if (timedOut) {
+        reason = `mra timed out after ${timeoutMs}ms`;
+      } else {
+        const lastStderrLine = stderr.trim().split("\n").pop();
+        reason = `mra exited with code=${code ?? "null"}${
+          signal ? ` signal=${signal}` : ""
+        }${stderr.trim() ? `: ${lastStderrLine}` : ""}`;
+      }
+      settle({ ok: false, stdout, stderr, reason });
+    });
+  });
+}
+
+/**
+ * Run `mra review <project> --pr <pr>` as a write-protected subprocess.
+ * Secrets are stripped from the child env (see {@link REVIEW_SECRET_ENV_DENYLIST}).
+ * No retry — a review either posts or it doesn't (unlike the flaky `mra ask`).
+ * Default timeout is 600s (reviews are substantially slower than asks).
+ */
+export async function runMraReview(
+  args: {
+    workspace: string;
+    project: string;
+    pr: number;
+    strategy: "debate" | "personas";
+    cwd: string;
+    timeoutMs?: number;
+  },
+  opts: { onProgress?: (line: string) => void } = {},
+): Promise<MraReviewResult> {
+  const binary = findMraBinary();
+  if (!binary) {
+    return { ok: false, stdout: "", stderr: "", reason: "`mra` binary not found on PATH" };
+  }
+  const timeoutMs = args.timeoutMs ?? 600_000;
+  const argv = buildReviewArgv(args.project, args.pr, args.strategy);
+  const env = reviewEnv(args.strategy);
+
+  const raw = await spawnMraCommand(binary, argv, args.cwd, env, timeoutMs, opts.onProgress);
+  const parsed = raw.ok ? parseReviewStdout(raw.stdout) : {};
+  return { ...raw, ...parsed };
+}
+
 interface ReposJson {
   repos: Array<{ name: string; archived?: boolean; clone?: boolean }>;
 }

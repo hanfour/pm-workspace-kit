@@ -4,7 +4,7 @@ import * as os from "node:os";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { execFileSync } from "node:child_process";
-import { resolveProjectByRemote } from "../src/adapters/mra";
+import { resolveProjectByRemote, parseReviewStdout, buildReviewArgv } from "../src/adapters/mra";
 
 let ws: string;
 function mkRepo(dir: string, originUrl: string) {
@@ -23,6 +23,22 @@ beforeEach(() => {
   mkRepo(path.join(ws, "billing"), "https://github.com/onead/billing");
 });
 afterEach(() => fs.rmSync(ws, { recursive: true, force: true }));
+
+describe("review argv + stdout parse", () => {
+  it("buildReviewArgv debate", () => {
+    assert.deepEqual(buildReviewArgv("onepixel", 12, "debate"),
+      ["review", "onepixel", "--pr", "12", "--strategy", "debate"]);
+  });
+  it("buildReviewArgv personas omits --strategy (env-driven)", () => {
+    assert.deepEqual(buildReviewArgv("onepixel", 12, "personas"),
+      ["review", "onepixel", "--pr", "12"]);
+  });
+  it("parseReviewStdout pulls status + comment count", () => {
+    // EXACT sample lines from Task 0 spike — replace with real captured output:
+    const out = "reviewing onepixel ...\nposting inline review to onead/OnePixel#12 (3 comments)...\nstatus: CHANGES_REQUESTED | comments: 3\n";
+    assert.deepEqual(parseReviewStdout(out), { status: "CHANGES_REQUESTED", commentCount: 3 });
+  });
+});
 
 describe("resolveProjectByRemote", () => {
   it("matches ssh remote (case-insensitive, .git stripped)", () => {
