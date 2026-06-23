@@ -179,7 +179,8 @@ export async function getAuthUser(
 ): Promise<string | undefined> {
   const exec = deps.exec ?? defaultExec;
   const findBinary = deps.findBinary ?? findGhBinary;
-  const gh = findBinary() ?? "gh";
+  const gh = findBinary();
+  if (!gh) return undefined;
   try {
     const env = opts.token ? { ...process.env, GH_TOKEN: opts.token } : process.env;
     const { stdout } = await exec(gh, buildGhArgs_getAuthUser(), { env, timeoutMs: 15_000 });
@@ -200,7 +201,8 @@ export async function getPrHead(
 ): Promise<{ sha: string; baseRef: string } | undefined> {
   const exec = deps.exec ?? defaultExec;
   const findBinary = deps.findBinary ?? findGhBinary;
-  const gh = findBinary() ?? "gh";
+  const gh = findBinary();
+  if (!gh) return undefined;
   try {
     const env = args.token ? { ...process.env, GH_TOKEN: args.token } : process.env;
     const { stdout } = await exec(gh, buildGhArgs_getPrHead(args.slug, args.pr), {
