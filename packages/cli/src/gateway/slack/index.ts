@@ -55,7 +55,7 @@ import {
   runMraAsk as runMraAskImpl,
 } from "../../adapters/mra";
 import { IssueCoordinator, realGithubGateway, type GithubGateway } from "./issue";
-import { ReviewCoordinator, realReviewGateway } from "./review";
+import { ReviewCoordinator, realReviewGateway, isReviewRequest } from "./review";
 import {
   approveAtom,
   findAtomByApprovalMessage,
@@ -602,6 +602,19 @@ export class SlackAdapter {
 
     if (this.config.blocklist.includes(userId)) return;
 
+    // Inline `:cr:` + PR link in an @-mention → route to mra PR review
+    // (option B-lite) instead of free-chat. Runs directly (not queued); the
+    // review pipeline is fail-soft per PR. Gated on review.enabled.
+    if (this.review.isEnabled() && isReviewRequest(text)) {
+      await this.review.fromMessage({
+        channelId,
+        threadTs: replyThreadTs,
+        userId,
+        text,
+      });
+      return;
+    }
+
     // v0.13: queue key is per-user-per-channel. Different users in the
     // same channel run in parallel; a single user's rapid follow-ups
     // queue up FIFO behind their own in-flight round (up to 3 deep)
@@ -696,6 +709,14 @@ export class SlackAdapter {
         rest,
         scope: { kind: "user", userId },
       });
+      return;
+    }
+
+    // Inline `:cr:` + PR link in a DM → route to mra PR review (option B-lite)
+    // instead of free-chat. Gated on review.enabled so a `:cr:` message falls
+    // through to normal chat when the feature is off.
+    if (this.review.isEnabled() && isReviewRequest(text)) {
+      await this.review.fromMessage({ channelId, threadTs, userId, text });
       return;
     }
 

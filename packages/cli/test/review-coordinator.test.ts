@@ -5,7 +5,7 @@ import * as os from "node:os";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { FakeWebClient } from "./harness/slack-fakes";
-import { ReviewCoordinator, type ReviewGateway } from "../src/gateway/slack/review";
+import { ReviewCoordinator, isReviewRequest, type ReviewGateway } from "../src/gateway/slack/review";
 import { resolveReviewConfig } from "../src/gateway/config";
 
 const ORIG_HOME = process.env.HOME; // gatewayDir() is HOME-based; isolate via HOME (not PMK_HOME)
@@ -101,5 +101,63 @@ describe("ReviewCoordinator.fromReaction", () => {
       .fromReaction({ channelId: "C1", messageTs: "1.1", reactorUserId: "U1" });
     assert.equal(reviewed, false);
     assert.ok(web.posted.some((p) => /public/i.test(p.text ?? "")));
+  });
+});
+
+describe("isReviewRequest (inline :cr: gate)", () => {
+  it("true when :cr: AND a PR link are present", () => {
+    assert.equal(isReviewRequest(":cr: https://github.com/o/r/pull/1"), true);
+    assert.equal(
+      isReviewRequest("@reviewer :cr: <https://github.com/o/r/pull/9|#9> thanks"),
+      true,
+    );
+  });
+  it("false for a PR link WITHOUT :cr: (no false-firing on stray links)", () => {
+    assert.equal(isReviewRequest("see https://github.com/o/r/pull/1 plz"), false);
+  });
+  it("false for :cr: WITHOUT a PR link", () => {
+    assert.equal(isReviewRequest(":cr: looks good to me"), false);
+  });
+  it("false for neither / empty", () => {
+    assert.equal(isReviewRequest("hello"), false);
+    assert.equal(isReviewRequest(""), false);
+  });
+});
+
+describe("ReviewCoordinator.fromMessage (B-lite inline trigger)", () => {
+  it("reviews from inline text WITHOUT a conversations.history fetch", async () => {
+    const web = new FakeWebClient();
+    // Make history throw — proves fromMessage uses the provided text, not a fetch.
+    web.conversations.history = async () => {
+      throw new Error("fromMessage must not call conversations.history");
+    };
+    await coord(web, gw()).fromMessage({
+      channelId: "C1",
+      threadTs: "1.1",
+      userId: "U1",
+      text: ":cr: https://github.com/onead/OnePixel/pull/12",
+    });
+    assert.ok(
+      web.posted.some((p) => /CHANGES_REQUESTED|review|#12/.test(p.text ?? "")),
+    );
+  });
+
+  it("disabled config does nothing", async () => {
+    const web = new FakeWebClient();
+    const config = {
+      version: 1, admins: [], blocklist: [], audience: {}, escalation: {},
+      slack: {}, mraWorkspace: path.join(tmp, "ws"), review: { enabled: false },
+    } as never;
+    const c = new ReviewCoordinator({ web: web as never, config, onLog: () => {}, gateway: gw() });
+    await c.fromMessage({
+      channelId: "C1", threadTs: "1.1", userId: "U1",
+      text: ":cr: https://github.com/onead/OnePixel/pull/12",
+    });
+    assert.equal(web.posted.length, 0);
+  });
+
+  it("isEnabled() reflects config", () => {
+    const web = new FakeWebClient();
+    assert.equal(coord(web, gw()).isEnabled(), true);
   });
 });

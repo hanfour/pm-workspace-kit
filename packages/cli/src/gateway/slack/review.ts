@@ -58,6 +58,15 @@ export const realReviewGateway: ReviewGateway = {
   ensureReviewWorkspaceMeta: ensureReviewWorkspaceMetaImpl,
 };
 
+/**
+ * True when a message is an inline `:cr:` review request: it contains the
+ * `:cr:` token AND at least one GitHub PR link. Requiring BOTH avoids
+ * false-firing review on a stray PR link in ordinary chat. (option B-lite gate)
+ */
+export function isReviewRequest(text: string): boolean {
+  return text.includes(":cr:") && parsePrRefs(text).length > 0;
+}
+
 export interface ReviewCoordinatorOptions {
   web: WebClient;
   config: GatewayConfig;
@@ -76,12 +85,53 @@ export class ReviewCoordinator {
     }
   }
 
+  /** Whether the `:cr:` review flow is enabled (config-gated). */
+  isEnabled(): boolean {
+    return resolveReviewConfig(this.opts.config.review).enabled;
+  }
+
+  /** `:cr:` REACTION on a message → fetch the message text, then review. */
   async fromReaction(args: {
     channelId: string;
     messageTs: string;
     reactorUserId: string;
   }): Promise<void> {
-    const { channelId, messageTs, reactorUserId } = args;
+    const text = await this.fetchMessageText(args.channelId, args.messageTs);
+    await this.processReviewRequest({
+      channelId: args.channelId,
+      threadTs: args.messageTs,
+      actorUserId: args.reactorUserId,
+      text: text ?? "",
+    });
+  }
+
+  /**
+   * Inline `:cr:` in a DM or @-mention message → review (option B-lite). The
+   * message text is already in hand, so no conversations.history fetch. The
+   * caller gates with `isEnabled()` + `isReviewRequest()` before routing here.
+   */
+  async fromMessage(args: {
+    channelId: string;
+    threadTs: string;
+    userId: string;
+    text: string;
+  }): Promise<void> {
+    await this.processReviewRequest({
+      channelId: args.channelId,
+      threadTs: args.threadTs,
+      actorUserId: args.userId,
+      text: args.text,
+    });
+  }
+
+  /** Shared core: parse PR refs from the text, then review each (fail-soft). */
+  private async processReviewRequest(args: {
+    channelId: string;
+    threadTs: string;
+    actorUserId: string;
+    text: string;
+  }): Promise<void> {
+    const { channelId, threadTs, actorUserId, text } = args;
     const { config, gateway, onLog } = this.opts;
     const review = resolveReviewConfig(config.review);
     if (!review.enabled) return;
@@ -92,13 +142,12 @@ export class ReviewCoordinator {
       return;
     }
 
-    const text = await this.fetchMessageText(channelId, messageTs);
-    const refs = parsePrRefs(text ?? "", { cap: review.maxPrsPerTrigger });
+    const refs = parsePrRefs(text, { cap: review.maxPrsPerTrigger });
     if (refs.length === 0) return;
 
     appendGatewayEvent({
       type: "review.triggered",
-      actor: reactorUserId,
+      actor: actorUserId,
       channelId,
       prCount: refs.length,
     });
@@ -110,8 +159,8 @@ export class ReviewCoordinator {
     for (const ref of refs) {
       await this.reviewOne(ref, {
         channelId,
-        threadTs: messageTs,
-        reactorUserId,
+        threadTs,
+        reactorUserId: actorUserId,
         workspace,
         reviewWorkspace,
         review,
