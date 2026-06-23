@@ -533,3 +533,49 @@ export function listMraWorkspaceReposWithPkb(workspace: string): string[] {
   }
   return out;
 }
+
+/**
+ * Map a GitHub `owner/repo` slug to the mra project NAME whose local clone's
+ * origin points at it. Enumerates `.collab/repos.json` (all non-archived repos,
+ * not just PKB-having ones). Used by the review flow to turn a PR link into the
+ * `<project>` arg for `mra review`. Case-insensitive; `.git` stripped.
+ */
+export function resolveProjectByRemote(
+  workspace: string,
+  ownerRepo: string,
+): string | undefined {
+  const reposJson = path.join(workspace, ".collab", "repos.json");
+  if (!existsSync(reposJson)) return undefined;
+  let manifest: ReposJson;
+  try {
+    manifest = JSON.parse(readFileSync(reposJson, "utf8")) as ReposJson;
+  } catch {
+    return undefined;
+  }
+  const want = normalizeSlug(ownerRepo);
+  for (const r of manifest.repos ?? []) {
+    if (r.archived) continue;
+    const repoPath = path.join(workspace, r.name);
+    if (!existsSync(repoPath)) continue;
+    let remote = "";
+    try {
+      remote = execFileSync("git", ["-C", repoPath, "remote", "get-url", "origin"], {
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"],
+      })
+        .toString()
+        .trim();
+    } catch {
+      continue;
+    }
+    if (normalizeSlug(remote) === want) return r.name;
+  }
+  return undefined;
+}
+
+/** Reduce a remote URL or `owner/repo` to a lowercase `owner/repo` (no `.git`). */
+function normalizeSlug(s: string): string {
+  const noGit = s.replace(/\.git$/, "");
+  const m = /[:/]([^/:]+\/[^/]+)$/.exec(noGit) ?? /^([^/]+\/[^/]+)$/.exec(noGit);
+  return (m ? m[1] : noGit).toLowerCase();
+}
