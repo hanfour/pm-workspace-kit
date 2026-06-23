@@ -47,6 +47,29 @@ describe("ReviewCoordinator.fromReaction", () => {
     assert.ok(web.posted.some((p) => /CHANGES_REQUESTED|review|#12/.test(p.text ?? "")));
   });
 
+  it("actor-verify uses host-ambient identity (no token passed to getAuthUser)", async () => {
+    // Even when a work token is resolvable, getAuthUser must be called with NO token
+    // because runMraReview strips GH_TOKEN/GITHUB_TOKEN — mra posts under the host ambient identity.
+    const web = new FakeWebClient();
+    web.conversationsHistoryResponse = { ok: true, messages: [
+      { text: "@r :cr: <https://github.com/onead/OnePixel/pull/12|#12>" },
+    ] };
+    let capturedGetAuthUserOpts: Record<string, unknown> | undefined;
+    const gateway = gw({
+      getAuthUser: async (opts) => {
+        capturedGetAuthUserOpts = opts as Record<string, unknown>;
+        return "expected-bot";
+      },
+    });
+    await coord(web, gateway).fromReaction({ channelId: "C1", messageTs: "1.1", reactorUserId: "U1" });
+    assert.ok(capturedGetAuthUserOpts !== undefined, "getAuthUser should have been called");
+    assert.equal(
+      capturedGetAuthUserOpts!["token"],
+      undefined,
+      "getAuthUser must NOT receive a token — mra posts under host-ambient identity",
+    );
+  });
+
   it("disabled config does nothing", async () => {
     const web = new FakeWebClient();
     const config = { version: 1, admins: [], blocklist: [], audience: {}, escalation: {}, slack: {},

@@ -224,7 +224,9 @@ export class ReviewCoordinator {
         return;
       }
 
-      const actor = await gateway.getAuthUser({ token: ctx.token });
+      // Verify the HOST AMBIENT gh identity — that is what mra posts under
+      // (runMraReview strips GH_TOKEN/GITHUB_TOKEN from its env), NOT the work token.
+      const actor = await gateway.getAuthUser({});
       if (ctx.review.expectedGhUser && actor !== ctx.review.expectedGhUser) {
         await skip(
           "gh-actor",
