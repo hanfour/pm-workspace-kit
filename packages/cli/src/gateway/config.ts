@@ -83,6 +83,15 @@ export interface EscalationConfig {
   repos: Record<string, string[]>;
 }
 
+export interface ReviewConfig {
+  enabled: boolean;
+  allowPublicRepos: boolean;
+  repoAllowlist?: string[];          // e.g. ["onead/OnePixel"]; undefined = any private repo in workspace
+  maxPrsPerTrigger: number;
+  strategy: "debate" | "personas";
+  expectedGhUser?: string;           // gate: gh api user must equal this before posting
+}
+
 export interface GatewayConfig {
   version: 1;
   /**
@@ -124,6 +133,8 @@ export interface GatewayConfig {
    * repo — internal diagnosis content must not leak to a public repo.
    */
   github?: { token: SecretSource; allowPublicRepos?: boolean };
+  /** Configuration for `:cr:` reaction → mra PR review feature. */
+  review?: Partial<ReviewConfig>;
   slack: SlackConfig;
 }
 
@@ -373,6 +384,21 @@ export function resolveGithubToken(
   github: GatewayConfig["github"],
 ): string | undefined {
   return resolveSecret(github?.token, "github.token");
+}
+
+/**
+ * Resolve the review config with safe defaults. Clamps `maxPrsPerTrigger`
+ * to >=1 and normalizes `strategy` to "debate" unless explicitly "personas".
+ */
+export function resolveReviewConfig(raw?: Partial<ReviewConfig>): ReviewConfig {
+  return {
+    enabled: raw?.enabled ?? false,
+    allowPublicRepos: raw?.allowPublicRepos ?? false,
+    repoAllowlist: raw?.repoAllowlist,
+    maxPrsPerTrigger: Math.max(1, raw?.maxPrsPerTrigger ?? 5),
+    strategy: raw?.strategy === "personas" ? "personas" : "debate",
+    expectedGhUser: raw?.expectedGhUser,
+  };
 }
 
 /**
