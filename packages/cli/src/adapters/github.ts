@@ -155,6 +155,66 @@ export async function createIssue(
   }
 }
 
+// ---------------------------------------------------------------------------
+// Review helpers — getAuthUser + getPrHead
+// ---------------------------------------------------------------------------
+
+/** Pure argv builder for `gh api user --jq .login` (exported for unit tests). */
+export function buildGhArgs_getAuthUser(): string[] {
+  return ["api", "user", "--jq", ".login"];
+}
+
+/** Pure argv builder for `gh api repos/<slug>/pulls/<N> --jq ...` (exported for unit tests). */
+export function buildGhArgs_getPrHead(slug: string, pr: number): string[] {
+  return ["api", `repos/${slug}/pulls/${pr}`, "--jq", "{sha:.head.sha,base:.base.ref}"];
+}
+
+/**
+ * Returns the authenticated GitHub login for the given token, or undefined on
+ * any failure. No-leak: errors are swallowed, never logged or rethrown.
+ */
+export async function getAuthUser(
+  opts: { token?: string } = {},
+  deps: GithubDeps = {},
+): Promise<string | undefined> {
+  const exec = deps.exec ?? defaultExec;
+  const findBinary = deps.findBinary ?? findGhBinary;
+  const gh = findBinary() ?? "gh";
+  try {
+    const env = opts.token ? { ...process.env, GH_TOKEN: opts.token } : process.env;
+    const { stdout } = await exec(gh, buildGhArgs_getAuthUser(), { env, timeoutMs: 15_000 });
+    const login = stdout.trim();
+    return login || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Returns `{ sha, baseRef }` for the given PR, or undefined on any failure.
+ * No-leak: errors are swallowed, never logged or rethrown.
+ */
+export async function getPrHead(
+  args: { slug: string; pr: number; token?: string },
+  deps: GithubDeps = {},
+): Promise<{ sha: string; baseRef: string } | undefined> {
+  const exec = deps.exec ?? defaultExec;
+  const findBinary = deps.findBinary ?? findGhBinary;
+  const gh = findBinary() ?? "gh";
+  try {
+    const env = args.token ? { ...process.env, GH_TOKEN: args.token } : process.env;
+    const { stdout } = await exec(gh, buildGhArgs_getPrHead(args.slug, args.pr), {
+      env,
+      timeoutMs: 15_000,
+    });
+    const obj = JSON.parse(stdout) as { sha?: string; base?: string };
+    if (!obj.sha || !obj.base) return undefined;
+    return { sha: obj.sha, baseRef: obj.base };
+  } catch {
+    return undefined;
+  }
+}
+
 /** Doctor check: gh present + token non-empty. Never prints the token. */
 export async function githubDoctor(
   args: { token: string | undefined },
