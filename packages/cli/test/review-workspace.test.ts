@@ -65,6 +65,18 @@ describe("prepareReviewClone", () => {
     if (!res.ok) assert.match(res.reason, /head-mismatch/);
   });
 
+  it("resolves a NON-default base branch via origin/<base> (the FIN-dev case)", async () => {
+    // Push a base branch that the fresh review clone will only have as
+    // origin/<base> (not a local branch) — the empty-diff guard must resolve it.
+    execFileSync("git", ["push", "-q", "origin", "main:FIN-dev"], { cwd: mainClone });
+    ensureReviewWorkspaceMeta(mainWs, reviewWs);
+    const res = await prepareReviewClone({
+      mainClone, reviewWorkspace: reviewWs, project: "proj",
+      slug: "o/r", pr: 1, expectedHeadSha: headSha, baseRef: "FIN-dev",
+    });
+    assert.equal(res.ok, true); // FIN-dev resolved via origin/FIN-dev; diff non-empty
+  });
+
   it("toHttpsGithub normalises SSH github remotes to HTTPS, leaves others", () => {
     assert.equal(
       toHttpsGithub("git@github.com:onead/finance-system-ui.git"),

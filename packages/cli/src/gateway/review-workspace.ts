@@ -28,6 +28,16 @@ function git(cwd: string, args: string[], env?: NodeJS.ProcessEnv): string {
  * clone failed "Repository not found" because git used the active gh account,
  * which had flipped to one without access to the private repo.)
  */
+/** True if `ref` resolves to a commit in the repo at `cwd` (quiet, no throw to caller). */
+function revParseOk(cwd: string, ref: string): boolean {
+  try {
+    git(cwd, ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`]);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Normalise an SSH github remote to HTTPS so the pinned-token `http.extraheader`
  * applies. `git@github.com:owner/repo(.git)` (and `ssh://git@github.com/...`) →
@@ -112,8 +122,20 @@ export async function prepareReviewClone(args: {
       fs.rmSync(pkbDst, { recursive: true, force: true });
       fs.cpSync(pkbSrc, pkbDst, { recursive: true });
     }
-    const diff = git(cloneDir, ["diff", `${args.baseRef}...HEAD`, "--name-only"]);
-    if (!diff.trim()) return { ok: false, reason: "empty-diff" };
+    // Best-effort empty-diff guard. A fresh clone only has origin/<branch> for
+    // non-default branches, so the bare base (e.g. "FIN-dev") can be an unknown
+    // revision — resolve to origin/<base>. If neither resolves, skip this
+    // pre-check and let mra compute the diff itself (it does its own base
+    // resolution). Live-found 2026-06-23 (finance-system-ui base=FIN-dev).
+    const base = revParseOk(cloneDir, args.baseRef)
+      ? args.baseRef
+      : revParseOk(cloneDir, `origin/${args.baseRef}`)
+        ? `origin/${args.baseRef}`
+        : undefined;
+    if (base) {
+      const diff = git(cloneDir, ["diff", `${base}...HEAD`, "--name-only"]);
+      if (!diff.trim()) return { ok: false, reason: "empty-diff" };
+    }
     return { ok: true, cloneDir, baseRef: args.baseRef };
   } catch (err) {
     return { ok: false, reason: `prepare-failed: ${(err as Error).message}` };
