@@ -387,13 +387,16 @@ import * as os from "node:os";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
+// gatewayDir() resolves under os.homedir(); existing gateway-storage tests
+// isolate by overriding HOME (NOT PMK_HOME — that env var is not honored).
+const ORIG_HOME = process.env.HOME;
 let tmp: string;
 beforeEach(() => {
   tmp = fs.mkdtempSync(path.join(os.tmpdir(), "pmk-review-claim-"));
-  process.env.PMK_HOME = tmp; // claim storage must honor PMK_HOME (see impl note)
+  process.env.HOME = tmp;
 });
 afterEach(() => {
-  delete process.env.PMK_HOME;
+  if (ORIG_HOME !== undefined) process.env.HOME = ORIG_HOME;
   fs.rmSync(tmp, { recursive: true, force: true });
 });
 
@@ -525,7 +528,7 @@ function nowIso(): string {
 }
 ```
 
-> **Implementation note (verified):** `gatewayDir()` is exported from `src/gateway/config.ts` and is what `issue-candidate.ts:13` imports. Reuse it — do NOT invent a new base path. The test sets `PMK_HOME`; confirm `gatewayDir()` honors it (it does in the existing gateway storage).
+> **Implementation note (verified):** `gatewayDir()` is exported from `src/gateway/config.ts` (`config.ts:148` → `path.join(os.homedir(), ".pmk", "gateway")`) and is what `issue-candidate.ts:13` imports. Reuse it — do NOT invent a new base path. It resolves under `os.homedir()` and does **NOT** read `PMK_HOME`; tests isolate by overriding `HOME` (the established pattern across `test/*-store`, `test/channel-log`, `test/adoption`, etc.).
 
 - [ ] **Step 4: Run test to verify it passes**
 
@@ -1077,9 +1080,10 @@ import { FakeWebClient } from "./harness/slack-fakes";
 import { ReviewCoordinator, type ReviewGateway } from "../src/gateway/slack/review";
 import { resolveReviewConfig } from "../src/gateway/config";
 
+const ORIG_HOME = process.env.HOME; // gatewayDir() is HOME-based; isolate via HOME (not PMK_HOME)
 let tmp: string;
-beforeEach(() => { tmp = fs.mkdtempSync(path.join(os.tmpdir(), "pmk-rc-")); process.env.PMK_HOME = tmp; });
-afterEach(() => { delete process.env.PMK_HOME; fs.rmSync(tmp, { recursive: true, force: true }); });
+beforeEach(() => { tmp = fs.mkdtempSync(path.join(os.tmpdir(), "pmk-rc-")); process.env.HOME = tmp; });
+afterEach(() => { if (ORIG_HOME !== undefined) process.env.HOME = ORIG_HOME; fs.rmSync(tmp, { recursive: true, force: true }); });
 
 function gw(over: Partial<ReviewGateway> = {}): ReviewGateway {
   return {
