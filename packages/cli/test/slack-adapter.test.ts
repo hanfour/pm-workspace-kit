@@ -1085,6 +1085,64 @@ describe("SlackAdapter integration: reaction-based atom approval", () => {
   });
 });
 
+describe("SlackAdapter integration: :cr: reaction routes to ReviewCoordinator", () => {
+  let h: Harness;
+
+  afterEach(() => {
+    h.cleanup();
+  });
+
+  it("cr reaction on a user message routes to ReviewCoordinator (skip note posted for empty workspace)", async () => {
+    // Arrange: enable review in config; mraWorkspace points at a tmp dir with no
+    // .collab/repos.json so resolveProjectByRemote returns undefined → ReviewCoordinator
+    // posts the "不在 mra workspace，略過" skip note. This proves the gate let :cr:
+    // through without requiring a real mra binary or GitHub token.
+    const mraWorkspace = h?.home ?? "/tmp"; // will be set below
+    h = buildHarness({
+      config: {
+        review: { enabled: true },
+        mraWorkspace: "/tmp/no-such-workspace-cr-test",
+      },
+    });
+
+    // conversations.history should return a message containing a GitHub PR link
+    // so parsePrRefs finds at least one ref and the coordinator proceeds past
+    // the "no refs" early return.
+    h.web.conversationsHistoryResponse = {
+      ok: true,
+      messages: [{ text: ":cr: https://github.com/onead/OnePixel/pull/12" }],
+    };
+
+    await h.adapter.start();
+
+    await h.socket.emit(
+      "reaction_added",
+      reactionAddedPayload({
+        user: "U-DEV",
+        reaction: "cr",
+        itemChannel: "C-CH",
+        itemTs: "1700000200.000200",
+        // itemUser is a human (NOT the bot) — the gate must NOT block this
+        itemUser: "U-HUMAN-POSTER",
+      }),
+    );
+    await h.flush();
+
+    // The coordinator reached resolveProjectByRemote → not found → posted the skip note.
+    // Any post to the channel proves the gate routed :cr: through to the coordinator.
+    assert.ok(
+      h.web.postsTo("C-CH").length > 0,
+      "ReviewCoordinator should post a skip note when project is not in workspace",
+    );
+    const skipNote = h.web.postsTo("C-CH")[0];
+    assert.match(
+      skipNote.text ?? "",
+      /略過/,
+      "skip note should contain '略過'",
+    );
+  });
+});
+
 describe("SlackAdapter integration: 👎 on cited reply marks atoms questioned", () => {
   let h: Harness;
 

@@ -55,6 +55,7 @@ import {
   runMraAsk as runMraAskImpl,
 } from "../../adapters/mra";
 import { IssueCoordinator, realGithubGateway, type GithubGateway } from "./issue";
+import { ReviewCoordinator, realReviewGateway } from "./review";
 import {
   approveAtom,
   findAtomByApprovalMessage,
@@ -167,6 +168,8 @@ export class SlackAdapter {
   private readonly escalation: EscalationCoordinator;
   /** 🎫 reaction → GitHub issue coordinator. */
   private readonly issue: IssueCoordinator;
+  /** :cr: reaction → mra PR review coordinator. */
+  private readonly review: ReviewCoordinator;
   /** End-to-end free-chat turn: seed + retrieval + LLM + mra-ask + escalate + reply. */
   private readonly freeChatTurn: FreeChatTurnRunner;
   /** Channel @mention dispatcher (slash / free-chat / case-mode). */
@@ -286,6 +289,12 @@ export class SlackAdapter {
       config: this.config,
       onLog: this.onLog,
       github: opts.github ?? realGithubGateway,
+    });
+    this.review = new ReviewCoordinator({
+      web: this.web,
+      config: this.config,
+      onLog: this.onLog,
+      gateway: realReviewGateway,
     });
     this.freeChatTurn = new FreeChatTurnRunner({
       web: this.web,
@@ -782,10 +791,24 @@ export class SlackAdapter {
 
     const event = payload?.event;
     if (!event || !this.botInfo) return;
-    // We only listen for reactions on the bot's own messages
-    // (item_user is the author of the reacted-to message).
-    if (event.item_user !== this.botInfo.botUserId) return;
+
     const reaction = event.reaction;
+    const channelId = event.item?.channel;
+    const messageTs = event.item?.ts;
+    const reactorUserId = event.user;
+    if (!channelId || !messageTs || !reactorUserId) return;
+
+    // :cr: → PR review. Unlike approval/ticket reactions, this lands on a
+    // USER's message (the PR-request post), so it is handled BEFORE the
+    // bot-message guard (which only admits reactions on the bot's own messages).
+    if (reaction === "cr") {
+      await this.review.fromReaction({ channelId, messageTs, reactorUserId });
+      return;
+    }
+
+    // Remaining reactions (approval / ticket / citation-feedback) only apply
+    // to the bot's own messages (item_user is the author of the reacted-to message).
+    if (event.item_user !== this.botInfo.botUserId) return;
     const isApprove =
       reaction === "white_check_mark" ||
       reaction === "heavy_check_mark" ||
@@ -796,11 +819,6 @@ export class SlackAdapter {
     const isCitationFeedback = reaction === "thumbsdown";
     const isTicket = reaction === "ticket";
     if (!isApprove && !isReject && !isCitationFeedback && !isTicket) return;
-
-    const channelId = event.item?.channel;
-    const messageTs = event.item?.ts;
-    const reactorUserId = event.user;
-    if (!channelId || !messageTs || !reactorUserId) return;
 
     if (isTicket) {
       await this.issue.fromCandidate({ channelId, anchorTs: messageTs, reactorUserId });
