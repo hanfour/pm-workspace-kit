@@ -149,6 +149,11 @@ export function gatewayDir(): string {
   return path.join(os.homedir(), ".pmk", "gateway");
 }
 
+export function reviewWorkspaceDir(): string {
+  // gatewayDir() returns ~/.pmk/gateway; dirname gives ~/.pmk; review workspace is a sibling.
+  return path.join(path.dirname(gatewayDir()), "review-workspace");
+}
+
 export function gatewayConfigPath(): string {
   return path.join(os.homedir(), ".pmk", "gateway.json");
 }

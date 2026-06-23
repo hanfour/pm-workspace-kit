@@ -1,0 +1,295 @@
+/**
+ * ReviewCoordinator — orchestrates a single `:cr:` reaction into an mra PR review.
+ *
+ * Flow per reaction:
+ *   config.enabled gate → fetch reacted message text → parsePrRefs (cap) →
+ *   emit review.triggered → for each PR (fail-soft):
+ *     resolveProject → resolveRepoSlug → getPrHead →
+ *     public/allowlist guard → claimReview →
+ *     ensureReviewWorkspaceMeta + prepareReviewClone →
+ *     getAuthUser == expectedGhUser →
+ *     runMraReview → finalize + review.posted + thread status;
+ *   on any pre-post failure: releaseReview + review.skipped + thread note;
+ *   always: teardownReviewClone.
+ */
+import type { WebClient } from "@slack/web-api";
+import type { GatewayConfig } from "../config";
+import { resolveReviewConfig, resolveGithubToken, reviewWorkspaceDir } from "../config";
+import { appendGatewayEvent } from "../events";
+import { parsePrRefs, type PrRef } from "../pr-ref";
+import { claimReview, finalizeReview, releaseReview } from "../review-claim";
+import {
+  resolveProjectByRemote as resolveProjectByRemoteImpl,
+  runMraReview as runMraReviewImpl,
+} from "../../adapters/mra";
+import {
+  resolveRepoSlug as resolveRepoSlugImpl,
+  repoVisibility as repoVisibilityImpl,
+  getAuthUser as getAuthUserImpl,
+  getPrHead as getPrHeadImpl,
+} from "../../adapters/github";
+import {
+  prepareReviewClone as prepareReviewCloneImpl,
+  teardownReviewClone as teardownReviewCloneImpl,
+  ensureReviewWorkspaceMeta as ensureReviewWorkspaceMetaImpl,
+} from "../review-workspace";
+
+export interface ReviewGateway {
+  resolveProjectByRemote: typeof resolveProjectByRemoteImpl;
+  runMraReview: typeof runMraReviewImpl;
+  resolveRepoSlug: typeof resolveRepoSlugImpl;
+  repoVisibility: typeof repoVisibilityImpl;
+  getAuthUser: typeof getAuthUserImpl;
+  getPrHead: typeof getPrHeadImpl;
+  prepareReviewClone: typeof prepareReviewCloneImpl;
+  teardownReviewClone: typeof teardownReviewCloneImpl;
+  ensureReviewWorkspaceMeta: typeof ensureReviewWorkspaceMetaImpl;
+}
+
+export const realReviewGateway: ReviewGateway = {
+  resolveProjectByRemote: resolveProjectByRemoteImpl,
+  runMraReview: runMraReviewImpl,
+  resolveRepoSlug: resolveRepoSlugImpl,
+  repoVisibility: repoVisibilityImpl,
+  getAuthUser: getAuthUserImpl,
+  getPrHead: getPrHeadImpl,
+  prepareReviewClone: prepareReviewCloneImpl,
+  teardownReviewClone: teardownReviewCloneImpl,
+  ensureReviewWorkspaceMeta: ensureReviewWorkspaceMetaImpl,
+};
+
+export interface ReviewCoordinatorOptions {
+  web: WebClient;
+  config: GatewayConfig;
+  onLog: (m: string) => void;
+  gateway: ReviewGateway;
+}
+
+export class ReviewCoordinator {
+  constructor(private readonly opts: ReviewCoordinatorOptions) {}
+
+  private async reply(channel: string, threadTs: string, text: string): Promise<void> {
+    try {
+      await this.opts.web.chat.postMessage({ channel, thread_ts: threadTs, text });
+    } catch (err) {
+      this.opts.onLog(`review: reply failed: ${(err as Error).message}`);
+    }
+  }
+
+  async fromReaction(args: {
+    channelId: string;
+    messageTs: string;
+    reactorUserId: string;
+  }): Promise<void> {
+    const { channelId, messageTs, reactorUserId } = args;
+    const { config, gateway, onLog } = this.opts;
+    const review = resolveReviewConfig(config.review);
+    if (!review.enabled) return;
+
+    const workspace = config.mraWorkspace;
+    if (!workspace) {
+      onLog("review: no mraWorkspace configured");
+      return;
+    }
+
+    const text = await this.fetchMessageText(channelId, messageTs);
+    const refs = parsePrRefs(text ?? "", { cap: review.maxPrsPerTrigger });
+    if (refs.length === 0) return;
+
+    appendGatewayEvent({
+      type: "review.triggered",
+      actor: reactorUserId,
+      channelId,
+      prCount: refs.length,
+    });
+
+    const reviewWorkspace = reviewWorkspaceDir(); // ~/.pmk/review-workspace
+    gateway.ensureReviewWorkspaceMeta(workspace, reviewWorkspace);
+    const token = resolveGithubToken(config.github);
+
+    for (const ref of refs) {
+      await this.reviewOne(ref, {
+        channelId,
+        threadTs: messageTs,
+        reactorUserId,
+        workspace,
+        reviewWorkspace,
+        review,
+        token,
+      });
+    }
+  }
+
+  private async reviewOne(
+    ref: PrRef,
+    ctx: {
+      channelId: string;
+      threadTs: string;
+      reactorUserId: string;
+      workspace: string;
+      reviewWorkspace: string;
+      review: ReturnType<typeof resolveReviewConfig>;
+      token?: string;
+    },
+  ): Promise<void> {
+    const { gateway, onLog } = this.opts;
+    const slugDisplay = `${ref.owner}/${ref.repo}`;
+
+    const skip = async (reason: string, msg: string): Promise<void> => {
+      appendGatewayEvent({
+        type: "review.skipped",
+        actor: ctx.reactorUserId,
+        repo: slugDisplay,
+        pr: ref.number,
+        reason,
+      });
+      await this.reply(ctx.channelId, ctx.threadTs, msg);
+    };
+
+    const project = gateway.resolveProjectByRemote(ctx.workspace, slugDisplay);
+    if (!project) {
+      await skip(
+        "not-in-workspace",
+        `:information_source: \`${slugDisplay}\` 不在 mra workspace，略過 PR #${ref.number}`,
+      );
+      return;
+    }
+
+    const slug = await gateway.resolveRepoSlug(ctx.workspace, project);
+    if (!slug) {
+      await skip(
+        "slug",
+        `:warning: 無法從 \`${project}\` 推出 GitHub slug，略過 PR #${ref.number}`,
+      );
+      return;
+    }
+
+    const head = await gateway.getPrHead({ slug, pr: ref.number, token: ctx.token });
+    if (!head) {
+      await skip("pr-head", `:warning: 取不到 PR #${ref.number} 的 head，略過`);
+      return;
+    }
+
+    // public-repo / allowlist guard (checked BEFORE claim to avoid wasted claims)
+    if (ctx.review.repoAllowlist && !ctx.review.repoAllowlist.includes(slug)) {
+      await skip(
+        "allowlist",
+        `:no_entry: \`${slug}\` 不在 review allowlist，略過 PR #${ref.number}`,
+      );
+      return;
+    }
+    if (!ctx.review.allowPublicRepos) {
+      const vis = await gateway.repoVisibility({ slug, token: ctx.token ?? "" });
+      if (vis !== "private") {
+        await skip(
+          "public-repo",
+          `:no_entry: \`${slug}\` 為 public（或無法判定），略過 PR #${ref.number} 以免外洩`,
+        );
+        return;
+      }
+    }
+
+    const claimRef = {
+      owner: ref.owner,
+      repo: ref.repo,
+      pr: ref.number,
+      headSha: head.sha,
+    };
+    if (!claimReview(claimRef)) {
+      onLog(`review: already done ${slug}#${ref.number}@${head.sha.slice(0, 8)}`);
+      return;
+    }
+
+    let posted = false;
+    try {
+      const prep = await gateway.prepareReviewClone({
+        mainClone: `${ctx.workspace}/${project}`,
+        reviewWorkspace: ctx.reviewWorkspace,
+        project,
+        slug,
+        pr: ref.number,
+        expectedHeadSha: head.sha,
+        baseRef: head.baseRef,
+      });
+      if (!prep.ok) {
+        await skip(
+          prep.reason.split(":")[0],
+          `:warning: PR #${ref.number} 準備失敗（${prep.reason}），略過`,
+        );
+        return;
+      }
+
+      const actor = await gateway.getAuthUser({ token: ctx.token });
+      if (ctx.review.expectedGhUser && actor !== ctx.review.expectedGhUser) {
+        await skip(
+          "gh-actor",
+          `:no_entry: gh 身分為 \`${actor ?? "unknown"}\`，非預期帳號，未貼 review（避免身分混淆）`,
+        );
+        return;
+      }
+
+      const t0 = Date.now();
+      const res = await gateway.runMraReview(
+        {
+          workspace: ctx.reviewWorkspace,
+          project,
+          pr: ref.number,
+          strategy: ctx.review.strategy,
+          cwd: ctx.reviewWorkspace,
+        },
+        { onProgress: (line) => onLog(`mra review ${slug}#${ref.number}: ${line}`) },
+      );
+      if (!res.ok) {
+        await skip(
+          "mra-failed",
+          `:warning: PR #${ref.number} review 失敗：${res.reason ?? "unknown"}`,
+        );
+        return;
+      }
+
+      posted = true;
+      finalizeReview(claimRef, { status: res.status });
+      appendGatewayEvent({
+        type: "review.posted",
+        actor: ctx.reactorUserId,
+        repo: slug,
+        pr: ref.number,
+        status: res.status ?? "COMMENT",
+        commentCount: res.commentCount ?? 0,
+        durationMs: Date.now() - t0,
+      });
+      await this.reply(
+        ctx.channelId,
+        ctx.threadTs,
+        `:white_check_mark: 已對 ${slug}#${ref.number} 貼 review（${res.status ?? "COMMENT"}，${res.commentCount ?? 0} 則）：${ref.url}`,
+      );
+    } catch (err) {
+      await skip(
+        "error",
+        `:warning: PR #${ref.number} review 例外：${(err as Error).message}`,
+      );
+    } finally {
+      if (!posted) releaseReview(claimRef);
+      gateway.teardownReviewClone({ reviewWorkspace: ctx.reviewWorkspace, project });
+    }
+  }
+
+  private async fetchMessageText(
+    channel: string,
+    ts: string,
+  ): Promise<string | undefined> {
+    try {
+      const res = (await this.opts.web.conversations.history({
+        channel,
+        latest: ts,
+        oldest: ts,
+        inclusive: true,
+        limit: 1,
+      } as never)) as { messages?: Array<{ text?: string }> };
+      return res.messages?.[0]?.text;
+    } catch (err) {
+      this.opts.onLog(`review: fetch message failed: ${(err as Error).message}`);
+      return undefined;
+    }
+  }
+}
