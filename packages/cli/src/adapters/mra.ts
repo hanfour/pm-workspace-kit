@@ -16,7 +16,7 @@
  */
 
 import { execFileSync, spawn } from "node:child_process";
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, statSync, type Dirent } from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
@@ -774,6 +774,20 @@ export function resolveProjectByRemote(
   workspace: string,
   ownerRepo: string,
 ): string | undefined {
+  const want = normalizeSlug(ownerRepo);
+  // 1. Preferred: repos.json-registered (non-archived) repos — the mra-managed
+  //    manifest. Fast path that respects the operator's curated set.
+  const fromManifest = matchManifestRepo(workspace, want);
+  if (fromManifest) return fromManifest;
+  // 2. Fallback: any git repo physically present under the workspace whose
+  //    origin matches. A cloned-but-UNREGISTERED repo (not in repos.json) can
+  //    still be reviewed — `mra review` only needs the dir to exist; dep-graph
+  //    context just degrades. Without this, a valid clone missing from the
+  //    manifest is wrongly reported as "not in workspace" (live-found 2026-06-23).
+  return matchWorkspaceDir(workspace, want);
+}
+
+function matchManifestRepo(workspace: string, want: string): string | undefined {
   const reposJson = path.join(workspace, ".collab", "repos.json");
   if (!existsSync(reposJson)) return undefined;
   let manifest: ReposJson;
@@ -782,25 +796,42 @@ export function resolveProjectByRemote(
   } catch {
     return undefined;
   }
-  const want = normalizeSlug(ownerRepo);
   for (const r of manifest.repos ?? []) {
     if (r.archived) continue;
-    const repoPath = path.join(workspace, r.name);
-    if (!existsSync(repoPath)) continue;
-    let remote = "";
-    try {
-      remote = execFileSync("git", ["-C", repoPath, "remote", "get-url", "origin"], {
-        encoding: "utf8",
-        stdio: ["ignore", "pipe", "ignore"],
-      })
-        .toString()
-        .trim();
-    } catch {
-      continue;
-    }
-    if (normalizeSlug(remote) === want) return r.name;
+    if (originSlugOf(path.join(workspace, r.name)) === want) return r.name;
   }
   return undefined;
+}
+
+function matchWorkspaceDir(workspace: string, want: string): string | undefined {
+  let entries: Dirent[];
+  try {
+    entries = readdirSync(workspace, { withFileTypes: true });
+  } catch {
+    return undefined;
+  }
+  for (const e of entries) {
+    if (!e.isDirectory() || e.name.startsWith(".")) continue;
+    if (originSlugOf(path.join(workspace, e.name)) === want) return e.name;
+  }
+  return undefined;
+}
+
+/** `owner/repo` slug of a repo's `origin` remote, or undefined (not a git repo / no origin). */
+function originSlugOf(repoPath: string): string | undefined {
+  if (!existsSync(path.join(repoPath, ".git"))) return undefined;
+  let remote = "";
+  try {
+    remote = execFileSync("git", ["-C", repoPath, "remote", "get-url", "origin"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    })
+      .toString()
+      .trim();
+  } catch {
+    return undefined;
+  }
+  return remote ? normalizeSlug(remote) : undefined;
 }
 
 /** Reduce a remote URL or `owner/repo` to a lowercase `owner/repo` (no `.git`). */

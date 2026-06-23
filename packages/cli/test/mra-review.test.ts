@@ -45,6 +45,13 @@ describe("resolveProjectByRemote", () => {
     assert.equal(resolveProjectByRemote(ws, "onead/OnePixel"), "onepixel");
     assert.equal(resolveProjectByRemote(ws, "onead/onepixel"), "onepixel");
   });
+  it("falls back to a workspace dir-scan for a repo NOT in repos.json", () => {
+    // `stray` is cloned in the workspace with a matching origin but is absent
+    // from repos.json — it must still resolve via the dir-scan fallback
+    // (returns the dir basename). Live-found gap, 2026-06-23.
+    mkRepo(path.join(ws, "stray"), "https://github.com/onead/super-dsp-2.0.git");
+    assert.equal(resolveProjectByRemote(ws, "onead/super-dsp-2.0"), "stray");
+  });
   it("matches https remote", () => {
     assert.equal(resolveProjectByRemote(ws, "onead/billing"), "billing");
   });
