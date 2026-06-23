@@ -603,15 +603,16 @@ export class SlackAdapter {
     if (this.config.blocklist.includes(userId)) return;
 
     // Inline `:cr:` + PR link in an @-mention → route to mra PR review
-    // (option B-lite) instead of free-chat. Runs directly (not queued); the
-    // review pipeline is fail-soft per PR. Gated on review.enabled.
+    // (option B-lite) instead of free-chat. DETACHED (same rationale as the DM
+    // path): a minutes-long review must not hold this user's turn slot. The
+    // coordinator acks now and posts each PR's result when done; .catch is
+    // mandatory so a detached rejection can't crash the process.
     if (this.review.isEnabled() && isReviewRequest(text)) {
-      await this.review.fromMessage({
-        channelId,
-        threadTs: replyThreadTs,
-        userId,
-        text,
-      });
+      void this.review
+        .fromMessage({ channelId, threadTs: replyThreadTs, userId, text })
+        .catch((err) =>
+          this.onLog(`review: detached mention review failed: ${(err as Error).message}`),
+        );
       return;
     }
 
@@ -715,8 +716,19 @@ export class SlackAdapter {
     // Inline `:cr:` + PR link in a DM → route to mra PR review (option B-lite)
     // instead of free-chat. Gated on review.enabled so a `:cr:` message falls
     // through to normal chat when the feature is off.
+    //
+    // DETACHED: a review runs for minutes (mra debate). Awaiting it here holds
+    // this user's per-user turn slot the whole time, queueing their other DMs
+    // ("previous still processing"). Fire-and-forget so the slot frees at once
+    // and the user can keep chatting / fire more reviews; the coordinator acks
+    // immediately and posts each PR's result when done. MUST .catch — a
+    // detached rejection would crash the process (unhandled rejection).
     if (this.review.isEnabled() && isReviewRequest(text)) {
-      await this.review.fromMessage({ channelId, threadTs, userId, text });
+      void this.review
+        .fromMessage({ channelId, threadTs, userId, text })
+        .catch((err) =>
+          this.onLog(`review: detached DM review failed: ${(err as Error).message}`),
+        );
       return;
     }
 

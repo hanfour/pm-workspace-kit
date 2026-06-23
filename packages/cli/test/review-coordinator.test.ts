@@ -191,3 +191,32 @@ describe("ReviewCoordinator pinned ghToken threading", () => {
     assert.equal(mraArgs?.ghToken, "gho_pinned", "mra POST must use the pinned token");
   });
 });
+
+describe("ReviewCoordinator immediate ack (detached UX)", () => {
+  it("posts the '收到，背景 review' ack BEFORE the slow per-PR work", async () => {
+    const web = new FakeWebClient();
+    let ackedBeforeReview = false;
+    const gateway = gw({
+      runMraReview: async () => {
+        // by the time mra runs, the ack must already be on the thread
+        ackedBeforeReview = web.posted.some((p) =>
+          /收到.*背景 review/.test(p.text ?? ""),
+        );
+        return { ok: true, status: "COMMENT", commentCount: 0, stdout: "", stderr: "" };
+      },
+    } as unknown as Partial<ReviewGateway>);
+    await coord(web, gateway).fromMessage({
+      channelId: "C1", threadTs: "1.1", userId: "U1",
+      text: ":cr: https://github.com/onead/OnePixel/pull/12",
+    });
+    assert.equal(ackedBeforeReview, true, "ack must precede the per-PR review work");
+  });
+
+  it("no ack when there are no PR refs (silent, no spurious post)", async () => {
+    const web = new FakeWebClient();
+    await coord(web, gw()).fromMessage({
+      channelId: "C1", threadTs: "1.1", userId: "U1", text: ":cr: no link here",
+    });
+    assert.equal(web.posted.length, 0);
+  });
+});

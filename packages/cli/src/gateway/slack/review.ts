@@ -157,6 +157,14 @@ export class ReviewCoordinator {
       prCount: refs.length,
     });
 
+    // Immediate ack — the review runs detached (minutes), so without this the
+    // user gets no feedback until the first PR finishes and may re-send.
+    await this.reply(
+      channelId,
+      threadTs,
+      `:mag: 收到，背景 review ${refs.length} 個 PR…（完成後逐一回報；你可以繼續聊或再發）`,
+    );
+
     const reviewWorkspace = reviewWorkspaceDir(); // ~/.pmk/review-workspace
     gateway.ensureReviewWorkspaceMeta(workspace, reviewWorkspace);
     // Pinned review token (stable identity, independent of the host's active
