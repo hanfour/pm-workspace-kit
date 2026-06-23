@@ -201,6 +201,31 @@ export interface GithubIssueFailedEvent {
   reason: string;
 }
 
+export interface ReviewTriggeredEvent {
+  type: "review.triggered";
+  actor: string;
+  channelId: string;
+  prCount: number;
+}
+
+export interface ReviewPostedEvent {
+  type: "review.posted";
+  actor: string;
+  repo: string;      // owner/repo slug
+  pr: number;
+  status: string;    // APPROVED | CHANGES_REQUESTED | COMMENT
+  commentCount: number;
+  durationMs: number;
+}
+
+export interface ReviewSkippedEvent {
+  type: "review.skipped";
+  actor: string;
+  repo: string;
+  pr: number;
+  reason: string;
+}
+
 export type GatewayEvent =
   | MraAskEndEvent
   | TurnProcessedEvent
@@ -212,7 +237,10 @@ export type GatewayEvent =
   | MessageCappedEvent
   | TokenUsageEvent
   | GithubIssueCreatedEvent
-  | GithubIssueFailedEvent;
+  | GithubIssueFailedEvent
+  | ReviewTriggeredEvent
+  | ReviewPostedEvent
+  | ReviewSkippedEvent;
 
 /** What lands on disk: the event plus the ISO timestamp added at append time. */
 export type StoredGatewayEvent = GatewayEvent & { at: string };
@@ -230,6 +258,9 @@ const VALID_TYPES: ReadonlySet<string> = new Set([
   "token.usage",
   "github.issue.created",
   "github.issue.failed",
+  "review.triggered",
+  "review.posted",
+  "review.skipped",
 ]);
 
 /**

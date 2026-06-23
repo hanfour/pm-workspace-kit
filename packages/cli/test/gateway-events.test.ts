@@ -469,4 +469,21 @@ describe("gateway events log (#24)", () => {
       "U_VALID_2",
     );
   });
+
+  describe("review.* events", () => {
+    it("appendGatewayEvent accepts review.posted without throwing", async () => {
+      const { appendGatewayEvent } = await import("../src/gateway/events");
+      assert.doesNotThrow(() =>
+        appendGatewayEvent({
+          type: "review.posted",
+          actor: "U1",
+          repo: "o/r",
+          pr: 12,
+          status: "CHANGES_REQUESTED",
+          commentCount: 3,
+          durationMs: 4200,
+        }),
+      );
+    });
+  });
 });
