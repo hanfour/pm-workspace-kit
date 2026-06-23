@@ -17,11 +17,22 @@ function git(cwd: string, ...args: string[]): string {
   }).toString().trim();
 }
 
+/**
+ * Copy the workspace-level .collab metadata (repos.json, dep-graph.json) from
+ * the operator's main workspace into the gateway-owned review workspace so
+ * `mra review` runs under the real project name with consumer/dep-graph context.
+ *
+ * Best-effort by design: a missing source file is intentionally skipped, not an
+ * error. `mra review` tolerates an absent dep-graph.json (it guards it with
+ * `[[ -f ]]`), so absence merely drops cross-project consumer analysis rather
+ * than failing the review. Overwrites on each prepare to stay fresh.
+ */
 export function ensureReviewWorkspaceMeta(mainWorkspace: string, reviewWorkspace: string): void {
   const dst = path.join(reviewWorkspace, ".collab");
   fs.mkdirSync(dst, { recursive: true });
   for (const f of ["repos.json", "dep-graph.json"]) {
     const src = path.join(mainWorkspace, ".collab", f);
+    // best-effort: skip silently if the source file isn't present (see contract above)
     if (fs.existsSync(src)) fs.copyFileSync(src, path.join(dst, f));
   }
 }
