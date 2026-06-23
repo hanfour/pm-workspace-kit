@@ -9,6 +9,7 @@ import { channelAclCheck } from "./channel-acl";
 import { manifestAlignmentCheck } from "./manifest-alignment";
 import { secretSourcesCheck } from "./secret-sources";
 import { githubTokenCheck } from "./github-token";
+import { reviewDoctorCheck } from "./review";
 
 export {
   configFileCheck,
@@ -21,6 +22,7 @@ export {
   manifestAlignmentCheck,
   secretSourcesCheck,
   githubTokenCheck,
+  reviewDoctorCheck,
 };
 
 // Order matters for output legibility: config-file first (blocks
@@ -39,4 +41,5 @@ export const DEFAULT_CHECKS: DoctorCheck[] = [
   channelAclCheck,
   manifestAlignmentCheck,
   githubTokenCheck,
+  reviewDoctorCheck,
 ];
