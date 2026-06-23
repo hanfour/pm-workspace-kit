@@ -112,7 +112,7 @@ export async function resolveRepoSlug(
 
 /** Best-effort visibility check via `gh repo view`. Any error → "unknown". */
 export async function repoVisibility(
-  args: { slug: string; token: string },
+  args: { slug: string; token?: string },
   deps: GithubDeps = {},
 ): Promise<"public" | "private" | "unknown"> {
   const exec = deps.exec ?? defaultExec;
@@ -122,7 +122,10 @@ export async function repoVisibility(
     const { stdout } = await exec(
       gh,
       ["repo", "view", args.slug, "--json", "visibility", "-q", ".visibility"],
-      { env: { ...process.env, GH_TOKEN: args.token }, timeoutMs: 15_000 },
+      {
+        env: args.token ? { ...process.env, GH_TOKEN: args.token } : process.env,
+        timeoutMs: 15_000,
+      },
     );
     const v = stdout.trim().toLowerCase();
     if (v === "public") return "public";

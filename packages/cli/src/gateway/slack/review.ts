@@ -179,7 +179,7 @@ export class ReviewCoordinator {
       return;
     }
     if (!ctx.review.allowPublicRepos) {
-      const vis = await gateway.repoVisibility({ slug, token: ctx.token ?? "" });
+      const vis = await gateway.repoVisibility({ slug, token: ctx.token });
       if (vis !== "private") {
         await skip(
           "public-repo",
@@ -189,9 +189,14 @@ export class ReviewCoordinator {
       }
     }
 
+    const slugParts = slug.split("/");
+    const [slugOwner, slugRepo] =
+      slugParts.length === 2
+        ? slugParts
+        : [ref.owner, ref.repo];
     const claimRef = {
-      owner: ref.owner,
-      repo: ref.repo,
+      owner: slugOwner,
+      repo: slugRepo,
       pr: ref.number,
       headSha: head.sha,
     };
@@ -213,7 +218,7 @@ export class ReviewCoordinator {
       });
       if (!prep.ok) {
         await skip(
-          prep.reason.split(":")[0],
+          "prepare-failed",
           `:warning: PR #${ref.number} 準備失敗（${prep.reason}），略過`,
         );
         return;
