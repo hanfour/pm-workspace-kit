@@ -5,7 +5,7 @@ import * as os from "node:os";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { execFileSync } from "node:child_process";
-import { prepareReviewClone, ensureReviewWorkspaceMeta } from "../src/gateway/review-workspace";
+import { prepareReviewClone, ensureReviewWorkspaceMeta, toHttpsGithub } from "../src/gateway/review-workspace";
 
 let root: string, mainWs: string, reviewWs: string, mainClone: string, origin: string, headSha: string;
 const g = (cwd: string, ...a: string[]) => execFileSync("git", a, { cwd, encoding: "utf8" }).trim();
@@ -63,6 +63,27 @@ describe("prepareReviewClone", () => {
     });
     assert.equal(res.ok, false);
     if (!res.ok) assert.match(res.reason, /head-mismatch/);
+  });
+
+  it("toHttpsGithub normalises SSH github remotes to HTTPS, leaves others", () => {
+    assert.equal(
+      toHttpsGithub("git@github.com:onead/finance-system-ui.git"),
+      "https://github.com/onead/finance-system-ui.git",
+    );
+    assert.equal(
+      toHttpsGithub("git@github.com:onead/super-dsp-2.0"),
+      "https://github.com/onead/super-dsp-2.0.git",
+    );
+    assert.equal(
+      toHttpsGithub("ssh://git@github.com/onead/x.git"),
+      "https://github.com/onead/x.git",
+    );
+    // HTTPS + local paths pass through unchanged
+    assert.equal(
+      toHttpsGithub("https://github.com/onead/billing.git"),
+      "https://github.com/onead/billing.git",
+    );
+    assert.equal(toHttpsGithub("/tmp/some/origin.git"), "/tmp/some/origin.git");
   });
 
   it("still clones with a pinned ghToken (auth-env threading is non-breaking for non-github origins)", async () => {

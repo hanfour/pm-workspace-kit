@@ -28,6 +28,20 @@ function git(cwd: string, args: string[], env?: NodeJS.ProcessEnv): string {
  * clone failed "Repository not found" because git used the active gh account,
  * which had flipped to one without access to the private repo.)
  */
+/**
+ * Normalise an SSH github remote to HTTPS so the pinned-token `http.extraheader`
+ * applies. `git@github.com:owner/repo(.git)` (and `ssh://git@github.com/...`) →
+ * `https://github.com/owner/repo.git`. HTTPS URLs and local-path origins (tests)
+ * pass through unchanged. (Live-found 2026-06-23: 17/20 OneAD repos use SSH
+ * origins; cloning those over SSH from the launchd gateway has no agent/keys.)
+ */
+export function toHttpsGithub(url: string): string {
+  const m =
+    /^git@github\.com:(.+?)(?:\.git)?$/.exec(url) ??
+    /^ssh:\/\/git@github\.com\/(.+?)(?:\.git)?$/.exec(url);
+  return m ? `https://github.com/${m[1]}.git` : url;
+}
+
 function gitAuthEnv(token?: string): NodeJS.ProcessEnv {
   if (!token) return process.env;
   const auth = Buffer.from(`x-access-token:${token}`).toString("base64");
@@ -75,7 +89,10 @@ export async function prepareReviewClone(args: {
   // host's active gh account (git's credential helper otherwise uses it).
   const env = gitAuthEnv(args.ghToken);
   try {
-    const originUrl = git(args.mainClone, ["remote", "get-url", "origin"]);
+    // Normalise SSH→HTTPS so the pinned-token extraheader can authenticate the
+    // clone regardless of the main clone's remote protocol (most OneAD repos
+    // are SSH, which the launchd gateway can't auth).
+    const originUrl = toHttpsGithub(git(args.mainClone, ["remote", "get-url", "origin"]));
     if (!fs.existsSync(cloneDir)) {
       // --reference shares the object store with the main clone (cheap). Per Task 0
       // spike: switch to a plain `git clone <originUrl> <cloneDir>` if --reference is unsafe.
