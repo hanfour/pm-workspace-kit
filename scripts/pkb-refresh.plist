@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  (c) PKB auto-refresh for the Slack code-review gateway.
+  Runs scripts/pkb-refresh.sh daily so each active OneAD repo keeps a fresh,
+  valid PKB — which is what makes the gateway's reviews come out COMPLETE
+  (the review agents lean on PKB instead of grepping the whole codebase and
+  hitting --max-turns). Idempotent: skips fresh repos, rebuilds stale /
+  missing / error-polluted ones.
+
+  Install:
+    cp scripts/pkb-refresh.plist ~/Library/LaunchAgents/com.onead.pkb-refresh.plist
+    launchctl load  ~/Library/LaunchAgents/com.onead.pkb-refresh.plist
+    launchctl start com.onead.pkb-refresh        # optional: run once now
+  Inspect: tail -f /tmp/pkb-refresh.out.log
+  Adjust the PATH below if claude / gh / jq live elsewhere (`which claude gh jq`).
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.onead.pkb-refresh</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>/Users/hanfourhuang/pm-workspace-kit/scripts/pkb-refresh.sh</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/Users/hanfourhuang/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>HOME</key><string>/Users/hanfourhuang</string>
+  </dict>
+  <key>StartCalendarInterval</key>
+  <dict><key>Hour</key><integer>4</integer><key>Minute</key><integer>0</integer></dict>
+  <key>StandardOutPath</key><string>/tmp/pkb-refresh.out.log</string>
+  <key>StandardErrorPath</key><string>/tmp/pkb-refresh.err.log</string>
+  <key>RunAtLoad</key><false/>
+</dict>
+</plist>
