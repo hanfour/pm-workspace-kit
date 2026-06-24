@@ -19,6 +19,7 @@ import {
   startHeartbeat,
 } from "./heartbeat";
 import { startKeepAwake } from "./keep-awake";
+import { installUnhandledRejectionGuard } from "./crash-guard";
 
 export interface GatewayRunOptions {
   /** Called for each one-line breadcrumb. Defaults to console.log. */
@@ -154,6 +155,11 @@ export async function runGateway(opts: GatewayRunOptions = {}): Promise<void> {
   };
   process.on("SIGINT", () => void shutdown("SIGINT"));
   process.on("SIGTERM", () => void shutdown("SIGTERM"));
+  // C3: don't let a stray unhandled rejection (e.g. @slack/socket-mode
+  // rejecting with `undefined` during reconnect churn) crash the daemon and
+  // orphan in-flight reviews. Log + keep running; the socket-watchdog still
+  // owns deliberate loud-exit on genuine unrecoverable socket failure.
+  installUnhandledRejectionGuard(log);
 
   try {
     const info = await adapter.start();
