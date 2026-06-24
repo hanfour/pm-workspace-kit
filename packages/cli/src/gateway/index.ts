@@ -20,6 +20,7 @@ import {
 } from "./heartbeat";
 import { startKeepAwake } from "./keep-awake";
 import { installUnhandledRejectionGuard } from "./crash-guard";
+import { recoverReviewClaims } from "./review-claim";
 
 export interface GatewayRunOptions {
   /** Called for each one-line breadcrumb. Defaults to console.log. */
@@ -89,6 +90,18 @@ export async function runGateway(opts: GatewayRunOptions = {}): Promise<void> {
   }
   log(`heartbeat ticking every ${HEARTBEAT_INTERVAL_MS / 1000}s`);
   const keepAwake = startKeepAwake({ onLog: log });
+
+  // B: self-heal review claims orphaned by a previous instance that
+  // crashed/restarted mid-review (claimed but never finalized) — release them
+  // so the PR can be re-`:cr:`-reviewed instead of falsely reporting "already
+  // reviewed". The stale window (45 min) exceeds the longest review (on-demand
+  // PKB build ~15m + debate ~20m) so a still-finishing orphaned mra isn't
+  // released out from under it (which would risk a duplicate review).
+  const REVIEW_STALE_CLAIM_MS = 45 * 60 * 1000;
+  const recoveredClaims = recoverReviewClaims(REVIEW_STALE_CLAIM_MS, log);
+  if (recoveredClaims > 0) {
+    log(`recovered ${recoveredClaims} orphaned review claim(s) from a prior run`);
+  }
 
   const dryRunStats = opts.dryRun ? createDryRunStats() : undefined;
   const adapter = new SlackAdapter({
