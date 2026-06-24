@@ -571,8 +571,9 @@ export function parseReviewStdout(stdout: string): {
   };
 }
 
-/** Clone process.env, strip secrets, pin the review token (if any), set personas flag. */
-function reviewEnv(
+/** Clone process.env, strip secrets, pin the review token, set personas flag,
+ * and cap the round-1 review agents' turns (see body). */
+export function reviewEnv(
   strategy: "debate" | "personas",
   ghToken?: string,
 ): NodeJS.ProcessEnv {
@@ -584,6 +585,13 @@ function reviewEnv(
   // which account is active. Unset → mra falls back to ambient gh.
   if (ghToken) env.GH_TOKEN = ghToken;
   if (strategy === "personas") env.MRA_REVIEW_PERSONAS = "true";
+  // Cap the debate round-1 agents' turns generously. --max-turns is a CAP, not a
+  // target: a PKB-backed review finishes well under it (the agent stops at its
+  // verdict sentinel), so the headroom costs nothing on fast reviews and rescues
+  // PKB-less / large PRs from a mid-exploration cutoff (which mra now honestly
+  // reports as REVIEW_INCOMPLETE). Fits within runMraReview's 10-min timeout. An
+  // operator-set value (env / gateway) wins.
+  if (!env.MRA_REVIEW_AGENT_MAX_TURNS) env.MRA_REVIEW_AGENT_MAX_TURNS = "40";
   return env;
 }
 

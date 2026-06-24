@@ -4,7 +4,7 @@ import * as os from "node:os";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { execFileSync } from "node:child_process";
-import { resolveProjectByRemote, parseReviewStdout, buildReviewArgv } from "../src/adapters/mra";
+import { resolveProjectByRemote, parseReviewStdout, buildReviewArgv, reviewEnv } from "../src/adapters/mra";
 
 let ws: string;
 function mkRepo(dir: string, originUrl: string) {
@@ -57,5 +57,40 @@ describe("resolveProjectByRemote", () => {
   });
   it("returns undefined when no repo matches", () => {
     assert.equal(resolveProjectByRemote(ws, "onead/nope"), undefined);
+  });
+});
+
+describe("reviewEnv", () => {
+  it("caps round-1 agent max-turns by default (rescues PKB-less / big PRs from a mid-exploration cutoff)", () => {
+    const prev = process.env.MRA_REVIEW_AGENT_MAX_TURNS;
+    delete process.env.MRA_REVIEW_AGENT_MAX_TURNS;
+    try {
+      assert.equal(reviewEnv("debate").MRA_REVIEW_AGENT_MAX_TURNS, "40");
+    } finally {
+      if (prev !== undefined) process.env.MRA_REVIEW_AGENT_MAX_TURNS = prev;
+    }
+  });
+  it("respects an operator-set MRA_REVIEW_AGENT_MAX_TURNS", () => {
+    const prev = process.env.MRA_REVIEW_AGENT_MAX_TURNS;
+    process.env.MRA_REVIEW_AGENT_MAX_TURNS = "12";
+    try {
+      assert.equal(reviewEnv("debate").MRA_REVIEW_AGENT_MAX_TURNS, "12");
+    } finally {
+      if (prev === undefined) delete process.env.MRA_REVIEW_AGENT_MAX_TURNS;
+      else process.env.MRA_REVIEW_AGENT_MAX_TURNS = prev;
+    }
+  });
+  it("strips secrets, pins GH_TOKEN, sets the personas flag", () => {
+    const prev = process.env.ANTHROPIC_API_KEY;
+    process.env.ANTHROPIC_API_KEY = "sk-test";
+    try {
+      const env = reviewEnv("personas", "ghtok");
+      assert.equal(env.ANTHROPIC_API_KEY, undefined);
+      assert.equal(env.MRA_REVIEW_PERSONAS, "true");
+      assert.equal(env.GH_TOKEN, "ghtok");
+    } finally {
+      if (prev === undefined) delete process.env.ANTHROPIC_API_KEY;
+      else process.env.ANTHROPIC_API_KEY = prev;
+    }
   });
 });
