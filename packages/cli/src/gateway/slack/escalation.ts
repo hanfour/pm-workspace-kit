@@ -43,6 +43,7 @@ import type { LlmProvider } from "../../llm";
 import { parseEscalate, stripEscalateBlock } from "../escalate";
 import { stripMraAskBlock } from "../mra-ask";
 import { stripCaseUpdateBlock } from "../../case";
+import { saveIssueCandidate } from "../issue-candidate";
 import {
   markdownToMrkdwn,
   truncateForSlack,
@@ -76,9 +77,10 @@ export class EscalationCoordinator {
     channelId: string;
     threadTs: string;
     askerUserId: string;
+    diagnosis: string;
     request: { repo?: string; question: string; reason?: string };
   }): Promise<void> {
-    const { channelId, threadTs, askerUserId, request } = args;
+    const { channelId, threadTs, askerUserId, diagnosis, request } = args;
     const { web, config, onLog } = this.opts;
     const pool = pickEscalationPool(config, request.repo);
     // v0.8.2 (#30): filter out the asker themselves — @-mentioning
@@ -126,17 +128,18 @@ export class EscalationCoordinator {
 
     const mentions = effectivePool.map((id) => `<@${id}>`).join(" ");
     const reasonLine = request.reason ? `\n_原因_：${request.reason}` : "";
-    await web.chat
-      .postMessage({
+    const mentionText = `${mentions} 想麻煩你補充，pmk 沒有足夠 context 回答這題：\n> ${request.question}${reasonLine}\n\n回覆時請記得 \`@pmk\` 一下（例：\`@pmk 答案是…\`），這樣 pmk 才接得到你的回覆並吸收成 knowledge atom，之後同樣問題就能直接答出來。`;
+    let anchorTs: string | undefined;
+    try {
+      const post = await web.chat.postMessage({
         channel: channelId,
         thread_ts: threadTs,
-        text: `${mentions} 想麻煩你補充，pmk 沒有足夠 context 回答這題：\n> ${request.question}${reasonLine}\n\n回覆時請記得 \`@pmk\` 一下（例：\`@pmk 答案是…\`），這樣 pmk 才接得到你的回覆並吸收成 knowledge atom，之後同樣問題就能直接答出來。`,
-      })
-      .catch((err) => {
-        onLog(
-          `failed to post escalation mention: ${(err as Error).message}`,
-        );
+        text: mentionText,
       });
+      anchorTs = (post as { ts?: string }).ts;
+    } catch (err) {
+      onLog(`failed to post escalation mention: ${(err as Error).message}`);
+    }
     saveThreadEscalation({
       channelId,
       threadTs,
@@ -153,6 +156,39 @@ export class EscalationCoordinator {
       threadTs,
       scope: request.repo,
     });
+
+    // Confirmed-problem → issue: write a durable snapshot ONLY when the
+    // escalation carries a repo (repo-less default-pool escalations get no
+    // 🎫 path, since repo override is out of scope). Fail-soft throughout.
+    if (request.repo && anchorTs) {
+      try {
+        let permalink: string | undefined;
+        try {
+          const pl = await web.chat.getPermalink({ channel: channelId, message_ts: anchorTs });
+          permalink = (pl as { permalink?: string }).permalink;
+        } catch (err) {
+          onLog(`issue-candidate: getPermalink failed: ${(err as Error).message}`);
+        }
+        saveIssueCandidate({
+          channelId,
+          threadTs,
+          anchorTs,
+          scope: request.repo,
+          askerUserId,
+          mentionedUserIds: effectivePool,
+          question: request.question,
+          diagnosis,
+          permalink,
+        });
+        await web.chat.update({
+          channel: channelId,
+          ts: anchorTs,
+          text: mentionText + "\n\n_確認是問題的話，在這則訊息上 react 🎫 我就開 issue_",
+        });
+      } catch (err) {
+        onLog(`issue-candidate write failed (escalation unaffected): ${(err as Error).message}`);
+      }
+    }
   }
 
   /**

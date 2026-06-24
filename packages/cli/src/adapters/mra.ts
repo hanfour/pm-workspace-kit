@@ -16,7 +16,7 @@
  */
 
 import { execFileSync, spawn } from "node:child_process";
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, statSync, type Dirent } from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
@@ -502,6 +502,313 @@ function runMraAskOnce(
   });
 }
 
+// ---------------------------------------------------------------------------
+// mra review — write-protected, secrets-stripped subprocess
+// ---------------------------------------------------------------------------
+
+/** Keys removed from the child env before spawning `mra review`. */
+const REVIEW_SECRET_ENV_DENYLIST = [
+  "ANTHROPIC_API_KEY",
+  "GH_TOKEN",
+  "GITHUB_TOKEN",
+  "OPENAI_API_KEY",
+  "SLACK_APP_TOKEN",
+  "SLACK_BOT_TOKEN",
+  "AWS_SECRET_ACCESS_KEY",
+]; // strip secrets so an injected review prompt can't exfiltrate them
+
+export interface MraReviewResult {
+  ok: boolean;
+  status?: string;
+  commentCount?: number;
+  stdout: string;
+  stderr: string;
+  reason?: string;
+}
+
+/**
+ * Build the argv for `mra review <project> --pr <pr>`. For strategy
+ * "debate" appends `--strategy debate`; for "personas" the flag is
+ * omitted and the env var `MRA_REVIEW_PERSONAS=true` is used instead
+ * (see {@link reviewEnv}).
+ */
+export function buildReviewArgv(
+  project: string,
+  pr: number,
+  strategy: "debate" | "personas",
+): string[] {
+  const base = ["review", project, "--pr", String(pr)];
+  return strategy === "debate" ? [...base, "--strategy", "debate"] : base;
+}
+
+/**
+ * Pure: pull status + comment count from `mra review` stdout.
+ *
+ * Verified against the real mra source (read-only, 2026-06-23): the
+ * success path logs both lines to STDOUT via log_progress/log_info
+ * (only log_error → stderr; multi-repo-agent lib/colors.sh:21-28), and
+ * _log emits `<ansi>[review]<reset> <message>` so the MESSAGE text is
+ * plain (no ANSI inside it). The two source lines are:
+ *   review.sh:695  `posting inline review to <slug>#<N> (<N> comments)...`
+ *   review.sh:710  `status: <STATUS> | comments: <N>`
+ * so the regexes below match the real format. Caveat: the batch-failed
+ * individual-comment fallback path (review.sh:712+) does not print the
+ * `status: …` line, so on that rarer path status falls back to COMMENT.
+ *
+ * Matches:
+ *   `status: CHANGES_REQUESTED`  → status field
+ *   `(3 comments)`               → commentCount field
+ */
+export function parseReviewStdout(stdout: string): {
+  status?: string;
+  commentCount?: number;
+} {
+  const status = /status:\s*([A-Z_]+)/.exec(stdout)?.[1];
+  const cc = /\((\d+)\s+comments?\)/.exec(stdout)?.[1];
+  return {
+    status,
+    commentCount: cc !== undefined ? Number(cc) : undefined,
+  };
+}
+
+/** Clone process.env, strip secrets, pin the review token, set personas flag,
+ * and cap the round-1 review agents' turns (see body). */
+export function reviewEnv(
+  strategy: "debate" | "personas",
+  ghToken?: string,
+): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...process.env };
+  for (const k of REVIEW_SECRET_ENV_DENYLIST) delete env[k];
+  // Pin the GitHub token for mra's `gh` POST. Set AFTER the strip so it is the
+  // ONLY github token in the review env; `GH_TOKEN` takes priority over the
+  // host's active gh account, so the posting identity is stable regardless of
+  // which account is active. Unset → mra falls back to ambient gh.
+  if (ghToken) env.GH_TOKEN = ghToken;
+  if (strategy === "personas") env.MRA_REVIEW_PERSONAS = "true";
+  // Cap the debate round-1 agents' turns generously. --max-turns is a CAP, not a
+  // target: a PKB-backed review finishes well under it (the agent stops at its
+  // verdict sentinel), so the headroom costs nothing on fast reviews and rescues
+  // PKB-less / large PRs from a mid-exploration cutoff (which mra now honestly
+  // reports as REVIEW_INCOMPLETE). Fits within runMraReview's 10-min timeout. An
+  // operator-set value (env / gateway) wins.
+  if (!env.MRA_REVIEW_AGENT_MAX_TURNS) env.MRA_REVIEW_AGENT_MAX_TURNS = "40";
+  return env;
+}
+
+/**
+ * Shared spawn/line-buffer/timeout loop used by both `runMraAskOnce`
+ * and `spawnMraCommand`. Takes explicit `argv` + `env` so the caller
+ * can customise both without duplicating the machinery.
+ *
+ * Behaviour is identical to `runMraAskOnce` (chunks, overflow guard,
+ * SIGTERM on timeout, settle-once). On success, `parseResult` is called
+ * on the accumulated stdout and merged into the returned value.
+ */
+function spawnMraCommand(
+  binary: string,
+  argv: string[],
+  cwd: string,
+  env: NodeJS.ProcessEnv,
+  timeoutMs: number,
+  onProgress: ((line: string) => void) | undefined,
+  /** When aborted (gateway shutdown / drain), SIGTERM the child and settle. */
+  signal?: AbortSignal,
+): Promise<{ ok: boolean; stdout: string; stderr: string; reason?: string }> {
+  return new Promise((resolve) => {
+    let timeoutHandle: NodeJS.Timeout | undefined;
+    let settled = false;
+    let onAbort: (() => void) | undefined;
+    const settle = (r: {
+      ok: boolean;
+      stdout: string;
+      stderr: string;
+      reason?: string;
+    }): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeoutHandle);
+      if (onAbort) signal?.removeEventListener("abort", onAbort);
+      resolve(r);
+    };
+
+    let child: ReturnType<typeof spawn>;
+    try {
+      child = spawn(binary, argv, { cwd, stdio: ["ignore", "pipe", "pipe"], env });
+    } catch (err) {
+      settle({ ok: false, stdout: "", stderr: "", reason: (err as Error).message });
+      return;
+    }
+
+    const stdoutChunks: string[] = [];
+    const stderrChunks: string[] = [];
+    let stdoutBytes = 0;
+    let lineBuf = "";
+    let timedOut = false;
+    let aborted = false;
+    let stdoutOverflowed = false;
+
+    // A: on gateway shutdown, kill the in-flight review child so it can't run
+    // on as an orphan (wasting compute, possibly posting after the claim is
+    // released). The close handler reports an "aborted" reason.
+    onAbort = () => {
+      aborted = true;
+      try {
+        child.kill("SIGTERM");
+      } catch {
+        /* already gone */
+      }
+    };
+    if (signal) {
+      if (signal.aborted) onAbort();
+      else signal.addEventListener("abort", onAbort, { once: true });
+    }
+
+    timeoutHandle = setTimeout(() => {
+      timedOut = true;
+      try {
+        child.kill("SIGTERM");
+      } catch {
+        /* already gone */
+      }
+    }, timeoutMs);
+
+    child.stdout?.setEncoding("utf8");
+    child.stdout?.on("data", (chunk: string) => {
+      if (!stdoutOverflowed) {
+        stdoutChunks.push(chunk);
+        stdoutBytes += Buffer.byteLength(chunk, "utf8");
+        if (stdoutBytes > MAX_MRA_STDOUT_BYTES) {
+          stdoutOverflowed = true;
+          try {
+            child.kill("SIGTERM");
+          } catch {
+            /* already gone */
+          }
+        }
+      }
+      lineBuf += chunk;
+      let idx: number;
+      while ((idx = lineBuf.indexOf("\n")) >= 0) {
+        const raw = lineBuf.slice(0, idx);
+        lineBuf = lineBuf.slice(idx + 1);
+        const line = raw.endsWith("\r") ? raw.slice(0, -1) : raw;
+        if (line.length === 0) continue;
+        try {
+          onProgress?.(line);
+        } catch {
+          /* sink failures must not tear down stdout reading */
+        }
+      }
+    });
+
+    child.stderr?.setEncoding("utf8");
+    child.stderr?.on("data", (chunk: string) => {
+      stderrChunks.push(chunk);
+    });
+
+    child.on("error", (err) => {
+      settle({
+        ok: false,
+        stdout: stdoutChunks.join(""),
+        stderr: stderrChunks.join(""),
+        reason: err.message,
+      });
+    });
+
+    child.on("close", (code, signal) => {
+      const stdout = stdoutChunks.join("");
+      const stderr = stderrChunks.join("");
+      const ok = !timedOut && !stdoutOverflowed && !aborted && code === 0;
+      if (ok) {
+        settle({ ok: true, stdout, stderr });
+        return;
+      }
+      let reason: string;
+      if (aborted) {
+        reason = "aborted (gateway shutdown)";
+      } else if (stdoutOverflowed) {
+        reason = `mra stdout exceeded ${MAX_MRA_STDOUT_BYTES} bytes`;
+      } else if (timedOut) {
+        reason = `mra timed out after ${timeoutMs}ms`;
+      } else {
+        const lastStderrLine = stderr.trim().split("\n").pop();
+        reason = `mra exited with code=${code ?? "null"}${
+          signal ? ` signal=${signal}` : ""
+        }${stderr.trim() ? `: ${lastStderrLine}` : ""}`;
+      }
+      settle({ ok: false, stdout, stderr, reason });
+    });
+  });
+}
+
+/**
+ * Run `mra review <project> --pr <pr>` as a write-protected subprocess.
+ * Secrets are stripped from the child env (see {@link REVIEW_SECRET_ENV_DENYLIST}).
+ * No retry — a review either posts or it doesn't (unlike the flaky `mra ask`).
+ * Default timeout is 600s (reviews are substantially slower than asks).
+ */
+export async function runMraReview(
+  args: {
+    workspace: string;
+    project: string;
+    pr: number;
+    strategy: "debate" | "personas";
+    cwd: string;
+    timeoutMs?: number;
+    /** Pinned GitHub token for mra's POST (GH_TOKEN). Undefined → ambient gh. */
+    ghToken?: string;
+    /** Abort to SIGTERM the review child (gateway shutdown / drain). */
+    signal?: AbortSignal;
+  },
+  opts: { onProgress?: (line: string) => void } = {},
+): Promise<MraReviewResult> {
+  const binary = findMraBinary();
+  if (!binary) {
+    return { ok: false, stdout: "", stderr: "", reason: "`mra` binary not found on PATH" };
+  }
+  // 20 min: the debate pipeline runs sequential multi-agent stages (round 1 →
+  // mailbox voting → synthesis); on a large PR (many files / >5 findings) that
+  // legitimately exceeds 10 min even with a PKB, so 600s timed out mid-pipeline.
+  const timeoutMs = args.timeoutMs ?? 1_200_000;
+  const argv = buildReviewArgv(args.project, args.pr, args.strategy);
+  const env = reviewEnv(args.strategy, args.ghToken);
+
+  const raw = await spawnMraCommand(binary, argv, args.cwd, env, timeoutMs, opts.onProgress, args.signal);
+  const parsed = raw.ok ? parseReviewStdout(raw.stdout) : {};
+  return { ...raw, ...parsed };
+}
+
+/**
+ * Run `mra analyze <project>` to (re)build the project's PKB on the MAIN clone,
+ * just-in-time before a review. Without a PKB the review agents grep the whole
+ * codebase and hit --max-turns (→ REVIEW_INCOMPLETE); a PKB makes them finish.
+ * PKB generation is multi-agent and slow, so the timeout is generous. `cwd` must
+ * be the mra workspace (the project resolves under it; also pinned via
+ * MRA_WORKSPACE). Secrets are stripped like the review path — claude authenticates
+ * via its own session, not ANTHROPIC_API_KEY in this env.
+ */
+export async function runMraAnalyze(
+  args: { project: string; cwd: string; timeoutMs?: number; signal?: AbortSignal },
+  opts: { onProgress?: (line: string) => void } = {},
+): Promise<{ ok: boolean; stdout: string; stderr: string; reason?: string }> {
+  const binary = findMraBinary();
+  if (!binary) {
+    return { ok: false, stdout: "", stderr: "", reason: "`mra` binary not found on PATH" };
+  }
+  const timeoutMs = args.timeoutMs ?? 900_000; // 15 min — PKB gen runs many agents
+  const env: NodeJS.ProcessEnv = { ...process.env, MRA_WORKSPACE: args.cwd };
+  for (const k of REVIEW_SECRET_ENV_DENYLIST) delete env[k];
+  return spawnMraCommand(
+    binary,
+    ["analyze", args.project],
+    args.cwd,
+    env,
+    timeoutMs,
+    opts.onProgress,
+    args.signal,
+  );
+}
+
 interface ReposJson {
   repos: Array<{ name: string; archived?: boolean; clone?: boolean }>;
 }
@@ -532,4 +839,81 @@ export function listMraWorkspaceReposWithPkb(workspace: string): string[] {
     if (loadPkbBase(repoPath).length > 0) out.push(r.name);
   }
   return out;
+}
+
+/**
+ * Map a GitHub `owner/repo` slug to the mra project NAME whose local clone's
+ * origin points at it. Enumerates `.collab/repos.json` (all non-archived repos,
+ * not just PKB-having ones). Used by the review flow to turn a PR link into the
+ * `<project>` arg for `mra review`. Case-insensitive; `.git` stripped.
+ */
+export function resolveProjectByRemote(
+  workspace: string,
+  ownerRepo: string,
+): string | undefined {
+  const want = normalizeSlug(ownerRepo);
+  // 1. Preferred: repos.json-registered (non-archived) repos — the mra-managed
+  //    manifest. Fast path that respects the operator's curated set.
+  const fromManifest = matchManifestRepo(workspace, want);
+  if (fromManifest) return fromManifest;
+  // 2. Fallback: any git repo physically present under the workspace whose
+  //    origin matches. A cloned-but-UNREGISTERED repo (not in repos.json) can
+  //    still be reviewed — `mra review` only needs the dir to exist; dep-graph
+  //    context just degrades. Without this, a valid clone missing from the
+  //    manifest is wrongly reported as "not in workspace" (live-found 2026-06-23).
+  return matchWorkspaceDir(workspace, want);
+}
+
+function matchManifestRepo(workspace: string, want: string): string | undefined {
+  const reposJson = path.join(workspace, ".collab", "repos.json");
+  if (!existsSync(reposJson)) return undefined;
+  let manifest: ReposJson;
+  try {
+    manifest = JSON.parse(readFileSync(reposJson, "utf8")) as ReposJson;
+  } catch {
+    return undefined;
+  }
+  for (const r of manifest.repos ?? []) {
+    if (r.archived) continue;
+    if (originSlugOf(path.join(workspace, r.name)) === want) return r.name;
+  }
+  return undefined;
+}
+
+function matchWorkspaceDir(workspace: string, want: string): string | undefined {
+  let entries: Dirent[];
+  try {
+    entries = readdirSync(workspace, { withFileTypes: true });
+  } catch {
+    return undefined;
+  }
+  for (const e of entries) {
+    if (!e.isDirectory() || e.name.startsWith(".")) continue;
+    if (originSlugOf(path.join(workspace, e.name)) === want) return e.name;
+  }
+  return undefined;
+}
+
+/** `owner/repo` slug of a repo's `origin` remote, or undefined (not a git repo / no origin). */
+function originSlugOf(repoPath: string): string | undefined {
+  if (!existsSync(path.join(repoPath, ".git"))) return undefined;
+  let remote = "";
+  try {
+    remote = execFileSync("git", ["-C", repoPath, "remote", "get-url", "origin"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    })
+      .toString()
+      .trim();
+  } catch {
+    return undefined;
+  }
+  return remote ? normalizeSlug(remote) : undefined;
+}
+
+/** Reduce a remote URL or `owner/repo` to a lowercase `owner/repo` (no `.git`). */
+function normalizeSlug(s: string): string {
+  const noGit = s.replace(/\.git$/, "");
+  const m = /[:/]([^/:]+\/[^/]+)$/.exec(noGit) ?? /^([^/]+\/[^/]+)$/.exec(noGit);
+  return (m ? m[1] : noGit).toLowerCase();
 }

@@ -83,6 +83,24 @@ export interface EscalationConfig {
   repos: Record<string, string[]>;
 }
 
+export interface ReviewConfig {
+  enabled: boolean;
+  allowPublicRepos: boolean;
+  repoAllowlist?: string[];          // e.g. ["onead/OnePixel"]; undefined = any private repo in workspace
+  maxPrsPerTrigger: number;
+  strategy: "debate" | "personas";
+  expectedGhUser?: string;           // gate: gh api user must equal this before posting
+  /**
+   * Pinned GitHub token for ALL review GitHub interactions (PR head, repo
+   * visibility, actor-verify) AND mra's review POST. Literal or {env}/{cmd}
+   * secret reference. When set, the review uses THIS token's identity —
+   * stable, independent of the host's active `gh` account. Recommended:
+   * `{ "cmd": "gh auth token --user <work-account>" }` (no raw token on disk,
+   * no active-account switch). Unset → host ambient gh (default).
+   */
+  ghToken?: SecretSource;
+}
+
 export interface GatewayConfig {
   version: 1;
   /**
@@ -116,6 +134,16 @@ export interface GatewayConfig {
    * so a gateway {cmd} never runs when the CLI config already supplies a key.
    */
   apiKey?: SecretSource;
+  /**
+   * Work GitHub credentials for the confirmed-problem → issue flow.
+   * `token` is a literal or {env}/{cmd} reference, resolved lazily at
+   * 🎫 time (see resolveGithubToken) so a {cmd} never runs at load.
+   * `allowPublicRepos` (default false) blocks opening issues on a PUBLIC
+   * repo — internal diagnosis content must not leak to a public repo.
+   */
+  github?: { token: SecretSource; allowPublicRepos?: boolean };
+  /** Configuration for `:cr:` reaction → mra PR review feature. */
+  review?: Partial<ReviewConfig>;
   slack: SlackConfig;
 }
 
@@ -128,6 +156,11 @@ export const GATEWAY_CONFIG_VERSION = 1 as const;
 
 export function gatewayDir(): string {
   return path.join(os.homedir(), ".pmk", "gateway");
+}
+
+export function reviewWorkspaceDir(): string {
+  // gatewayDir() returns ~/.pmk/gateway; dirname gives ~/.pmk; review workspace is a sibling.
+  return path.join(path.dirname(gatewayDir()), "review-workspace");
 }
 
 export function gatewayConfigPath(): string {
@@ -255,6 +288,24 @@ function normaliseRawConfig(raw: unknown): RawGatewayConfig {
     botUserId: asString(sRaw.botUserId),
     workspaceName: asString(sRaw.workspaceName),
   };
+  const rawGithub = (r as { github?: unknown }).github;
+  const github =
+    rawGithub && typeof rawGithub === "object" && "token" in rawGithub
+      ? {
+          token: validateSecretSource(
+            (rawGithub as { token?: unknown }).token,
+            "github.token",
+          )!,
+          ...((rawGithub as { allowPublicRepos?: unknown }).allowPublicRepos === true
+            ? { allowPublicRepos: true as const }
+            : {}),
+        }
+      : undefined;
+  // `:cr:` review config. Carried through as a Partial<ReviewConfig>;
+  // `resolveReviewConfig` applies defaults / clamps / strategy guard at use
+  // time. Only the known, well-typed fields survive (unknown keys dropped).
+  const rawReview = (r as { review?: unknown }).review;
+  const review = normaliseReviewConfig(rawReview);
   return {
     version: GATEWAY_CONFIG_VERSION,
     admins: asStringArray(r.admins),
@@ -265,7 +316,35 @@ function normaliseRawConfig(raw: unknown): RawGatewayConfig {
     defaultIngest: asString(r.defaultIngest),
     mraWorkspace: asString(r.mraWorkspace),
     apiKey: validateSecretSource(r.apiKey, "apiKey"),
+    github,
+    review,
   };
+}
+
+/**
+ * Extract the known fields of a raw `review` config block into a typed
+ * Partial<ReviewConfig>. Returns undefined when absent/not-an-object.
+ * Lenient on value sanity (resolveReviewConfig clamps/guards downstream);
+ * strict on types so junk never reaches the runtime.
+ */
+function normaliseReviewConfig(raw: unknown): Partial<ReviewConfig> | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const o = raw as Record<string, unknown>;
+  const out: Partial<ReviewConfig> = {};
+  if (typeof o.enabled === "boolean") out.enabled = o.enabled;
+  if (typeof o.allowPublicRepos === "boolean")
+    out.allowPublicRepos = o.allowPublicRepos;
+  if (Array.isArray(o.repoAllowlist))
+    out.repoAllowlist = asStringArray(o.repoAllowlist);
+  if (typeof o.maxPrsPerTrigger === "number")
+    out.maxPrsPerTrigger = o.maxPrsPerTrigger;
+  if (o.strategy === "debate" || o.strategy === "personas")
+    out.strategy = o.strategy;
+  if (typeof o.expectedGhUser === "string")
+    out.expectedGhUser = o.expectedGhUser;
+  const ghToken = validateSecretSource(o.ghToken, "review.ghToken");
+  if (ghToken !== undefined) out.ghToken = ghToken;
+  return out;
 }
 
 /** Test seam — exercises normaliseRawConfig without touching disk. */
@@ -340,6 +419,45 @@ export function resolveGatewayApiKey(
     return { value: cliApiKey, usedCliConfig: true };
   }
   return { value: resolveSecret(rawGatewayApiKey, "apiKey"), usedCliConfig: false };
+}
+
+/**
+ * Resolve the work GitHub token from the gateway config (literal or
+ * {env}/{cmd}). Mirrors resolveGatewayApiKey; returns undefined if unset.
+ * Resolved lazily at 🎫 time, never at load.
+ */
+export function resolveGithubToken(
+  github: GatewayConfig["github"],
+): string | undefined {
+  return resolveSecret(github?.token, "github.token");
+}
+
+/**
+ * Resolve the review config with safe defaults. Clamps `maxPrsPerTrigger`
+ * to >=1 and normalizes `strategy` to "debate" unless explicitly "personas".
+ */
+export function resolveReviewConfig(raw?: Partial<ReviewConfig>): ReviewConfig {
+  return {
+    enabled: raw?.enabled ?? false,
+    allowPublicRepos: raw?.allowPublicRepos ?? false,
+    repoAllowlist: raw?.repoAllowlist,
+    maxPrsPerTrigger: Math.max(1, raw?.maxPrsPerTrigger ?? 5),
+    strategy: raw?.strategy === "personas" ? "personas" : "debate",
+    expectedGhUser: raw?.expectedGhUser,
+    ghToken: raw?.ghToken,
+  };
+}
+
+/**
+ * Resolve the pinned review GitHub token (literal or {env}/{cmd}). When set,
+ * every review GitHub call AND mra's review POST uses this token — a stable
+ * identity independent of the host's active `gh` account. Returns undefined
+ * when unset (→ host ambient gh, the default). Resolved lazily at review time.
+ */
+export function resolveReviewGhToken(
+  review: Partial<ReviewConfig> | undefined,
+): string | undefined {
+  return resolveSecret(review?.ghToken, "review.ghToken");
 }
 
 /**

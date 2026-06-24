@@ -54,6 +54,8 @@ import {
   mraDoctor as mraDoctorImpl,
   runMraAsk as runMraAskImpl,
 } from "../../adapters/mra";
+import { IssueCoordinator, realGithubGateway, type GithubGateway } from "./issue";
+import { ReviewCoordinator, realReviewGateway, isReviewRequest } from "./review";
 import {
   approveAtom,
   findAtomByApprovalMessage,
@@ -114,6 +116,11 @@ export interface SlackAdapterOptions {
   mraDoctor?: typeof mraDoctorImpl;
   runMraAsk?: typeof runMraAskImpl;
   /**
+   * Injectable GitHub gateway (DI seam for tests). Defaults to the real
+   * gh-CLI-backed adapter (`realGithubGateway`).
+   */
+  github?: GithubGateway;
+  /**
    * v0.16 (M3 / FR3): when true (or when `PMK_DRY_RUN=1` is set in the
    * env), the constructed WebClient is wrapped by
    * `wrapWebClientForDryRun` so all Slack writes are stubbed. Read
@@ -129,6 +136,12 @@ export interface SlackAdapterOptions {
    */
   attachmentIngest?: AttachmentIngestFn;
 }
+
+/**
+ * Pong wait before Socket-Mode treats the connection dead and reconnects (C2).
+ * Widened from the @slack/socket-mode 5s default — see the construction site.
+ */
+const SOCKET_CLIENT_PING_TIMEOUT_MS = 15_000;
 
 export class SlackAdapter {
   private socket: SocketModeClient;
@@ -159,6 +172,10 @@ export class SlackAdapter {
   private readonly slashCommand: SlashCommandHandler;
   /** Outbound escalate + inbound absorb + asker-synthesis follow-up. */
   private readonly escalation: EscalationCoordinator;
+  /** 🎫 reaction → GitHub issue coordinator. */
+  private readonly issue: IssueCoordinator;
+  /** :cr: reaction → mra PR review coordinator. */
+  private readonly review: ReviewCoordinator;
   /** End-to-end free-chat turn: seed + retrieval + LLM + mra-ask + escalate + reply. */
   private readonly freeChatTurn: FreeChatTurnRunner;
   /** Channel @mention dispatcher (slash / free-chat / case-mode). */
@@ -198,6 +215,13 @@ export class SlackAdapter {
     } else {
       this.socket = new SocketModeClient({
         appToken: opts.config.slack.appToken!,
+        // C2: widen the pong window from the 5s default to 15s. macOS
+        // dark-wakes (MAGICWAKE) + App-Nap timer coalescing briefly delay the
+        // pong even with ProcessType=Interactive + caffeinate; a 5s window trips
+        // a reconnect on every blip (220 false pong-timeouts/day observed),
+        // which is what churns the watchdog. 15s tolerates the blip while still
+        // detecting a genuinely dead socket well within the watchdog's backstop.
+        clientPingTimeout: SOCKET_CLIENT_PING_TIMEOUT_MS,
         // Tap pong/ping-timeout WARN lines into the health tracker; logs
         // still print as before (level warn).
         logger: createPongTapLogger(() => this.health.recordPongTimeout(Date.now())),
@@ -272,6 +296,18 @@ export class SlackAdapter {
       config: this.config,
       onLog: this.onLog,
       llm: this.llm,
+    });
+    this.issue = new IssueCoordinator({
+      web: this.web,
+      config: this.config,
+      onLog: this.onLog,
+      github: opts.github ?? realGithubGateway,
+    });
+    this.review = new ReviewCoordinator({
+      web: this.web,
+      config: this.config,
+      onLog: this.onLog,
+      gateway: realReviewGateway,
     });
     this.freeChatTurn = new FreeChatTurnRunner({
       web: this.web,
@@ -350,6 +386,13 @@ export class SlackAdapter {
           presence: this.presence,
           admins: this.config.admins,
           onLog: this.onLog,
+          // C1: the watchdog loud-exit bypasses adapter.stop(), so drain
+          // in-flight reviews here too (abort + release) — else a socket-death
+          // restart orphans them exactly like the crashes A/C3 already fixed.
+          beforeExit: () => {
+            const n = this.review.drainOnShutdown(this.onLog);
+            if (n > 0) this.onLog(`watchdog: drained ${n} in-flight review(s) before loud exit`);
+          },
         }),
       );
     }
@@ -387,6 +430,14 @@ export class SlackAdapter {
    */
   async stop(opts: { drainTimeoutMs?: number } = {}): Promise<void> {
     this.watchdog?.stop();
+    // A (graceful drain): detached `:cr:` reviews run OUTSIDE the turn queue, so
+    // `queue.waitForAll()` below never waits for them — a restart would orphan
+    // them (mra child runs on, claim left blocking re-review). Abort + release
+    // them here. Synchronous + fast, so it fits the shutdown grace window.
+    const drainedReviews = this.review.drainOnShutdown(this.onLog);
+    if (drainedReviews > 0) {
+      this.onLog(`stop: drained ${drainedReviews} in-flight review(s)`);
+    }
     try {
       await this.socket.disconnect();
     } catch {
@@ -579,6 +630,20 @@ export class SlackAdapter {
 
     if (this.config.blocklist.includes(userId)) return;
 
+    // Inline `:cr:` + PR link in an @-mention → route to mra PR review
+    // (option B-lite) instead of free-chat. DETACHED (same rationale as the DM
+    // path): a minutes-long review must not hold this user's turn slot. The
+    // coordinator acks now and posts each PR's result when done; .catch is
+    // mandatory so a detached rejection can't crash the process.
+    if (this.review.isEnabled() && isReviewRequest(text)) {
+      void this.review
+        .fromMessage({ channelId, threadTs: replyThreadTs, userId, text })
+        .catch((err) =>
+          this.onLog(`review: detached mention review failed: ${(err as Error).message}`),
+        );
+      return;
+    }
+
     // v0.13: queue key is per-user-per-channel. Different users in the
     // same channel run in parallel; a single user's rapid follow-ups
     // queue up FIFO behind their own in-flight round (up to 3 deep)
@@ -676,6 +741,25 @@ export class SlackAdapter {
       return;
     }
 
+    // Inline `:cr:` + PR link in a DM → route to mra PR review (option B-lite)
+    // instead of free-chat. Gated on review.enabled so a `:cr:` message falls
+    // through to normal chat when the feature is off.
+    //
+    // DETACHED: a review runs for minutes (mra debate). Awaiting it here holds
+    // this user's per-user turn slot the whole time, queueing their other DMs
+    // ("previous still processing"). Fire-and-forget so the slot frees at once
+    // and the user can keep chatting / fire more reviews; the coordinator acks
+    // immediately and posts each PR's result when done. MUST .catch — a
+    // detached rejection would crash the process (unhandled rejection).
+    if (this.review.isEnabled() && isReviewRequest(text)) {
+      void this.review
+        .fromMessage({ channelId, threadTs, userId, text })
+        .catch((err) =>
+          this.onLog(`review: detached DM review failed: ${(err as Error).message}`),
+        );
+      return;
+    }
+
     // Piece 2: synthetic prompt — when the user sent files but no caption,
     // the turn must not run with an empty text. Override only when text is
     // truly empty; a real caption must NOT be overridden.
@@ -768,10 +852,24 @@ export class SlackAdapter {
 
     const event = payload?.event;
     if (!event || !this.botInfo) return;
-    // We only listen for reactions on the bot's own messages
-    // (item_user is the author of the reacted-to message).
-    if (event.item_user !== this.botInfo.botUserId) return;
+
     const reaction = event.reaction;
+    const channelId = event.item?.channel;
+    const messageTs = event.item?.ts;
+    const reactorUserId = event.user;
+    if (!channelId || !messageTs || !reactorUserId) return;
+
+    // :cr: → PR review. Unlike approval/ticket reactions, this lands on a
+    // USER's message (the PR-request post), so it is handled BEFORE the
+    // bot-message guard (which only admits reactions on the bot's own messages).
+    if (reaction === "cr") {
+      await this.review.fromReaction({ channelId, messageTs, reactorUserId });
+      return;
+    }
+
+    // Remaining reactions (approval / ticket / citation-feedback) only apply
+    // to the bot's own messages (item_user is the author of the reacted-to message).
+    if (event.item_user !== this.botInfo.botUserId) return;
     const isApprove =
       reaction === "white_check_mark" ||
       reaction === "heavy_check_mark" ||
@@ -780,12 +878,13 @@ export class SlackAdapter {
     // `thumbsdown` is not an approval-reject reaction but is used for
     // citation feedback in the !found branch below.
     const isCitationFeedback = reaction === "thumbsdown";
-    if (!isApprove && !isReject && !isCitationFeedback) return;
+    const isTicket = reaction === "ticket";
+    if (!isApprove && !isReject && !isCitationFeedback && !isTicket) return;
 
-    const channelId = event.item?.channel;
-    const messageTs = event.item?.ts;
-    const reactorUserId = event.user;
-    if (!channelId || !messageTs || !reactorUserId) return;
+    if (isTicket) {
+      await this.issue.fromCandidate({ channelId, anchorTs: messageTs, reactorUserId });
+      return;
+    }
 
     const found = findAtomByApprovalMessage(channelId, messageTs);
     if (!found) {

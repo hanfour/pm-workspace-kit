@@ -333,12 +333,16 @@ export class FreeChatTurnRunner {
     // remember the thread so the next IT reply gets absorbed. The
     // asker is recorded so the post-absorb synthesis can reply to
     // them once IT answers.
+    const visible = stripEscalateBlock(
+      stripMraAskBlock(stripCaseUpdateBlock(full)),
+    );
     const escReq = parseEscalate(full);
     if (escReq) {
       await this.opts.escalation.escalate({
         channelId,
         threadTs,
         askerUserId: userId,
+        diagnosis: visible,
         request: escReq,
       });
       // Escalate-after-citation: the model still needed a human despite
@@ -353,9 +357,6 @@ export class FreeChatTurnRunner {
       }
     }
 
-    const visible = stripEscalateBlock(
-      stripMraAskBlock(stripCaseUpdateBlock(full)),
-    );
     session.messages.push({ role: "assistant", content: visible });
     session.approxTokens = approxTokensFor(session.messages);
 

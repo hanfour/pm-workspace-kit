@@ -176,4 +176,40 @@ describe("makeAdapterWatchdogDeps", () => {
     assert.equal(typeof def.exit, "function");
     assert.ok(def.now() >= Date.now() - 1_000); // default now() is real wall-clock
   });
+
+  it("runs beforeExit (C1 review drain) immediately BEFORE the loud exit", async () => {
+    const { makeAdapterWatchdogDeps } = await import("../src/gateway/slack/socket-watchdog");
+    const order: string[] = [];
+    const deps = makeAdapterWatchdogDeps({
+      health: new SocketHealth(0),
+      socket: { disconnect: async () => {}, start: async () => {} },
+      presence: { watchdogTerminate: async () => {} },
+      admins: [],
+      onLog: () => {},
+      beforeExit: () => order.push("drain"),
+      exit: (c) => order.push(`exit:${c}`),
+    });
+    deps.exit(1);
+    assert.deepEqual(order, ["drain", "exit:1"], "drain must run before the loud exit");
+  });
+
+  it("a throwing beforeExit never blocks the loud exit", async () => {
+    const { makeAdapterWatchdogDeps } = await import("../src/gateway/slack/socket-watchdog");
+    let exited: number | null = null;
+    const deps = makeAdapterWatchdogDeps({
+      health: new SocketHealth(0),
+      socket: { disconnect: async () => {}, start: async () => {} },
+      presence: { watchdogTerminate: async () => {} },
+      admins: [],
+      onLog: () => {},
+      beforeExit: () => {
+        throw new Error("drain boom");
+      },
+      exit: (c) => {
+        exited = c;
+      },
+    });
+    assert.doesNotThrow(() => deps.exit(1));
+    assert.equal(exited, 1, "exit still happens despite a throwing drain");
+  });
 });

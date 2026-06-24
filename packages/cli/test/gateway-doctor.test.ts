@@ -676,9 +676,19 @@ describe("doctor — secret-sources check", () => {
   });
 });
 
+describe("doctor — review readiness check", () => {
+  it("review doctor: disabled → pass with 'off'", async () => {
+    const { reviewDoctorCheck } = await import("../src/gateway/doctor-checks/review");
+    const res = await reviewDoctorCheck({ config: { review: { enabled: false } } } as never);
+    assert.equal(res.name, "review");
+    assert.equal(res.severity, "pass");
+    assert.match(res.message, /off|disabled/i);
+  });
+});
+
 describe("doctor — DEFAULT_CHECKS shape", () => {
-  it("exports exactly 9 checks (FR2 + secret-sources)", () => {
-    assert.equal(DEFAULT_CHECKS.length, 9);
+  it("exports exactly 11 checks (FR2 + secret-sources + github-token + review)", () => {
+    assert.equal(DEFAULT_CHECKS.length, 11);
     const names = DEFAULT_CHECKS.map((c) => c.name);
     assert.deepEqual(names, [
       "configFileCheck",
@@ -690,6 +700,8 @@ describe("doctor — DEFAULT_CHECKS shape", () => {
       "pkbContentCheck",
       "channelAclCheck",
       "manifestAlignmentCheck",
+      "githubTokenCheck",
+      "reviewDoctorCheck",
     ]);
   });
 });

@@ -83,6 +83,7 @@ export class FakeWebClient {
       this.updated.push(args);
       return { ok: true };
     },
+    getPermalink: async (_a: unknown) => ({ ok: true, permalink: "https://slack/permalink" }),
   };
 
   users = {
@@ -262,6 +263,8 @@ function defaultGatewayConfig(): GatewayConfig {
     blocklist: [],
     audience: { default: "tech", users: {}, channels: {} },
     escalation: { default: [], repos: {} },
+    mraWorkspace: "/fake/workspace",
+    github: { token: "ghp-test-token" },
     slack: {
       appToken: "xapp-test",
       botToken: "xoxb-test",
@@ -300,6 +303,8 @@ export interface BuildHarnessOptions {
   onLog?: (msg: string) => void;
   /** Injectable attachment ingest seam; forwarded to SlackAdapter for test isolation. */
   attachmentIngest?: AttachmentIngestFn;
+  /** Injectable GitHub gateway; forwarded to SlackAdapter for test isolation. */
+  github?: unknown;
 }
 
 /**
@@ -338,6 +343,7 @@ export function buildHarness(opts: BuildHarnessOptions = {}): Harness {
     mraDoctor: mra.doctor,
     runMraAsk: mra.runAsk,
     attachmentIngest: opts.attachmentIngest,
+    github: opts.github as never,
   });
 
   return {

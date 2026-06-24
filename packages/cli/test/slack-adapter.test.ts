@@ -1085,6 +1085,67 @@ describe("SlackAdapter integration: reaction-based atom approval", () => {
   });
 });
 
+describe("SlackAdapter integration: :cr: reaction routes to ReviewCoordinator", () => {
+  let h: Harness;
+
+  afterEach(() => {
+    h.cleanup();
+  });
+
+  it("cr reaction on a user message routes to ReviewCoordinator (skip note posted for empty workspace)", async () => {
+    // Arrange: enable review in config; mraWorkspace points at a tmp dir with no
+    // .collab/repos.json so resolveProjectByRemote returns undefined → ReviewCoordinator
+    // posts the "不在 mra workspace，略過" skip note. This proves the gate let :cr:
+    // through without requiring a real mra binary or GitHub token.
+    const mraWorkspace = h?.home ?? "/tmp"; // will be set below
+    h = buildHarness({
+      config: {
+        review: { enabled: true },
+        mraWorkspace: "/tmp/no-such-workspace-cr-test",
+      },
+    });
+
+    // conversations.history should return a message containing a GitHub PR link
+    // so parsePrRefs finds at least one ref and the coordinator proceeds past
+    // the "no refs" early return.
+    h.web.conversationsHistoryResponse = {
+      ok: true,
+      messages: [{ text: ":cr: https://github.com/onead/OnePixel/pull/12" }],
+    };
+
+    await h.adapter.start();
+
+    await h.socket.emit(
+      "reaction_added",
+      reactionAddedPayload({
+        user: "U-DEV",
+        reaction: "cr",
+        itemChannel: "C-CH",
+        itemTs: "1700000200.000200",
+        // itemUser is a human (NOT the bot) — the gate must NOT block this
+        itemUser: "U-HUMAN-POSTER",
+      }),
+    );
+    await h.flush();
+
+    // The coordinator acks immediately, then reaches resolveProjectByRemote →
+    // not found → posts a skip note. Both prove the gate routed :cr: through.
+    const posts = h.web.postsTo("C-CH");
+    assert.ok(
+      posts.length > 0,
+      "ReviewCoordinator should post (ack + skip note) when routed",
+    );
+    assert.ok(
+      posts.some((p) => /收到.*背景 review/.test(p.text ?? "")),
+      "an immediate ack should be posted",
+    );
+    assert.ok(
+      posts.some((p) => /略過/.test(p.text ?? "")),
+      "a skip note ('略過') should be posted when project is not in workspace",
+    );
+  });
+});
+
 describe("SlackAdapter integration: 👎 on cited reply marks atoms questioned", () => {
   let h: Harness;
 
