@@ -741,7 +741,10 @@ export async function runMraReview(
   if (!binary) {
     return { ok: false, stdout: "", stderr: "", reason: "`mra` binary not found on PATH" };
   }
-  const timeoutMs = args.timeoutMs ?? 600_000;
+  // 20 min: the debate pipeline runs sequential multi-agent stages (round 1 →
+  // mailbox voting → synthesis); on a large PR (many files / >5 findings) that
+  // legitimately exceeds 10 min even with a PKB, so 600s timed out mid-pipeline.
+  const timeoutMs = args.timeoutMs ?? 1_200_000;
   const argv = buildReviewArgv(args.project, args.pr, args.strategy);
   const env = reviewEnv(args.strategy, args.ghToken);
 

@@ -36,11 +36,16 @@ export function pkbNeedsBuild(mainClone: string): boolean {
       return true; // error-polluted
     }
   }
+  // Only force a rebuild for EGREGIOUS staleness — a PKB older than the nightly
+  // refresh cadence (so the refresh isn't running, or this repo is new to it).
+  // Day-to-day drift is fine: a slightly-stale PKB still makes the review
+  // complete, and the launchd refresh rebuilds it nightly. Rebuilding on every
+  // new commit would run a full multi-agent `mra analyze` before EVERY review of
+  // an active repo — slow and wasteful.
   try {
-    const metaMtime = fs.statSync(path.join(pkb, "meta.json")).mtimeMs;
-    const headTs = Number(git(mainClone, ["log", "-1", "--format=%ct"])) * 1000;
-    if (Number.isFinite(headTs) && headTs > metaMtime) return true; // stale
-  } catch { /* best-effort: if git/stat fails, don't force a rebuild */ }
+    const ageDays = (Date.now() - fs.statSync(path.join(pkb, "meta.json")).mtimeMs) / 86_400_000;
+    if (ageDays > 7) return true; // egregiously stale
+  } catch { /* best-effort: if stat fails, don't force a rebuild */ }
   return false;
 }
 

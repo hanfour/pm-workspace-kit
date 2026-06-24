@@ -130,8 +130,15 @@ describe("pkbNeedsBuild", () => {
     fs.writeFileSync(path.join(pkbDir(), "conventions.md"), "Error: Reached max turns (5)\n");
     assert.equal(pkbNeedsBuild(mainClone), true);
   });
-  it("stale (repo commit newer than PKB) → true", () => {
+  it("egregiously stale (PKB > 7 days old) → true", () => {
     fs.utimesSync(path.join(pkbDir(), "meta.json"), new Date("2020-01-01"), new Date("2020-01-01"));
     assert.equal(pkbNeedsBuild(mainClone), true);
+  });
+  it("mildly stale (recent PKB, newer commit) → false — nightly refresh handles drift, no per-review rebuild", () => {
+    fs.writeFileSync(path.join(mainClone, "b.txt"), "x\n");
+    g(mainClone, "add", "-A");
+    g(mainClone, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "more");
+    fs.writeFileSync(path.join(pkbDir(), "meta.json"), JSON.stringify({ project: "proj" })); // PKB just refreshed
+    assert.equal(pkbNeedsBuild(mainClone), false);
   });
 });
