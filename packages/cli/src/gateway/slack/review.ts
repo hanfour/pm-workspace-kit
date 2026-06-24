@@ -26,6 +26,7 @@ import { claimReview, finalizeReview, releaseReview } from "../review-claim";
 import {
   resolveProjectByRemote as resolveProjectByRemoteImpl,
   runMraReview as runMraReviewImpl,
+  runMraAnalyze as runMraAnalyzeImpl,
 } from "../../adapters/mra";
 import {
   resolveRepoSlug as resolveRepoSlugImpl,
@@ -37,11 +38,13 @@ import {
   prepareReviewClone as prepareReviewCloneImpl,
   teardownReviewClone as teardownReviewCloneImpl,
   ensureReviewWorkspaceMeta as ensureReviewWorkspaceMetaImpl,
+  pkbNeedsBuild as pkbNeedsBuildImpl,
 } from "../review-workspace";
 
 export interface ReviewGateway {
   resolveProjectByRemote: typeof resolveProjectByRemoteImpl;
   runMraReview: typeof runMraReviewImpl;
+  runMraAnalyze: typeof runMraAnalyzeImpl;
   resolveRepoSlug: typeof resolveRepoSlugImpl;
   repoVisibility: typeof repoVisibilityImpl;
   getAuthUser: typeof getAuthUserImpl;
@@ -49,11 +52,13 @@ export interface ReviewGateway {
   prepareReviewClone: typeof prepareReviewCloneImpl;
   teardownReviewClone: typeof teardownReviewCloneImpl;
   ensureReviewWorkspaceMeta: typeof ensureReviewWorkspaceMetaImpl;
+  pkbNeedsBuild: typeof pkbNeedsBuildImpl;
 }
 
 export const realReviewGateway: ReviewGateway = {
   resolveProjectByRemote: resolveProjectByRemoteImpl,
   runMraReview: runMraReviewImpl,
+  runMraAnalyze: runMraAnalyzeImpl,
   resolveRepoSlug: resolveRepoSlugImpl,
   repoVisibility: repoVisibilityImpl,
   getAuthUser: getAuthUserImpl,
@@ -61,6 +66,7 @@ export const realReviewGateway: ReviewGateway = {
   prepareReviewClone: prepareReviewCloneImpl,
   teardownReviewClone: teardownReviewCloneImpl,
   ensureReviewWorkspaceMeta: ensureReviewWorkspaceMetaImpl,
+  pkbNeedsBuild: pkbNeedsBuildImpl,
 };
 
 /**
@@ -272,8 +278,26 @@ export class ReviewCoordinator {
 
     let posted = false;
     try {
+      // Ensure a fresh PKB on the main clone BEFORE prepareReviewClone copies it
+      // into the review checkout. Without a PKB the review agents grep the whole
+      // codebase, hit --max-turns, and the review comes back REVIEW_INCOMPLETE.
+      // Best-effort: if the build fails we still review (the max-turns safety net
+      // + the honest verdict cover it). One-time ~few-min cost the first time a
+      // repo is reviewed (or after it goes stale).
+      const mainClone = `${ctx.workspace}/${project}`;
+      if (gateway.pkbNeedsBuild(mainClone)) {
+        onLog(`pkb: ${project} 缺/過時 PKB — 先建(一次性,之後 review 又快又完整)`);
+        const built = await gateway.runMraAnalyze(
+          { project, cwd: ctx.workspace },
+          { onProgress: (line) => onLog(`mra analyze ${project}: ${line}`) },
+        );
+        if (!built.ok) {
+          onLog(`pkb: build 未完成(${built.reason ?? "unknown"})— 仍繼續 review`);
+        }
+      }
+
       const prep = await gateway.prepareReviewClone({
-        mainClone: `${ctx.workspace}/${project}`,
+        mainClone,
         reviewWorkspace: ctx.reviewWorkspace,
         project,
         slug,

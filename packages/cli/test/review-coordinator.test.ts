@@ -23,6 +23,8 @@ function gw(over: Partial<ReviewGateway> = {}): ReviewGateway {
     prepareReviewClone: async () => ({ ok: true, cloneDir: path.join(tmp, "proj"), baseRef: "main" }),
     teardownReviewClone: () => {},
     runMraReview: async () => ({ ok: true, status: "CHANGES_REQUESTED", commentCount: 2, stdout: "", stderr: "" }),
+    runMraAnalyze: async () => ({ ok: true, stdout: "", stderr: "" }),
+    pkbNeedsBuild: () => false,
     resolveRepoSlug: async () => "onead/OnePixel",
     ...over,
   } as unknown as ReviewGateway;
@@ -45,6 +47,34 @@ describe("ReviewCoordinator.fromReaction", () => {
     ] };
     await coord(web, gw()).fromReaction({ channelId: "C1", messageTs: "1.1", reactorUserId: "U1" });
     assert.ok(web.posted.some((p) => /CHANGES_REQUESTED|review|#12/.test(p.text ?? "")));
+  });
+
+  it("builds the PKB BEFORE reviewing when the main clone has none (so the review is complete)", async () => {
+    const web = new FakeWebClient();
+    web.conversationsHistoryResponse = { ok: true, messages: [
+      { text: "@r :cr: <https://github.com/onead/OnePixel/pull/12|#12>" },
+    ] };
+    let analyzed = false, builtBeforeReview = false;
+    await coord(web, gw({
+      pkbNeedsBuild: () => true,
+      runMraAnalyze: async () => { analyzed = true; return { ok: true, stdout: "", stderr: "" }; },
+      runMraReview: async () => { builtBeforeReview = analyzed; return { ok: true, status: "APPROVED", stdout: "", stderr: "" }; },
+    })).fromReaction({ channelId: "C1", messageTs: "1.1", reactorUserId: "U1" });
+    assert.equal(analyzed, true, "a missing PKB must be built");
+    assert.equal(builtBeforeReview, true, "the PKB build must run BEFORE the review");
+  });
+
+  it("does NOT rebuild the PKB when it is already fresh + valid", async () => {
+    const web = new FakeWebClient();
+    web.conversationsHistoryResponse = { ok: true, messages: [
+      { text: "@r :cr: <https://github.com/onead/OnePixel/pull/12|#12>" },
+    ] };
+    let analyzed = false;
+    await coord(web, gw({
+      pkbNeedsBuild: () => false,
+      runMraAnalyze: async () => { analyzed = true; return { ok: true, stdout: "", stderr: "" }; },
+    })).fromReaction({ channelId: "C1", messageTs: "1.1", reactorUserId: "U1" });
+    assert.equal(analyzed, false, "a fresh PKB must not be rebuilt");
   });
 
   it("actor-verify uses host-ambient identity (no token passed to getAuthUser)", async () => {

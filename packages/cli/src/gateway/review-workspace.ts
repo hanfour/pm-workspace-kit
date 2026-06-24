@@ -19,6 +19,32 @@ function git(cwd: string, args: string[], env?: NodeJS.ProcessEnv): string {
 }
 
 /**
+ * True if the main clone's PKB should be (re)built before a review: it's missing,
+ * error-polluted (a prior generator saved an "Error: Reached max turns" string as
+ * a doc), or stale (the repo's latest commit is newer than the PKB). When false,
+ * the existing PKB is good enough to copy into the review checkout. The gateway
+ * builds it just-in-time so a review never runs without a PKB — which is what
+ * otherwise makes the agents grep the whole codebase, hit --max-turns, and report
+ * REVIEW_INCOMPLETE.
+ */
+export function pkbNeedsBuild(mainClone: string): boolean {
+  const pkb = path.join(mainClone, ".mra", "pkb");
+  if (!fs.existsSync(path.join(pkb, "meta.json"))) return true; // missing
+  for (const d of ["conventions", "architecture", "sitemap", "api-surface"]) {
+    const f = path.join(pkb, `${d}.md`);
+    if (fs.existsSync(f) && /Error:|Reached max turns/i.test(fs.readFileSync(f, "utf8").slice(0, 60))) {
+      return true; // error-polluted
+    }
+  }
+  try {
+    const metaMtime = fs.statSync(path.join(pkb, "meta.json")).mtimeMs;
+    const headTs = Number(git(mainClone, ["log", "-1", "--format=%ct"])) * 1000;
+    if (Number.isFinite(headTs) && headTs > metaMtime) return true; // stale
+  } catch { /* best-effort: if git/stat fails, don't force a rebuild */ }
+  return false;
+}
+
+/**
  * Git env that authenticates github.com clone/fetch with a PINNED token via
  * `http.extraheader`, injected through GIT_CONFIG_* env vars (NOT process args,
  * so the token never appears in `ps`). This overrides the host's git credential

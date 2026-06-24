@@ -5,7 +5,7 @@ import * as os from "node:os";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { execFileSync } from "node:child_process";
-import { prepareReviewClone, ensureReviewWorkspaceMeta, toHttpsGithub } from "../src/gateway/review-workspace";
+import { prepareReviewClone, ensureReviewWorkspaceMeta, toHttpsGithub, pkbNeedsBuild } from "../src/gateway/review-workspace";
 
 let root: string, mainWs: string, reviewWs: string, mainClone: string, origin: string, headSha: string;
 const g = (cwd: string, ...a: string[]) => execFileSync("git", a, { cwd, encoding: "utf8" }).trim();
@@ -110,5 +110,28 @@ describe("prepareReviewClone", () => {
     });
     assert.equal(res.ok, true);
     if (res.ok) assert.equal(g(res.cloneDir, "rev-parse", "HEAD"), headSha);
+  });
+});
+
+describe("pkbNeedsBuild", () => {
+  const pkbDir = () => path.join(mainClone, ".mra", "pkb");
+  it("missing PKB → true", () => {
+    fs.rmSync(path.join(mainClone, ".mra"), { recursive: true, force: true });
+    assert.equal(pkbNeedsBuild(mainClone), true);
+  });
+  it("fresh + valid PKB → false", () => {
+    for (const d of ["conventions", "architecture", "sitemap", "api-surface"]) {
+      fs.writeFileSync(path.join(pkbDir(), `${d}.md`), "# Doc\n" + "real substantive content. ".repeat(6));
+    }
+    fs.writeFileSync(path.join(pkbDir(), "meta.json"), JSON.stringify({ project: "proj" })); // bump mtime to now
+    assert.equal(pkbNeedsBuild(mainClone), false);
+  });
+  it("error-polluted core doc → true", () => {
+    fs.writeFileSync(path.join(pkbDir(), "conventions.md"), "Error: Reached max turns (5)\n");
+    assert.equal(pkbNeedsBuild(mainClone), true);
+  });
+  it("stale (repo commit newer than PKB) → true", () => {
+    fs.utimesSync(path.join(pkbDir(), "meta.json"), new Date("2020-01-01"), new Date("2020-01-01"));
+    assert.equal(pkbNeedsBuild(mainClone), true);
   });
 });

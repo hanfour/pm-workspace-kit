@@ -750,6 +750,29 @@ export async function runMraReview(
   return { ...raw, ...parsed };
 }
 
+/**
+ * Run `mra analyze <project>` to (re)build the project's PKB on the MAIN clone,
+ * just-in-time before a review. Without a PKB the review agents grep the whole
+ * codebase and hit --max-turns (→ REVIEW_INCOMPLETE); a PKB makes them finish.
+ * PKB generation is multi-agent and slow, so the timeout is generous. `cwd` must
+ * be the mra workspace (the project resolves under it; also pinned via
+ * MRA_WORKSPACE). Secrets are stripped like the review path — claude authenticates
+ * via its own session, not ANTHROPIC_API_KEY in this env.
+ */
+export async function runMraAnalyze(
+  args: { project: string; cwd: string; timeoutMs?: number },
+  opts: { onProgress?: (line: string) => void } = {},
+): Promise<{ ok: boolean; stdout: string; stderr: string; reason?: string }> {
+  const binary = findMraBinary();
+  if (!binary) {
+    return { ok: false, stdout: "", stderr: "", reason: "`mra` binary not found on PATH" };
+  }
+  const timeoutMs = args.timeoutMs ?? 900_000; // 15 min — PKB gen runs many agents
+  const env: NodeJS.ProcessEnv = { ...process.env, MRA_WORKSPACE: args.cwd };
+  for (const k of REVIEW_SECRET_ENV_DENYLIST) delete env[k];
+  return spawnMraCommand(binary, ["analyze", args.project], args.cwd, env, timeoutMs, opts.onProgress);
+}
+
 interface ReposJson {
   repos: Array<{ name: string; archived?: boolean; clone?: boolean }>;
 }
