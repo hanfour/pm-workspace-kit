@@ -137,6 +137,12 @@ export interface SlackAdapterOptions {
   attachmentIngest?: AttachmentIngestFn;
 }
 
+/**
+ * Pong wait before Socket-Mode treats the connection dead and reconnects (C2).
+ * Widened from the @slack/socket-mode 5s default — see the construction site.
+ */
+const SOCKET_CLIENT_PING_TIMEOUT_MS = 15_000;
+
 export class SlackAdapter {
   private socket: SocketModeClient;
   private web: WebClient;
@@ -209,6 +215,13 @@ export class SlackAdapter {
     } else {
       this.socket = new SocketModeClient({
         appToken: opts.config.slack.appToken!,
+        // C2: widen the pong window from the 5s default to 15s. macOS
+        // dark-wakes (MAGICWAKE) + App-Nap timer coalescing briefly delay the
+        // pong even with ProcessType=Interactive + caffeinate; a 5s window trips
+        // a reconnect on every blip (220 false pong-timeouts/day observed),
+        // which is what churns the watchdog. 15s tolerates the blip while still
+        // detecting a genuinely dead socket well within the watchdog's backstop.
+        clientPingTimeout: SOCKET_CLIENT_PING_TIMEOUT_MS,
         // Tap pong/ping-timeout WARN lines into the health tracker; logs
         // still print as before (level warn).
         logger: createPongTapLogger(() => this.health.recordPongTimeout(Date.now())),
