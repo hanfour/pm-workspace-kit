@@ -49,6 +49,14 @@ export interface AdapterWatchdogWiring {
   onLog: (msg: string) => void;
   /** Defaults to process.exit; injectable for tests. */
   exit?: (code: number) => void;
+  /**
+   * Synchronous hook run immediately BEFORE the loud exit (C1). The watchdog's
+   * loud-exit goes straight to process.exit, bypassing adapter.stop() — so A's
+   * review drain would not run and an in-flight review would be orphaned. The
+   * adapter wires this to drain in-flight reviews (abort + release) first.
+   * Best-effort: a throw here never blocks the exit.
+   */
+  beforeExit?: () => void;
   /** Defaults to Date.now; injectable for tests. */
   now?: () => number;
 }
@@ -75,7 +83,15 @@ export function makeAdapterWatchdogDeps(
         attempts: REUNHEALTHY_ATTEMPTS,
         alertTimeoutMs: WATCHDOG_ALERT_TIMEOUT_MS,
       }),
-    exit: w.exit ?? ((code) => process.exit(code)),
+    exit: (code) => {
+      // C1: drain in-flight reviews before the loud exit bypasses adapter.stop().
+      try {
+        w.beforeExit?.();
+      } catch {
+        /* drain is best-effort — never block the loud exit */
+      }
+      (w.exit ?? ((c) => process.exit(c)))(code);
+    },
     now: w.now ?? (() => Date.now()),
     onLog: w.onLog,
   };

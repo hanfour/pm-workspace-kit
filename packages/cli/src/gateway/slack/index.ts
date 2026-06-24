@@ -373,6 +373,13 @@ export class SlackAdapter {
           presence: this.presence,
           admins: this.config.admins,
           onLog: this.onLog,
+          // C1: the watchdog loud-exit bypasses adapter.stop(), so drain
+          // in-flight reviews here too (abort + release) — else a socket-death
+          // restart orphans them exactly like the crashes A/C3 already fixed.
+          beforeExit: () => {
+            const n = this.review.drainOnShutdown(this.onLog);
+            if (n > 0) this.onLog(`watchdog: drained ${n} in-flight review(s) before loud exit`);
+          },
         }),
       );
     }
