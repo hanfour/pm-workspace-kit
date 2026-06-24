@@ -410,6 +410,14 @@ export class SlackAdapter {
    */
   async stop(opts: { drainTimeoutMs?: number } = {}): Promise<void> {
     this.watchdog?.stop();
+    // A (graceful drain): detached `:cr:` reviews run OUTSIDE the turn queue, so
+    // `queue.waitForAll()` below never waits for them — a restart would orphan
+    // them (mra child runs on, claim left blocking re-review). Abort + release
+    // them here. Synchronous + fast, so it fits the shutdown grace window.
+    const drainedReviews = this.review.drainOnShutdown(this.onLog);
+    if (drainedReviews > 0) {
+      this.onLog(`stop: drained ${drainedReviews} in-flight review(s)`);
+    }
     try {
       await this.socket.disconnect();
     } catch {

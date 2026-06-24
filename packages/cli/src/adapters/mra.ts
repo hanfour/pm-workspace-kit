@@ -611,10 +611,13 @@ function spawnMraCommand(
   env: NodeJS.ProcessEnv,
   timeoutMs: number,
   onProgress: ((line: string) => void) | undefined,
+  /** When aborted (gateway shutdown / drain), SIGTERM the child and settle. */
+  signal?: AbortSignal,
 ): Promise<{ ok: boolean; stdout: string; stderr: string; reason?: string }> {
   return new Promise((resolve) => {
     let timeoutHandle: NodeJS.Timeout | undefined;
     let settled = false;
+    let onAbort: (() => void) | undefined;
     const settle = (r: {
       ok: boolean;
       stdout: string;
@@ -624,6 +627,7 @@ function spawnMraCommand(
       if (settled) return;
       settled = true;
       clearTimeout(timeoutHandle);
+      if (onAbort) signal?.removeEventListener("abort", onAbort);
       resolve(r);
     };
 
@@ -640,7 +644,24 @@ function spawnMraCommand(
     let stdoutBytes = 0;
     let lineBuf = "";
     let timedOut = false;
+    let aborted = false;
     let stdoutOverflowed = false;
+
+    // A: on gateway shutdown, kill the in-flight review child so it can't run
+    // on as an orphan (wasting compute, possibly posting after the claim is
+    // released). The close handler reports an "aborted" reason.
+    onAbort = () => {
+      aborted = true;
+      try {
+        child.kill("SIGTERM");
+      } catch {
+        /* already gone */
+      }
+    };
+    if (signal) {
+      if (signal.aborted) onAbort();
+      else signal.addEventListener("abort", onAbort, { once: true });
+    }
 
     timeoutHandle = setTimeout(() => {
       timedOut = true;
@@ -697,13 +718,15 @@ function spawnMraCommand(
     child.on("close", (code, signal) => {
       const stdout = stdoutChunks.join("");
       const stderr = stderrChunks.join("");
-      const ok = !timedOut && !stdoutOverflowed && code === 0;
+      const ok = !timedOut && !stdoutOverflowed && !aborted && code === 0;
       if (ok) {
         settle({ ok: true, stdout, stderr });
         return;
       }
       let reason: string;
-      if (stdoutOverflowed) {
+      if (aborted) {
+        reason = "aborted (gateway shutdown)";
+      } else if (stdoutOverflowed) {
         reason = `mra stdout exceeded ${MAX_MRA_STDOUT_BYTES} bytes`;
       } else if (timedOut) {
         reason = `mra timed out after ${timeoutMs}ms`;
@@ -734,6 +757,8 @@ export async function runMraReview(
     timeoutMs?: number;
     /** Pinned GitHub token for mra's POST (GH_TOKEN). Undefined → ambient gh. */
     ghToken?: string;
+    /** Abort to SIGTERM the review child (gateway shutdown / drain). */
+    signal?: AbortSignal;
   },
   opts: { onProgress?: (line: string) => void } = {},
 ): Promise<MraReviewResult> {
@@ -748,7 +773,7 @@ export async function runMraReview(
   const argv = buildReviewArgv(args.project, args.pr, args.strategy);
   const env = reviewEnv(args.strategy, args.ghToken);
 
-  const raw = await spawnMraCommand(binary, argv, args.cwd, env, timeoutMs, opts.onProgress);
+  const raw = await spawnMraCommand(binary, argv, args.cwd, env, timeoutMs, opts.onProgress, args.signal);
   const parsed = raw.ok ? parseReviewStdout(raw.stdout) : {};
   return { ...raw, ...parsed };
 }
@@ -763,7 +788,7 @@ export async function runMraReview(
  * via its own session, not ANTHROPIC_API_KEY in this env.
  */
 export async function runMraAnalyze(
-  args: { project: string; cwd: string; timeoutMs?: number },
+  args: { project: string; cwd: string; timeoutMs?: number; signal?: AbortSignal },
   opts: { onProgress?: (line: string) => void } = {},
 ): Promise<{ ok: boolean; stdout: string; stderr: string; reason?: string }> {
   const binary = findMraBinary();
@@ -773,7 +798,15 @@ export async function runMraAnalyze(
   const timeoutMs = args.timeoutMs ?? 900_000; // 15 min — PKB gen runs many agents
   const env: NodeJS.ProcessEnv = { ...process.env, MRA_WORKSPACE: args.cwd };
   for (const k of REVIEW_SECRET_ENV_DENYLIST) delete env[k];
-  return spawnMraCommand(binary, ["analyze", args.project], args.cwd, env, timeoutMs, opts.onProgress);
+  return spawnMraCommand(
+    binary,
+    ["analyze", args.project],
+    args.cwd,
+    env,
+    timeoutMs,
+    opts.onProgress,
+    args.signal,
+  );
 }
 
 interface ReposJson {

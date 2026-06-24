@@ -22,7 +22,7 @@ import {
 } from "../config";
 import { appendGatewayEvent } from "../events";
 import { parsePrRefs, type PrRef } from "../pr-ref";
-import { claimReview, finalizeReview, releaseReview } from "../review-claim";
+import { claimReview, finalizeReview, releaseReview, type ReviewRef } from "../review-claim";
 import {
   resolveProjectByRemote as resolveProjectByRemoteImpl,
   runMraReview as runMraReviewImpl,
@@ -85,8 +85,43 @@ export interface ReviewCoordinatorOptions {
   gateway: ReviewGateway;
 }
 
+/** A review currently running detached — tracked so shutdown can drain it (A). */
+interface InFlightReview {
+  claimRef: ReviewRef;
+  controller: AbortController;
+  label: string;
+}
+
 export class ReviewCoordinator {
+  /** Reviews running right now (detached). Drained on shutdown (A). */
+  private readonly inFlight = new Set<InFlightReview>();
+
   constructor(private readonly opts: ReviewCoordinatorOptions) {}
+
+  /**
+   * A (graceful drain): on gateway shutdown, abort every in-flight review —
+   * SIGTERM its mra child so it doesn't run on as an orphan, and release its
+   * claim so the PR is immediately re-reviewable (not falsely "already
+   * reviewed"). Called from the shutdown handler BEFORE process.exit; releases
+   * synchronously rather than waiting on each review's async finally (which the
+   * exit would pre-empt). Returns the number drained.
+   */
+  drainOnShutdown(log: (msg: string) => void): number {
+    const entries = [...this.inFlight];
+    for (const e of entries) {
+      try {
+        e.controller.abort();
+      } catch {
+        /* best-effort */
+      }
+      releaseReview(e.claimRef);
+      log(
+        `review: interrupted ${e.label} by shutdown — mra killed, claim released (re-send to retry)`,
+      );
+    }
+    this.inFlight.clear();
+    return entries.length;
+  }
 
   private async reply(channel: string, threadTs: string, text: string): Promise<void> {
     try {
@@ -285,6 +320,16 @@ export class ReviewCoordinator {
       return;
     }
 
+    // A: register this review so a shutdown can abort it (SIGTERM the mra
+    // child) and release its claim, instead of orphaning it.
+    const controller = new AbortController();
+    const inflight: InFlightReview = {
+      claimRef,
+      controller,
+      label: `${slug}#${ref.number}`,
+    };
+    this.inFlight.add(inflight);
+
     let posted = false;
     try {
       // Ensure a fresh PKB on the main clone BEFORE prepareReviewClone copies it
@@ -297,7 +342,7 @@ export class ReviewCoordinator {
       if (gateway.pkbNeedsBuild(mainClone)) {
         onLog(`pkb: ${project} 缺/過時 PKB — 先建(一次性,之後 review 又快又完整)`);
         const built = await gateway.runMraAnalyze(
-          { project, cwd: ctx.workspace },
+          { project, cwd: ctx.workspace, signal: controller.signal },
           { onProgress: (line) => onLog(`mra analyze ${project}: ${line}`) },
         );
         if (!built.ok) {
@@ -346,6 +391,7 @@ export class ReviewCoordinator {
           strategy: ctx.review.strategy,
           cwd: ctx.reviewWorkspace,
           ghToken: ctx.token, // pin mra's POST identity (GH_TOKEN), stable vs active gh
+          signal: controller.signal, // A: shutdown aborts → SIGTERM the review child
         },
         { onProgress: (line) => onLog(`mra review ${slug}#${ref.number}: ${line}`) },
       );
@@ -379,6 +425,7 @@ export class ReviewCoordinator {
         `:warning: PR #${ref.number} review 例外：${(err as Error).message}`,
       );
     } finally {
+      this.inFlight.delete(inflight);
       if (!posted) releaseReview(claimRef);
       gateway.teardownReviewClone({ reviewWorkspace: ctx.reviewWorkspace, project });
     }

@@ -269,3 +269,57 @@ describe("ReviewCoordinator idempotency UX (already-reviewed note)", () => {
     );
   });
 });
+
+describe("ReviewCoordinator.drainOnShutdown (A graceful drain)", () => {
+  it("aborts an in-flight review (SIGTERM its child) + releases its claim", async () => {
+    const web = new FakeWebClient();
+    let started!: () => void;
+    const startedP = new Promise<void>((r) => (started = r));
+    let abortedReason: string | undefined;
+    const c = coord(
+      web,
+      gw({
+        // Block until the gateway aborts — simulates an mra review mid-flight.
+        runMraReview: ((args: { signal?: AbortSignal }) =>
+          new Promise((resolve) => {
+            started();
+            args.signal?.addEventListener("abort", () => {
+              abortedReason = "aborted (gateway shutdown)";
+              resolve({ ok: false, reason: abortedReason, stdout: "", stderr: "" });
+            });
+          })) as never,
+      }),
+    );
+    // detached — don't await; it parks inside runMraReview
+    const p = c.fromMessage({
+      channelId: "C1",
+      threadTs: "1.1",
+      userId: "U1",
+      text: ":cr: <https://github.com/onead/OnePixel/pull/3|#3>",
+    });
+    await startedP; // review is now registered as in-flight
+
+    const logs: string[] = [];
+    const drained = c.drainOnShutdown((m) => logs.push(m));
+    assert.equal(drained, 1, "the one in-flight review is drained");
+    assert.equal(abortedReason, "aborted (gateway shutdown)", "its mra child was aborted");
+    assert.ok(
+      logs.some((l) => /interrupted .*#3 by shutdown/.test(l)),
+      "drain logs the interrupted PR",
+    );
+
+    await p; // the aborted review settles + its finally runs
+    // claim was released → the same commit can be claimed (re-reviewed) again
+    const { claimReview } = await import("../src/gateway/review-claim");
+    assert.equal(
+      claimReview({ owner: "onead", repo: "OnePixel", pr: 3, headSha: "headsha" }),
+      true,
+      "drained review's claim must be released so the PR is re-reviewable",
+    );
+  });
+
+  it("drains nothing (returns 0) when no review is in flight", async () => {
+    const c = coord(new FakeWebClient(), gw());
+    assert.equal(c.drainOnShutdown(() => {}), 0);
+  });
+});
