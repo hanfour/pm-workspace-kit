@@ -20,7 +20,10 @@ set -uo pipefail
 WORKSPACE="${MRA_WORKSPACE:-$HOME/OneAD}"
 MRA="${MRA_BIN:-$HOME/multi-repo-agent/bin/mra.sh}"
 MAX_AGE_DAYS="${PKB_REFRESH_ACTIVE_DAYS:-30}"
-CONCURRENCY="${PKB_REFRESH_CONCURRENCY:-2}"
+# 1 by default: each `mra analyze` already runs 4 core agents in parallel, so
+# 2 repos = 8 concurrent claude calls, which can trip API rate limits and make
+# generators cut off. Raise via env only if your limits are comfortable.
+CONCURRENCY="${PKB_REFRESH_CONCURRENCY:-1}"
 DRY_RUN=false
 [[ "${1:-}" == "--dry-run" ]] && DRY_RUN=true
 
