@@ -272,7 +272,16 @@ export class ReviewCoordinator {
       headSha: head.sha,
     };
     if (!claimReview(claimRef)) {
+      // Idempotency: this exact commit was already reviewed. Don't re-review
+      // (avoids duplicate posts) — but DON'T be silent: the user got the "收到"
+      // ack, so tell them why no result follows. (Benign; no review.skipped
+      // event so it doesn't read as a failure.)
       onLog(`review: already done ${slug}#${ref.number}@${head.sha.slice(0, 8)}`);
+      await this.reply(
+        ctx.channelId,
+        ctx.threadTs,
+        `:information_source: ${slug}#${ref.number} 這個 commit（\`${head.sha.slice(0, 7)}\`）已經 review 過了，略過（同一 commit 不重複審）。要重審請推新 commit 後再發。`,
+      );
       return;
     }
 

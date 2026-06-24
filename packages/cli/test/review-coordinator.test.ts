@@ -250,3 +250,22 @@ describe("ReviewCoordinator immediate ack (detached UX)", () => {
     assert.equal(web.posted.length, 0);
   });
 });
+
+describe("ReviewCoordinator idempotency UX (already-reviewed note)", () => {
+  it("re-review of the SAME commit posts an 'already reviewed' note (not silent)", async () => {
+    const web = new FakeWebClient();
+    const c = coord(web, gw()); // gw().getPrHead returns a constant head sha
+    const msg = {
+      channelId: "C1", threadTs: "1.1", userId: "U1",
+      text: ":cr: https://github.com/onead/OnePixel/pull/12",
+    };
+    await c.fromMessage(msg); // first review claims + posts a result
+    const n = web.posted.length;
+    await c.fromMessage({ ...msg, threadTs: "1.2" }); // same PR + head → already done
+    const after = web.posted.slice(n);
+    assert.ok(
+      after.some((p) => /已經 review 過/.test(p.text ?? "")),
+      "second review of the same commit must post an 'already reviewed' note, not stay silent",
+    );
+  });
+});
