@@ -137,7 +137,7 @@ export class ChannelMentionHandler {
         const tier = this.config
           ? pickAudience(this.config, userId, channelId)
           : "tech";
-        if (needsConsentNotice(channelId)) {
+        if (needsConsentNotice(`${channelId}:${userId}`)) {
           await this.web.chat
             .postMessage({
               channel: channelId,

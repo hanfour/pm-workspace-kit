@@ -27,4 +27,21 @@ describe("audio routing helpers", () => {
       else delete process.env.HOME;
     }
   });
+
+  it("needsConsentNotice is per-user (different users in same channel each get the notice)", () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "pmk-cn-"));
+    process.env.HOME = tmp;
+    try {
+      // User A in channel C1: first call → true (needs notice)
+      assert.equal(needsConsentNotice("C1:UA"), true);
+      // User A in channel C1: second call → false (already seen)
+      assert.equal(needsConsentNotice("C1:UA"), false);
+      // User B in channel C1: first call → true (different user, hasn't seen notice yet)
+      assert.equal(needsConsentNotice("C1:UB"), true);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+      if (ORIG_HOME) process.env.HOME = ORIG_HOME;
+      else delete process.env.HOME;
+    }
+  });
 });
