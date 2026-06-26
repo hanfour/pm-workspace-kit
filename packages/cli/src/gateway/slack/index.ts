@@ -55,7 +55,7 @@ import {
   runMraAsk as runMraAskImpl,
 } from "../../adapters/mra";
 import { IssueCoordinator, realGithubGateway, type GithubGateway } from "./issue";
-import { ReviewCoordinator, realReviewGateway, isReviewRequest } from "./review";
+import { ReviewCoordinator, realReviewGateway, isReviewRequest, isRetryRequest } from "./review";
 import {
   approveAtom,
   findAtomByApprovalMessage,
@@ -635,6 +635,17 @@ export class SlackAdapter {
     // path): a minutes-long review must not hold this user's turn slot. The
     // coordinator acks now and posts each PR's result when done; .catch is
     // mandatory so a detached rejection can't crash the process.
+    // `retry` in a review-result thread → re-run that thread's PR review
+    // (re-fetches the thread root `:cr:` message). Detached + .catch like below.
+    if (this.review.isEnabled() && isRetryRequest(text)) {
+      void this.review
+        .retryInThread({ channelId, threadTs: replyThreadTs, userId })
+        .catch((err) =>
+          this.onLog(`review: detached mention retry failed: ${(err as Error).message}`),
+        );
+      return;
+    }
+
     if (this.review.isEnabled() && isReviewRequest(text)) {
       void this.review
         .fromMessage({ channelId, threadTs: replyThreadTs, userId, text })
@@ -751,6 +762,16 @@ export class SlackAdapter {
     // and the user can keep chatting / fire more reviews; the coordinator acks
     // immediately and posts each PR's result when done. MUST .catch — a
     // detached rejection would crash the process (unhandled rejection).
+    // `retry` in a review-result thread → re-run that thread's PR review.
+    if (this.review.isEnabled() && isRetryRequest(text)) {
+      void this.review
+        .retryInThread({ channelId, threadTs, userId })
+        .catch((err) =>
+          this.onLog(`review: detached DM retry failed: ${(err as Error).message}`),
+        );
+      return;
+    }
+
     if (this.review.isEnabled() && isReviewRequest(text)) {
       void this.review
         .fromMessage({ channelId, threadTs, userId, text })
