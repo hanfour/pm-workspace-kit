@@ -86,6 +86,10 @@ export async function ingestAttachments(args: IngestArgs): Promise<FileStatus[]>
       skip("unsupported type (text/markdown/code, PDF, PNG/JPEG/GIF/WebP only)");
       continue;
     }
+    if (cat === "audio") {
+      skip("音訊請在已啟用音訊功能的 DM 或頻道直接上傳(此處不作文字處理)");
+      continue;
+    }
 
     if (file.is_external) {
       skip("can't read linked (Google/Box) files");

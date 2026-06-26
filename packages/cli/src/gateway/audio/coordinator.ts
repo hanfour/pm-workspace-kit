@@ -203,8 +203,11 @@ export class AudioCoordinator {
     if (!isAudioMessage(files)) return false;
     const audioFiles = files.filter((f) => categoryFor(f) === "audio");
     for (const a of audioFiles) releaseAudio(a.id);
+    const threadKey: ThreadKey = args.channelId.startsWith("D")
+      ? { kind: "dm", userId: args.userId, threadTs: args.threadTs }
+      : { kind: "channel", channelId: args.channelId, threadTs: args.threadTs };
     await this.run({
-      threadKey: { kind: "channel", channelId: args.channelId, threadTs: args.threadTs },
+      threadKey,
       channelId: args.channelId,
       threadTs: args.threadTs,
       userId: args.userId,
@@ -403,7 +406,7 @@ export class AudioCoordinator {
       // Note whether extra audio files were skipped (fan-out is capped at 1).
       const totalAudio = args.files.filter((f) => categoryFor(f) === "audio").length;
       const extra =
-        audioFiles.length < totalAudio
+        totalAudio > 1
           ? "\n_（本則多個音訊只處理了第一個,其餘請另開訊息）_"
           : "";
 

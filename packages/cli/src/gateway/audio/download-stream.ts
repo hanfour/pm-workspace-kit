@@ -29,9 +29,10 @@ export async function streamSlackFileToTemp(
 
   const out = fs.createWriteStream(destPath);
   let bytes = 0;
+  let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
 
   try {
-    const reader = (response.body as ReadableStream<Uint8Array>).getReader();
+    reader = (response.body as ReadableStream<Uint8Array>).getReader();
     for (;;) {
       const { done, value } = await reader.read();
       if (done) break;
@@ -44,7 +45,9 @@ export async function streamSlackFileToTemp(
     await new Promise<void>((resolve) => out.end(resolve));
     return { bytes };
   } catch (err) {
-    // Wait for the stream to close before deleting so no async activity leaks.
+    // Cancel the response body reader to release the connection.
+    if (reader) await reader.cancel().catch(() => {});
+    // Wait for the write stream to close before deleting so no async activity leaks.
     await new Promise<void>((resolve) => {
       out.on("close", resolve);
       out.on("error", () => resolve());

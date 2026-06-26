@@ -164,7 +164,7 @@ describe("AudioCoordinator", () => {
     assert.ok([...posted, ...updated].some((m) => m.includes("上限")));
   });
 
-  it("retryInThread: audio thread → releases claim, runs pipeline, returns true", async () => {
+  it("retryInThread: audio thread (channel) → releases claim, runs pipeline with channel key, returns true", async () => {
     const posted: string[] = [];
     const updated: string[] = [];
     const audioFile = af();
@@ -177,15 +177,40 @@ describe("AudioCoordinator", () => {
       deps: deps() as never,
     });
     const result = await co.retryInThread({
-      channelId: "C",
+      channelId: "C123",
       threadTs: "1.2",
       userId: "U1",
       botToken: "t",
       tier: "pm",
     });
     assert.equal(result, true);
-    // transcript stored as attachment (proves run() was called)
-    const stored = loadAttachments({ kind: "channel", channelId: "C", threadTs: "1.2" });
+    // transcript stored under channel key (channelId starts with "C")
+    const stored = loadAttachments({ kind: "channel", channelId: "C123", threadTs: "1.2" });
+    assert.equal(stored[0]?.text, "逐字稿內容");
+  });
+
+  it("retryInThread: audio thread (DM) → uses dm thread key so transcript is retrievable", async () => {
+    const posted: string[] = [];
+    const updated: string[] = [];
+    const audioFile = af();
+    const web = makeRetryWeb(posted, updated, [audioFile]);
+    const co = new AudioCoordinator({
+      web,
+      config: cfg,
+      onLog: () => {},
+      llm: llmStub,
+      deps: deps() as never,
+    });
+    const result = await co.retryInThread({
+      channelId: "D123",  // DM channel id starts with "D"
+      threadTs: "1.2",
+      userId: "U1",
+      botToken: "t",
+      tier: "pm",
+    });
+    assert.equal(result, true);
+    // transcript stored under dm key (channelId starts with "D")
+    const stored = loadAttachments({ kind: "dm", userId: "U1", threadTs: "1.2" });
     assert.equal(stored[0]?.text, "逐字稿內容");
   });
 

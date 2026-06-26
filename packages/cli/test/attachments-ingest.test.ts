@@ -39,6 +39,12 @@ describe("ingestAttachments", () => {
     assert.equal(r[0].status, "skipped");
     assert.equal(downloaded, false);
   });
+  it("skips audio files without downloading when audio feature is disabled in ingest", async () => {
+    let downloaded = false;
+    const r = await ingestAttachments({ files: [f({ mimetype: "audio/mp4", filetype: "mp4", name: "m.m4a" })], threadKey: KEY, botToken: "t", ...deps({ download: async () => { downloaded = true; return Buffer.from(""); } }) });
+    assert.equal(r[0].status, "skipped");
+    assert.equal(downloaded, false, "audio file must not be downloaded");
+  });
   it("skips external files and missing-url files pre-download", async () => {
     const r = await ingestAttachments({ files: [f({ is_external: true })], threadKey: KEY, botToken: "t", ...deps() });
     assert.equal(r[0].status, "skipped");
