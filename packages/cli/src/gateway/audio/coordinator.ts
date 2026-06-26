@@ -292,6 +292,8 @@ export class AudioCoordinator {
     // Hoisted so the catch block can refund quota if it was reserved.
     let minutes = 0;
     let quotaReserved = false;
+    // True once transcription has incurred real API cost; catch must not refund then.
+    let transcribeSucceeded = false;
 
     /** Update the ack message if we have its ts; otherwise post a new reply. */
     const post = async (text: string): Promise<void> => {
@@ -368,6 +370,7 @@ export class AudioCoordinator {
           );
         } else if (result.partialTranscript) {
           // Partial output was produced; real API cost incurred — do not refund quota.
+          transcribeSucceeded = true;
           appendAttachment(args.threadKey, {
             fileId: file.id,
             name: file.name ?? file.id,
@@ -399,6 +402,9 @@ export class AudioCoordinator {
         ms: now() - t0,
         estimatedUsd,
       });
+
+      // Transcription cost was incurred; mark so catch block does not refund.
+      transcribeSucceeded = true;
 
       // Store raw transcript (no frame header — that is added at inference time).
       appendAttachment(args.threadKey, {
@@ -435,8 +441,10 @@ export class AudioCoordinator {
       await post(summary.text + extra);
     } catch (err) {
       releaseAudio(file.id);
-      // Refund quota if it was reserved but no usable output was produced.
-      if (quotaReserved && minutes > 0) {
+      // Refund quota only if transcription never incurred real cost.
+      // If transcribeSucceeded is true the OpenAI charge was already spent,
+      // so the daily cap must NOT be refunded regardless of what failed later.
+      if (quotaReserved && minutes > 0 && !transcribeSucceeded) {
         releaseQuota({ userId: args.userId, minutes, now: () => now() });
       }
       appendGatewayEvent({

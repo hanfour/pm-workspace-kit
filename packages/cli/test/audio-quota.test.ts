@@ -39,11 +39,14 @@ describe("releaseAudioQuota", () => {
     assert.equal(r.ok, true);
   });
 
-  it("floor-at-0: releasing more than reserved does not go negative", () => {
-    // Never reserved anything, release 50 → should floor at 0 globally and per-user.
+  it("floor-at-0: releasing more than reserved does not go negative (discriminating)", () => {
+    // Release 50 from a zero baseline. A floored impl clamps to 0; an unfloored impl
+    // would store -50 globally and per-user.
     releaseAudioQuota({ userId: "U1", minutes: 50, now: fixedNow });
-    // A fresh reserve of 120 should succeed (global would be -50 → clamped to 0).
-    const r = reserveAudioQuota({ userId: "U1", minutes: 120, perUserDailyMinutes: 120, globalDailyMinutes: 150, now: fixedNow });
-    assert.equal(r.ok, true);
+    // Now try to reserve 175 against a globalDailyMinutes of 150.
+    // Floored (0 + 175 = 175 > 150)  → deny  (correct)
+    // Unfloored (-50 + 175 = 125 ≤ 150) → allow (wrong)
+    const r = reserveAudioQuota({ userId: "U1", minutes: 175, perUserDailyMinutes: 9999, globalDailyMinutes: 150, now: fixedNow });
+    assert.equal(r.ok, false, "global cap must deny: floored baseline 0+175>150");
   });
 });
