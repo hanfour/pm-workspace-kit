@@ -15,6 +15,8 @@ export interface TranscribeDeps {
   sleep?: (ms: number) => Promise<void>;
   outDir?: string;
   signal?: AbortSignal;
+  /** Skip the internal probe() call and use this duration directly. */
+  knownDurationSec?: number;
 }
 
 const truncate = (s: string): string =>
@@ -29,13 +31,14 @@ async function withRetry(
     try {
       return await fn();
     } catch (err) {
+      if (!(err instanceof TranscribeError)) throw err;
       lastErr = err;
       const status = err instanceof TranscribeError ? err.status : undefined;
       // Terminal: 4xx errors OTHER than 429 (e.g. 400 Bad Request, 401 Unauthorized)
       // Retryable: 429 (rate-limit), any 5xx (transient server error), network errors (no status)
       if (status !== undefined && status >= 400 && status < 500 && status !== 429) throw err;
-      // Exponential backoff before next attempt
-      await sleep(500 * Math.pow(2, attempt));
+      // Exponential backoff before next attempt — only when another attempt will follow.
+      if (attempt < 2) await sleep(500 * Math.pow(2, attempt));
     }
   }
   throw lastErr;
@@ -52,7 +55,10 @@ export async function transcribeAudio(
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
   const outDir = deps.outDir ?? os.tmpdir();
 
-  const { durationSec } = await probe(inputPath, {});
+  const { durationSec } =
+    deps.knownDurationSec !== undefined
+      ? { durationSec: deps.knownDurationSec }
+      : await probe(inputPath, {});
   const maxAllowed = Math.min(cfg.maxDurationSec, MAX_AUDIO_DURATION_SEC);
   if (durationSec > maxAllowed) {
     return { ok: false, reason: "too-long", durationSec };
@@ -64,11 +70,12 @@ export async function transcribeAudio(
   for (let i = 0; i < chunks.length; i++) {
     try {
       const text = await withRetry(
-        () => tf(chunks[i], { apiKey: cfg.apiKey, model: cfg.model, language: cfg.language }),
+        () => tf(chunks[i], { apiKey: cfg.apiKey, model: cfg.model, language: cfg.language }, { signal: deps.signal }),
         sleep,
       );
       segs.push(text);
-    } catch {
+    } catch (err) {
+      if (!(err instanceof TranscribeError)) throw err;
       const partial =
         (segs.length > 0 ? segs.join("\n") + "\n" : "") +
         `[第 ${i + 1} 段轉錄失敗，回 retry 重跑此段]`;

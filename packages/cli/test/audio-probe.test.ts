@@ -14,4 +14,18 @@ describe("probeAudio", () => {
   it("throws on unparseable output", async () => {
     await assert.rejects(() => probeAudio("/tmp/x.ogg", { run: fakeRun("not json") as never }));
   });
+  it("rejects when duration is zero (ffprobe reports no audio)", async () => {
+    const json = JSON.stringify({ format: { duration: "0", size: "1048576" } });
+    await assert.rejects(
+      () => probeAudio("/tmp/x.ogg", { run: fakeRun(json) as never }),
+      /no duration/,
+    );
+  });
+  it("rejects when duration field is missing from ffprobe output", async () => {
+    const json = JSON.stringify({ format: { size: "1048576" } });
+    await assert.rejects(
+      () => probeAudio("/tmp/x.ogg", { run: fakeRun(json) as never }),
+      /no duration/,
+    );
+  });
 });

@@ -63,6 +63,7 @@ export const AUDIO_CHUNK_TARGET_BYTES = 20 * 1024 * 1024; // 切片目標（留 
 export const TRANSCRIPT_CAP = 500_000;
 export const MAX_AUDIO_FILES_PER_MESSAGE = 2;
 
+/** Supported audio mimetypes accepted by the transcription pipeline. */
 export const AUDIO_MIMETYPES = new Set([
   "audio/mpeg", "audio/mp3", "audio/mp4", "audio/m4a", "audio/x-m4a",
   "audio/wav", "audio/x-wav", "audio/webm", "audio/ogg", "audio/flac", "audio/aac",

@@ -14,7 +14,19 @@ function dayFile(now: number): string {
 
 function load(file: string): DayUsage {
   try {
-    return JSON.parse(fs.readFileSync(file, "utf8")) as DayUsage;
+    const parsed = JSON.parse(fs.readFileSync(file, "utf8")) as DayUsage;
+    // Validate shape: guard against valid-JSON-but-wrong-type files that
+    // would make global/perUser arithmetic produce NaN and bypass caps.
+    if (!Number.isFinite(parsed.global) || typeof parsed.perUser !== "object" || parsed.perUser === null) {
+      return { global: 0, perUser: {} };
+    }
+    // Coerce each per-user value; drop non-finite entries.
+    const perUser: Record<string, number> = {};
+    for (const [k, v] of Object.entries(parsed.perUser)) {
+      const n = Number(v);
+      if (Number.isFinite(n)) perUser[k] = n;
+    }
+    return { global: Number(parsed.global), perUser };
   } catch {
     return { global: 0, perUser: {} };
   }

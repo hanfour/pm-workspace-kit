@@ -12,7 +12,7 @@ const ENDPOINT = "https://api.openai.com/v1/audio/transcriptions";
 export async function transcribeFile(
   filePath: string,
   opts: { apiKey: string; model: string; language?: string },
-  deps: { fetchImpl?: typeof fetch; readStream?: (p: string) => unknown } = {},
+  deps: { fetchImpl?: typeof fetch; readStream?: (p: string) => unknown; signal?: AbortSignal } = {},
 ): Promise<string> {
   const fetchImpl = deps.fetchImpl ?? fetch;
   const bytes = deps.readStream ? deps.readStream(filePath) : fs.readFileSync(filePath);
@@ -23,8 +23,9 @@ export async function transcribeFile(
 
   let resp: Response;
   try {
-    resp = await fetchImpl(ENDPOINT, { method: "POST", headers: { Authorization: `Bearer ${opts.apiKey}` }, body: form as never });
+    resp = await fetchImpl(ENDPOINT, { method: "POST", headers: { Authorization: `Bearer ${opts.apiKey}` }, body: form as never, signal: deps.signal });
   } catch (err) {
+    if ((err as { name?: string }).name === "AbortError") throw err; // propagate abort immediately
     throw new TranscribeError(`network error: ${(err as Error).message}`);
   }
   if (!resp.ok) {

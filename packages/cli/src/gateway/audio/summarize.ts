@@ -9,15 +9,25 @@ const LONG_PROMPT =
 const SHORT_PROMPT =
   "你是 PM 助理。這是一段簡短語音。用繁體中文台灣用語給 1-2 句重點摘要,再問一句使用者想拿它做什麼。不要套用冗長模板。";
 
+/** Per-tier tone clause appended to the base system prompt. */
+const TIER_TONE: Record<string, string> = {
+  tech: "語氣簡潔技術性,省略背景說明,直接列重點與結論。",
+  pm: "聚焦決策、行動項目與需求,結構清晰。",
+  biz: "強調成果與影響,避免技術術語,適合業務利害關係人閱讀。",
+  exec: "強調成果與影響,避免技術術語,適合業務利害關係人閱讀。",
+};
+
 export async function summarizeMeeting(args: {
   transcript: string; durationSec: number; userInstruction?: string; tier: string; llm: LlmProvider; actor?: string;
 }): Promise<{ text: string; mode: "short" | "long" | "instructed" }> {
   const mode: "short" | "long" | "instructed" =
     args.userInstruction ? "instructed" : args.durationSec < 120 ? "short" : "long";
-  const system =
+  const baseSystem =
     mode === "instructed"
       ? `你是 PM 助理,依使用者指令處理逐字稿,用繁體中文台灣用語回答。使用者指令:${args.userInstruction}`
       : mode === "short" ? SHORT_PROMPT : LONG_PROMPT;
+  const tierTone = TIER_TONE[args.tier] ?? "";
+  const system = tierTone ? `${baseSystem} ${tierTone}` : baseSystem;
   const user = `${TRANSCRIPT_FRAME_HEADER}\n\n${args.transcript}`;
   const messages: ChatMessage[] = [{ role: "user", content: user }];
   const text = await args.llm.chat(system, messages, { actor: args.actor });

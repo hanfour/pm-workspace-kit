@@ -716,6 +716,12 @@ export class SlackAdapter {
           .catch((err) =>
             this.onLog(`review: mention retry failed: ${(err as Error).message}`),
           );
+      } else {
+        // Neither audio nor review owns this thread: inform the user instead
+        // of silently dropping the bare retry.
+        await this.web.chat
+          .postMessage({ channel: channelId, thread_ts: replyThreadTs, text: "這個 thread 沒有可重試的音訊或 PR review。" })
+          .catch(() => {});
       }
       return;
     }
@@ -858,6 +864,12 @@ export class SlackAdapter {
           .catch((err) =>
             this.onLog(`review: DM retry failed: ${(err as Error).message}`),
           );
+      } else {
+        // Neither audio nor review owns this thread: inform the user instead
+        // of silently dropping the bare retry.
+        await this.web.chat
+          .postMessage({ channel: channelId, thread_ts: threadTs, text: "這個 thread 沒有可重試的音訊或 PR review。" })
+          .catch(() => {});
       }
       return;
     }
@@ -868,7 +880,7 @@ export class SlackAdapter {
     if (this.audio.isEnabled() && isAudioMessage(files ?? [])) {
       const botToken = this.config.slack.botToken ?? "";
       const tier = pickAudience(this.config, userId);
-      if (needsConsentNotice(channelId)) {
+      if (needsConsentNotice(`${channelId}:${userId}`)) {
         await this.web.chat
           .postMessage({
             channel: channelId,

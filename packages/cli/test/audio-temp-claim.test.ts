@@ -62,4 +62,24 @@ describe("audio temp + claim", () => {
     assert.equal(claimAudio("FRESH_CLAIM"), false, "fresh claim should still be active");
     releaseAudio("FRESH_CLAIM");
   });
+
+  it("rethrows a non-EEXIST error from claimAudio (EACCES when dir is read-only)", () => {
+    // Make the claims directory non-writable so writeFileSync fails with EACCES
+    // (not EEXIST), which must be rethrown rather than silently returning false.
+    const claimsDir = path.join(tmp, ".pmk", "gateway", "audio-claims");
+    fs.mkdirSync(claimsDir, { recursive: true });
+    fs.chmodSync(claimsDir, 0o555);
+    try {
+      assert.throws(
+        () => claimAudio("NOPERM"),
+        (err: unknown) => {
+          const code = (err as NodeJS.ErrnoException).code;
+          assert.notEqual(code, "EEXIST", "non-EEXIST errors must be rethrown, not swallowed");
+          return true;
+        },
+      );
+    } finally {
+      fs.chmodSync(claimsDir, 0o700); // restore so afterEach can clean up
+    }
+  });
 });

@@ -13,6 +13,9 @@ describe("audio.* events round-trip", () => {
   afterEach(() => { fs.rmSync(tmp, { recursive: true, force: true }); if (ORIG) process.env.HOME = ORIG; });
 
   it("writes and reads audio.transcribed/summarized/failed", () => {
+    // `as never` casts below are TDD-RED-phase artifacts: audio event types are
+    // not yet registered in the shared GatewayEvent union, so we cast to bypass
+    // TS until the union is extended in a follow-up.
     appendGatewayEvent({ type: "audio.transcribed", actor: "U1", durationSec: 600, chunks: 1, ms: 1234, estimatedUsd: 0.06 } as never);
     appendGatewayEvent({ type: "audio.summarized", actor: "U1", mode: "long" } as never);
     appendGatewayEvent({ type: "audio.failed", actor: "U1", reason: "transcribe-failed" } as never);
