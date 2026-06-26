@@ -78,6 +78,17 @@ export function isReviewRequest(text: string): boolean {
   return text.includes(":cr:") && parsePrRefs(text).length > 0;
 }
 
+/**
+ * True when a message is a bare retry command (`retry` / `重試` / `重跑`), used
+ * inside a review-result thread to re-run that thread's PR review. The bot
+ * @-mention is stripped upstream, so we match the trimmed text exactly to avoid
+ * intercepting ordinary chat that merely mentions "retry".
+ */
+export function isRetryRequest(text: string): boolean {
+  const t = text.trim().toLowerCase();
+  return t === "retry" || t === "重試" || t === "重跑";
+}
+
 export interface ReviewCoordinatorOptions {
   web: WebClient;
   config: GatewayConfig;
@@ -167,6 +178,38 @@ export class ReviewCoordinator {
       threadTs: args.threadTs,
       actorUserId: args.userId,
       text: args.text,
+    });
+  }
+
+  /**
+   * `retry` posted in a review-result thread → re-run that thread's PR review.
+   * Stateless: a Slack thread shares its root ts, so `threadTs` IS the original
+   * `:cr:` trigger message — we re-fetch it and re-run. A prior FAILED review
+   * released its claim, so the same commit re-reviews; a successful one's claim
+   * is still finalized and falls through to the "already reviewed" note. If the
+   * thread root isn't a review request (e.g. a bare top-level `retry`), nudge
+   * the user instead of silently doing nothing.
+   */
+  async retryInThread(args: {
+    channelId: string;
+    threadTs: string;
+    userId: string;
+  }): Promise<void> {
+    if (!resolveReviewConfig(this.opts.config.review).enabled) return;
+    const rootText = await this.fetchMessageText(args.channelId, args.threadTs);
+    if (!rootText || !isReviewRequest(rootText)) {
+      await this.reply(
+        args.channelId,
+        args.threadTs,
+        ":information_source: 這個 thread 沒有可重試的 PR review。請用 `:cr: <PR 連結>` 重新發起。",
+      );
+      return;
+    }
+    await this.processReviewRequest({
+      channelId: args.channelId,
+      threadTs: args.threadTs,
+      actorUserId: args.userId,
+      text: rootText,
     });
   }
 

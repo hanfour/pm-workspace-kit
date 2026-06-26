@@ -5,7 +5,7 @@ import * as os from "node:os";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { FakeWebClient } from "./harness/slack-fakes";
-import { ReviewCoordinator, isReviewRequest, type ReviewGateway } from "../src/gateway/slack/review";
+import { ReviewCoordinator, isReviewRequest, isRetryRequest, type ReviewGateway } from "../src/gateway/slack/review";
 import { resolveReviewConfig } from "../src/gateway/config";
 
 const ORIG_HOME = process.env.HOME; // gatewayDir() is HOME-based; isolate via HOME (not PMK_HOME)
@@ -321,5 +321,44 @@ describe("ReviewCoordinator.drainOnShutdown (A graceful drain)", () => {
   it("drains nothing (returns 0) when no review is in flight", async () => {
     const c = coord(new FakeWebClient(), gw());
     assert.equal(c.drainOnShutdown(() => {}), 0);
+  });
+});
+
+describe("isRetryRequest", () => {
+  it("matches a bare retry / 重試 / 重跑 (trimmed, case-insensitive)", () => {
+    for (const t of ["retry", "  Retry ", "RETRY", "重試", "重跑"]) {
+      assert.equal(isRetryRequest(t), true, `should match: '${t}'`);
+    }
+  });
+  it("does NOT match chat that merely contains 'retry'", () => {
+    for (const t of ["please retry", "retry the build", "", ":cr: x"]) {
+      assert.equal(isRetryRequest(t), false, `should not match: '${t}'`);
+    }
+  });
+});
+
+describe("ReviewCoordinator.retryInThread", () => {
+  it("re-runs the review for the thread root's :cr: message", async () => {
+    const web = new FakeWebClient();
+    // the thread root (fetched via conversations.history) is the original trigger
+    web.conversationsHistoryResponse = {
+      ok: true,
+      messages: [{ text: ":cr: <https://github.com/onead/OnePixel/pull/7|#7>" }],
+    };
+    await coord(web, gw()).retryInThread({ channelId: "C1", threadTs: "1.1", userId: "U1" });
+    assert.ok(
+      web.posted.some((p) => /CHANGES_REQUESTED|#7/.test(p.text ?? "")),
+      "retry should re-run the root PR review and post its result",
+    );
+  });
+
+  it("nudges when the thread root is not a :cr: review request", async () => {
+    const web = new FakeWebClient();
+    web.conversationsHistoryResponse = { ok: true, messages: [{ text: "just chatting" }] };
+    await coord(web, gw()).retryInThread({ channelId: "C1", threadTs: "1.1", userId: "U1" });
+    assert.ok(
+      web.posted.some((p) => /沒有可重試|重新發起/.test(p.text ?? "")),
+      "retry in a non-review thread must nudge, not silently no-op",
+    );
   });
 });
