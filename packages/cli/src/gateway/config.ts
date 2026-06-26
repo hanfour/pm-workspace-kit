@@ -338,6 +338,7 @@ function normaliseRawConfig(raw: unknown): RawGatewayConfig {
     apiKey: validateSecretSource(r.apiKey, "apiKey"),
     github,
     review,
+    audio: r.audio as AudioConfig | undefined,
   };
 }
 
