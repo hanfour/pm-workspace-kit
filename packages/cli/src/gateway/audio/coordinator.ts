@@ -354,7 +354,7 @@ export class AudioCoordinator {
           language: ac.language,
           maxDurationSec: ac.maxDurationSec,
         },
-        { outDir: tempDir, signal: controller.signal },
+        { outDir: tempDir, signal: controller.signal, knownDurationSec: probedDuration },
       );
 
       if (!result.ok) {

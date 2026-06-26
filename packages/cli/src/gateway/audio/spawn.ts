@@ -23,6 +23,7 @@ export async function runMedia(
     const child = spawn(bin, args, { stdio: ["ignore", "pipe", "pipe"], env, signal: opts.signal });
     let stdout = "", stderr = "";
     const timer = setTimeout(() => { try { child.kill("SIGTERM"); } catch { /* noop */ } }, timeoutMs);
+    timer.unref(); // don't keep the event loop alive if the child exits early
     child.stdout?.on("data", (d) => { stdout += d.toString(); });
     child.stderr?.on("data", (d) => { stderr += d.toString(); });
     child.on("error", (e) => { clearTimeout(timer); reject(new MediaError(`${bin} spawn failed: ${e.message}`)); });
