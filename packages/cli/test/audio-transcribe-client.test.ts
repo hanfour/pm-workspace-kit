@@ -20,7 +20,15 @@ describe("transcribeFile", () => {
     );
   });
   it("never leaks the api key in the error message", async () => {
-    await transcribeFile("/tmp/c.ogg", { apiKey: "sk-proj-SECRET", model: "m" }, baseDeps((async () => errResp(401)) as never))
-      .catch((e: Error) => { assert.ok(!e.message.includes("sk-proj-SECRET")); });
+    const err = await transcribeFile("/tmp/c.ogg", { apiKey: "sk-proj-SECRET", model: "m" }, baseDeps((async () => errResp(401)) as never))
+      .catch((e: unknown) => e);
+    assert.ok(err instanceof Error, "expected a rejection");
+    assert.ok(!(err as Error).message.includes("sk-proj-SECRET"));
+  });
+  it("maps 5xx to a TranscribeError with status", async () => {
+    await assert.rejects(
+      () => transcribeFile("/tmp/c.ogg", { apiKey: "sk-x", model: "m" }, baseDeps((async () => errResp(500)) as never)),
+      (e: unknown) => e instanceof TranscribeError && e.status === 500,
+    );
   });
 });
