@@ -10,12 +10,13 @@ function claimPath(fileId: string): string {
 
 export function claimAudio(fileId: string): boolean {
   const file = claimPath(fileId);
-  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
   try {
     fs.writeFileSync(file, JSON.stringify({ at: Date.now() }), { flag: "wx" });
     return true;
-  } catch {
-    return false; // EEXIST → already claimed
+  } catch (err: unknown) {
+    if ((err as NodeJS.ErrnoException).code === "EEXIST") return false; // already claimed
+    throw err;
   }
 }
 
@@ -28,5 +29,6 @@ export function releaseAudio(fileId: string): void {
 }
 
 export function finalizeAudio(fileId: string): void {
+  assertSafeSegment(fileId, "audioFileId"); // validate at boundary
   /* keep the claim so redelivery is a no-op; left explicit for symmetry */
 }
