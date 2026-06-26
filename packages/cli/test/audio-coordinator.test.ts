@@ -33,6 +33,29 @@ function makeWeb(posted: string[], updated: string[]) {
   } as never;
 }
 
+/** makeWeb variant that also stubs conversations.history for retryInThread tests. */
+function makeRetryWeb(
+  posted: string[],
+  updated: string[],
+  rootFiles: SlackFile[],
+) {
+  return {
+    chat: {
+      postMessage: async (a: { text?: string }) => {
+        posted.push(a.text ?? "");
+        return { ts: "p1" };
+      },
+      update: async (a: { text?: string }) => {
+        updated.push(a.text ?? "");
+        return {};
+      },
+    },
+    conversations: {
+      history: async () => ({ messages: [{ files: rootFiles }] }),
+    },
+  } as never;
+}
+
 const cfg = {
   audio: {
     enabled: true,
@@ -139,6 +162,61 @@ describe("AudioCoordinator", () => {
     assert.equal(transcribed, false);
     assert.equal(loadAttachments(KEY).length, 0);
     assert.ok([...posted, ...updated].some((m) => m.includes("上限")));
+  });
+
+  it("retryInThread: audio thread → releases claim, runs pipeline, returns true", async () => {
+    const posted: string[] = [];
+    const updated: string[] = [];
+    const audioFile = af();
+    const web = makeRetryWeb(posted, updated, [audioFile]);
+    const co = new AudioCoordinator({
+      web,
+      config: cfg,
+      onLog: () => {},
+      llm: llmStub,
+      deps: deps() as never,
+    });
+    const result = await co.retryInThread({
+      channelId: "C",
+      threadTs: "1.2",
+      userId: "U1",
+      botToken: "t",
+      tier: "pm",
+    });
+    assert.equal(result, true);
+    // transcript stored as attachment (proves run() was called)
+    const stored = loadAttachments({ kind: "channel", channelId: "C", threadTs: "1.2" });
+    assert.equal(stored[0]?.text, "逐字稿內容");
+  });
+
+  it("retryInThread: non-audio thread → returns false, posts nothing", async () => {
+    const posted: string[] = [];
+    const updated: string[] = [];
+    const textFile: SlackFile = {
+      id: "TF1",
+      name: "notes.txt",
+      mimetype: "text/plain",
+      size: 100,
+    };
+    const web = makeRetryWeb(posted, updated, [textFile]);
+    const co = new AudioCoordinator({
+      web,
+      config: cfg,
+      onLog: () => {},
+      llm: llmStub,
+      deps: deps() as never,
+    });
+    const result = await co.retryInThread({
+      channelId: "C",
+      threadTs: "1.2",
+      userId: "U1",
+      botToken: "t",
+      tier: "pm",
+    });
+    assert.equal(result, false);
+    // no postMessage, no update — retryInThread posted nothing
+    assert.equal(posted.length, 0);
+    assert.equal(updated.length, 0);
   });
 
   it("drainOnShutdown aborts an in-flight job and posts the retry notice", async () => {

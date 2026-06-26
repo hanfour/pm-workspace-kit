@@ -267,7 +267,9 @@ export class ChannelMentionHandler {
     // Active-case branch: attachments are not supported — post a brief note
     // and proceed with the case turn as usual. Do NOT ingest.
     if (files && files.length > 0) {
-      // Audio-specific rejection: inform the user that audio requires DM.
+      // Audio-specific rejection: stop immediately — do not fall through to
+      // the generic "附件已忽略" note or the case-turn LLM call (saves a
+      // pointless text-extract failure on a binary audio file).
       if (isAudioMessage(files)) {
         await this.web.chat
           .postMessage({
@@ -276,6 +278,7 @@ export class ChannelMentionHandler {
             text: "_(音訊在 case 模式下不支援，請在 DM 直接傳送音訊檔案)_",
           })
           .catch(() => {});
+        return;
       }
       await this.web.chat
         .postMessage({

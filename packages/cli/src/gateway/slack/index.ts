@@ -692,15 +692,6 @@ export class SlackAdapter {
     // mandatory so a detached rejection can't crash the process.
     // `retry` in a review-result thread → re-run that thread's PR review
     // (re-fetches the thread root `:cr:` message). Detached + .catch like below.
-    if (this.review.isEnabled() && isRetryRequest(text)) {
-      void this.review
-        .retryInThread({ channelId, threadTs: replyThreadTs, userId })
-        .catch((err) =>
-          this.onLog(`review: detached mention retry failed: ${(err as Error).message}`),
-        );
-      return;
-    }
-
     if (this.review.isEnabled() && isReviewRequest(text)) {
       void this.review
         .fromMessage({ channelId, threadTs: replyThreadTs, userId, text })
@@ -710,22 +701,22 @@ export class SlackAdapter {
       return;
     }
 
-    // Audio retry in channel mention: `retry` in an audio-result thread.
-    // Same mutual-exclusion logic as the DM path (review takes priority).
-    if (this.audio.isEnabled() && isRetryRequest(text)) {
+    // `retry` command: audio-first so audio threads are never intercepted by
+    // review. audio.retryInThread returns false (and posts nothing) for
+    // non-audio threads; the caller then falls through to review. Nothing is
+    // silently swallowed regardless of which coordinators are enabled.
+    if (isRetryRequest(text)) {
       const botToken = this.config.slack.botToken ?? "";
       const tier = pickAudience(this.config, userId, channelId);
-      void this.audio
-        .retryInThread({
-          channelId,
-          threadTs: replyThreadTs,
-          userId,
-          botToken,
-          tier,
-        })
-        .catch((err) =>
-          this.onLog(`audio: detached mention retry failed: ${(err as Error).message}`),
-        );
+      if (await this.audio.retryInThread({ channelId, threadTs: replyThreadTs, userId, botToken, tier })) return;
+      // not an audio thread — fall through to review (posts nudge if review is on)
+      if (this.review.isEnabled()) {
+        await this.review
+          .retryInThread({ channelId, threadTs: replyThreadTs, userId })
+          .catch((err) =>
+            this.onLog(`review: mention retry failed: ${(err as Error).message}`),
+          );
+      }
       return;
     }
 
@@ -843,15 +834,6 @@ export class SlackAdapter {
     // immediately and posts each PR's result when done. MUST .catch — a
     // detached rejection would crash the process (unhandled rejection).
     // `retry` in a review-result thread → re-run that thread's PR review.
-    if (this.review.isEnabled() && isRetryRequest(text)) {
-      void this.review
-        .retryInThread({ channelId, threadTs, userId })
-        .catch((err) =>
-          this.onLog(`review: detached DM retry failed: ${(err as Error).message}`),
-        );
-      return;
-    }
-
     if (this.review.isEnabled() && isReviewRequest(text)) {
       void this.review
         .fromMessage({ channelId, threadTs, userId, text })
@@ -861,17 +843,22 @@ export class SlackAdapter {
       return;
     }
 
-    // Audio retry: `retry` in an audio-result thread → re-run that thread's
-    // transcription. Only fires when review is disabled (review retry takes
-    // priority when both are on, since both fire on `retry` + `return`).
-    if (this.audio.isEnabled() && isRetryRequest(text)) {
+    // `retry` command: audio-first so audio threads are never intercepted by
+    // review. audio.retryInThread returns false (and posts nothing) for
+    // non-audio threads; the caller then falls through to review. Nothing is
+    // silently swallowed regardless of which coordinators are enabled.
+    if (isRetryRequest(text)) {
       const botToken = this.config.slack.botToken ?? "";
       const tier = pickAudience(this.config, userId);
-      void this.audio
-        .retryInThread({ channelId, threadTs, userId, botToken, tier })
-        .catch((err) =>
-          this.onLog(`audio: detached DM retry failed: ${(err as Error).message}`),
-        );
+      if (await this.audio.retryInThread({ channelId, threadTs, userId, botToken, tier })) return;
+      // not an audio thread — fall through to review (posts nudge if review is on)
+      if (this.review.isEnabled()) {
+        await this.review
+          .retryInThread({ channelId, threadTs, userId })
+          .catch((err) =>
+            this.onLog(`review: DM retry failed: ${(err as Error).message}`),
+          );
+      }
       return;
     }
 
