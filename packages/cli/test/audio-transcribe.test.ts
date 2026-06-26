@@ -23,11 +23,32 @@ describe("transcribeAudio", () => {
     assert.equal(r.ok, true);
     if (r.ok) { assert.match(r.transcript, /seg0/); assert.match(r.transcript, /seg1/); assert.equal(r.chunks, 2); }
   });
-  it("returns partial transcript + failedSegment when a chunk ultimately fails", async () => {
+  it("returns partial transcript + failedSegment when a chunk fails terminally (400)", async () => {
     let n = 0;
-    const tf = async () => { if (n++ === 1) throw new TranscribeError("500", 500); return "ok-seg"; };
+    const tf = async () => { if (n++ === 1) throw new TranscribeError("400", 400); return "ok-seg"; };
     const r = await transcribeAudio("/tmp/in.m4a", cfg, base({ transcribeFile: tf as never }));
     assert.equal(r.ok, false);
     if (!r.ok) { assert.equal(r.reason, "transcribe-failed"); assert.equal(r.failedSegment, 1); assert.match(r.partialTranscript ?? "", /ok-seg/); }
+  });
+
+  it("retries a transient 500 and succeeds on second attempt", async () => {
+    let calls = 0;
+    const tf = async () => { if (calls++ === 0) throw new TranscribeError("500", 500); return "seg"; };
+    const r = await transcribeAudio("/tmp/in.m4a", cfg, base({
+      prepare: (async () => ["/tmp/job/chunk-000.ogg"]) as never,
+      transcribeFile: tf as never,
+    }));
+    assert.equal(r.ok, true);
+    if (r.ok) assert.match(r.transcript, /seg/);
+  });
+
+  it("exhausts retries on persistent 500 → transcribe-failed", async () => {
+    const tf = async () => { throw new TranscribeError("500", 500); };
+    const r = await transcribeAudio("/tmp/in.m4a", cfg, base({
+      prepare: (async () => ["/tmp/job/chunk-000.ogg"]) as never,
+      transcribeFile: tf as never,
+    }));
+    assert.equal(r.ok, false);
+    if (!r.ok) assert.equal(r.reason, "transcribe-failed");
   });
 });

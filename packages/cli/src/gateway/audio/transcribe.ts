@@ -31,12 +31,10 @@ async function withRetry(
     } catch (err) {
       lastErr = err;
       const status = err instanceof TranscribeError ? err.status : undefined;
-      // Any HTTP status error other than 429 is terminal — do not retry
-      // Only retry 429 (rate-limit) and pure network errors (no status)
-      if (status !== undefined && status !== 429) {
-        throw err;
-      }
-      // 429 or network errors (no status): exponential backoff
+      // Terminal: 4xx errors OTHER than 429 (e.g. 400 Bad Request, 401 Unauthorized)
+      // Retryable: 429 (rate-limit), any 5xx (transient server error), network errors (no status)
+      if (status !== undefined && status >= 400 && status < 500 && status !== 429) throw err;
+      // Exponential backoff before next attempt
       await sleep(500 * Math.pow(2, attempt));
     }
   }
