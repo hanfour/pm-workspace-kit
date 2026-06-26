@@ -54,6 +54,7 @@ function deps(over: Record<string, unknown> = {}) {
       fs.writeFileSync(dest, "AUDIO");
       return { bytes: 5 };
     },
+    probe: async () => ({ durationSec: 600, sizeBytes: 1024 }),
     transcribe: async () => ({
       ok: true as const,
       transcript: "逐字稿內容",
@@ -111,9 +112,10 @@ describe("AudioCoordinator", () => {
 
   it("on quota denial: no transcription, posts the reason", async () => {
     const posted: string[] = [];
+    const updated: string[] = [];
     let transcribed = false;
     const co = new AudioCoordinator({
-      web: makeWeb(posted, []),
+      web: makeWeb(posted, updated),
       config: cfg,
       onLog: () => {},
       llm: llmStub,
@@ -135,7 +137,8 @@ describe("AudioCoordinator", () => {
       tier: "pm",
     });
     assert.equal(transcribed, false);
-    assert.ok(posted.some((m) => m.includes("上限")));
+    assert.equal(loadAttachments(KEY).length, 0);
+    assert.ok([...posted, ...updated].some((m) => m.includes("上限")));
   });
 
   it("drainOnShutdown aborts an in-flight job and posts the retry notice", async () => {

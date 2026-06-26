@@ -3,8 +3,8 @@
  *
  * Flow per audio message:
  *   enabled gate → apiKey gate → find audio file → claimAudio →
- *   reserveQuota (pre-transcription gate) →
- *   ack post → streamToTemp → transcribeAudio →
+ *   ack post → streamToTemp → probe (actual duration) →
+ *   too-long gate → reserveQuota (actual minutes) → transcribeAudio →
  *   appendAttachment (raw transcript) → finalizeAudio →
  *   summarizeMeeting → post summary;
  *   on any failure: releaseAudio + post error;
@@ -26,11 +26,13 @@ import {
   type SlackFile,
   type ThreadKey,
   MAX_AUDIO_FILES_PER_MESSAGE,
+  MAX_AUDIO_DURATION_SEC,
 } from "../attachments/types";
 import { streamSlackFileToTemp } from "./download-stream";
 import { transcribeAudio, type TranscribeResult } from "./transcribe";
 import { summarizeMeeting } from "./summarize";
 import { reserveAudioQuota } from "./quota";
+import { probeAudio } from "./probe";
 import { makeJobTempDir } from "./temp";
 import { claimAudio, releaseAudio, finalizeAudio } from "./claim";
 import { redactSecrets } from "./redact";
@@ -59,6 +61,7 @@ export interface AudioCoordinatorDeps {
   ) => Promise<TranscribeResult>;
   summarize?: typeof summarizeMeeting;
   reserveQuota?: typeof reserveAudioQuota;
+  probe?: typeof probeAudio;
   makeTempDir?: (jobId: string) => string;
   now?: () => number;
 }
@@ -171,6 +174,7 @@ export class AudioCoordinator {
       d.transcribe ?? (transcribeAudio as never);
     const summarize = d.summarize ?? summarizeMeeting;
     const reserveQuota = d.reserveQuota ?? reserveAudioQuota;
+    const probe = d.probe ?? probeAudio;
     const makeTempDir = d.makeTempDir ?? makeJobTempDir;
     const now = d.now ?? (() => Date.now());
 
@@ -197,32 +201,6 @@ export class AudioCoordinator {
 
     if (!claimAudio(file.id)) {
       this.opts.onLog(`audio: ${file.id} already claimed`);
-      return;
-    }
-
-    // Pre-transcription quota gate: check capacity BEFORE burning compute on
-    // transcription. We use minutes=1 as a minimum-capacity check — if the user
-    // can't afford even one more minute they're blocked; otherwise we proceed and
-    // reserve actual usage via the transcribed event.
-    const q = reserveQuota({
-      userId: args.userId,
-      minutes: 1,
-      perUserDailyMinutes: ac.perUserDailyMinutes,
-      globalDailyMinutes: ac.globalDailyMinutes,
-      now,
-    });
-    if (!q.ok) {
-      releaseAudio(file.id);
-      appendGatewayEvent({
-        type: "audio.failed",
-        actor: args.userId,
-        reason: "quota-exceeded",
-      });
-      await this.reply(
-        args.channelId,
-        args.threadTs,
-        `:no_entry: ${q.reason}。`,
-      );
       return;
     }
 
@@ -259,6 +237,43 @@ export class AudioCoordinator {
       const dest = path.join(tempDir, "input");
       await streamToTemp(file, args.botToken, dest);
 
+      // 1. Probe for actual duration before any API cost is incurred.
+      let probedDuration: number;
+      try {
+        ({ durationSec: probedDuration } = await probe(dest, {}));
+      } catch {
+        appendGatewayEvent({ type: "audio.failed", actor: args.userId, reason: "ffmpeg-failed" });
+        releaseAudio(file.id);
+        await post(":warning: 音訊無法讀取（ffmpeg 失敗）,請確認檔案格式後回 `retry` 重跑。");
+        return;
+      }
+
+      // 2. Too-long gate (before quota).
+      const cap = Math.min(ac.maxDurationSec, MAX_AUDIO_DURATION_SEC);
+      if (probedDuration > cap) {
+        appendGatewayEvent({ type: "audio.failed", actor: args.userId, reason: "too-long" });
+        releaseAudio(file.id);
+        await post(`:warning: 錄音超過 ${Math.round(cap / 60)} 分鐘上限,請切段後再上傳。`);
+        return;
+      }
+
+      // 3. Quota gate with ACTUAL minutes (before transcription).
+      const minutes = Math.ceil(probedDuration / 60);
+      const q = reserveQuota({
+        userId: args.userId,
+        minutes,
+        perUserDailyMinutes: ac.perUserDailyMinutes,
+        globalDailyMinutes: ac.globalDailyMinutes,
+        now,
+      });
+      if (!q.ok) {
+        appendGatewayEvent({ type: "audio.failed", actor: args.userId, reason: "quota-exceeded" });
+        releaseAudio(file.id);
+        await post(`:no_entry: ${q.reason}。`);
+        return;
+      }
+
+      // 4. Transcribe (only now, after quota is confirmed).
       const result = await transcribe(
         dest,
         {
