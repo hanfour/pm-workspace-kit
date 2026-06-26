@@ -5,6 +5,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { AudioCoordinator, isAudioMessage } from "../src/gateway/audio/coordinator";
 import { loadAttachments } from "../src/gateway/attachments/store";
+import { claimAudio } from "../src/gateway/audio/claim";
 import type { ThreadKey, SlackFile } from "../src/gateway/attachments/types";
 
 const ORIG = process.env.HOME;
@@ -184,6 +185,8 @@ describe("AudioCoordinator", () => {
       tier: "pm",
     });
     assert.equal(result, true);
+    // run() is detached — drain the microtask queue before checking side effects.
+    await new Promise((r) => setImmediate(r));
     // transcript stored under channel key (channelId starts with "C")
     const stored = loadAttachments({ kind: "channel", channelId: "C123", threadTs: "1.2" });
     assert.equal(stored[0]?.text, "逐字稿內容");
@@ -209,6 +212,8 @@ describe("AudioCoordinator", () => {
       tier: "pm",
     });
     assert.equal(result, true);
+    // run() is detached — drain the microtask queue before checking side effects.
+    await new Promise((r) => setImmediate(r));
     // transcript stored under dm key (channelId starts with "D")
     const stored = loadAttachments({ kind: "dm", userId: "U1", threadTs: "1.2" });
     assert.equal(stored[0]?.text, "逐字稿內容");
@@ -242,6 +247,67 @@ describe("AudioCoordinator", () => {
     // no postMessage, no update — retryInThread posted nothing
     assert.equal(posted.length, 0);
     assert.equal(updated.length, 0);
+  });
+
+  it("total transcription failure (no partial): refunds reserved quota", async () => {
+    const posted: string[] = [];
+    const updated: string[] = [];
+    let releaseQuotaCalled = false;
+    const co = new AudioCoordinator({
+      web: makeWeb(posted, updated),
+      config: cfg,
+      onLog: () => {},
+      llm: llmStub,
+      deps: deps({
+        transcribe: async () => ({ ok: false as const, reason: "transcribe-failed" as const }),
+        releaseQuota: (_args: unknown) => { releaseQuotaCalled = true; },
+      }) as never,
+    });
+    await co.run({
+      threadKey: KEY,
+      channelId: "C",
+      threadTs: "1.2",
+      userId: "U1",
+      botToken: "t",
+      files: [af()],
+      tier: "pm",
+    });
+    assert.equal(releaseQuotaCalled, true, "releaseQuota should be called on total failure");
+    assert.equal(loadAttachments(KEY).length, 0, "no transcript stored on total failure");
+  });
+
+  it("already-claimed file: posts hint and returns without transcribing", async () => {
+    const posted: string[] = [];
+    const updated: string[] = [];
+    // Pre-claim the file so claimAudio returns false inside run()
+    claimAudio("AF1");
+    let transcribed = false;
+    const co = new AudioCoordinator({
+      web: makeWeb(posted, updated),
+      config: cfg,
+      onLog: () => {},
+      llm: llmStub,
+      deps: deps({
+        transcribe: async () => {
+          transcribed = true;
+          return { ok: true as const, transcript: "x", durationSec: 1, chunks: 1 };
+        },
+      }) as never,
+    });
+    await co.run({
+      threadKey: KEY,
+      channelId: "C",
+      threadTs: "1.2",
+      userId: "U1",
+      botToken: "t",
+      files: [af()],
+      tier: "pm",
+    });
+    assert.equal(transcribed, false, "transcription should not run for already-claimed file");
+    assert.ok(
+      [...posted, ...updated].some((m) => m.includes("retry")),
+      "should post a hint mentioning retry",
+    );
   });
 
   it("drainOnShutdown aborts an in-flight job and posts the retry notice", async () => {

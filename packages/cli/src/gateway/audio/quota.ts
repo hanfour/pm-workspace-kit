@@ -53,3 +53,20 @@ export function reserveAudioQuota(args: {
 
   return { ok: true };
 }
+
+export function releaseAudioQuota(args: {
+  userId: string;
+  minutes: number;
+  now?: () => number;
+}): void {
+  const now = (args.now ?? (() => Date.now()))();
+  const file = dayFile(now);
+  const usage = load(file);
+  const userUsed = usage.perUser[args.userId] ?? 0;
+  const next: DayUsage = {
+    global: Math.max(0, usage.global - args.minutes),
+    perUser: { ...usage.perUser, [args.userId]: Math.max(0, userUsed - args.minutes) },
+  };
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, JSON.stringify(next));
+}

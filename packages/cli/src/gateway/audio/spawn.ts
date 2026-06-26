@@ -14,9 +14,12 @@ export async function runMedia(
   const spawn = deps.spawn ?? nodeSpawn;
   const timeoutMs = opts.timeoutMs ?? 10 * 60_000;
   return new Promise((resolve, reject) => {
-    // SECURITY: args array (no shell); strip secrets from child env.
-    const env = { ...process.env };
-    delete env.OPENAI_API_KEY;
+    // SECURITY: args array (no shell); strip all secret-named vars from child env.
+    const env: NodeJS.ProcessEnv = {};
+    for (const [k, v] of Object.entries(process.env)) {
+      if (/(_TOKEN|_KEY|_SECRET|PASSWORD|APIKEY|ANTHROPIC|OPENAI|SLACK|GITHUB|PMK_)/i.test(k)) continue;
+      env[k] = v;
+    }
     const child = spawn(bin, args, { stdio: ["ignore", "pipe", "pipe"], env, signal: opts.signal });
     let stdout = "", stderr = "";
     const timer = setTimeout(() => { try { child.kill("SIGTERM"); } catch { /* noop */ } }, timeoutMs);

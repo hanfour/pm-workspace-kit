@@ -31,7 +31,7 @@ import {
 import { streamSlackFileToTemp } from "./download-stream";
 import { transcribeAudio, type TranscribeResult } from "./transcribe";
 import { summarizeMeeting } from "./summarize";
-import { reserveAudioQuota } from "./quota";
+import { reserveAudioQuota, releaseAudioQuota } from "./quota";
 import { probeAudio } from "./probe";
 import { makeJobTempDir } from "./temp";
 import { claimAudio, releaseAudio, finalizeAudio } from "./claim";
@@ -61,6 +61,7 @@ export interface AudioCoordinatorDeps {
   ) => Promise<TranscribeResult>;
   summarize?: typeof summarizeMeeting;
   reserveQuota?: typeof reserveAudioQuota;
+  releaseQuota?: typeof releaseAudioQuota;
   probe?: typeof probeAudio;
   makeTempDir?: (jobId: string) => string;
   now?: () => number;
@@ -206,7 +207,9 @@ export class AudioCoordinator {
     const threadKey: ThreadKey = args.channelId.startsWith("D")
       ? { kind: "dm", userId: args.userId, threadTs: args.threadTs }
       : { kind: "channel", channelId: args.channelId, threadTs: args.threadTs };
-    await this.run({
+    // Detach: return true immediately so the turn slot is released.
+    // The pipeline runs in the background; errors are logged.
+    void this.run({
       threadKey,
       channelId: args.channelId,
       threadTs: args.threadTs,
@@ -214,7 +217,9 @@ export class AudioCoordinator {
       botToken: args.botToken,
       files,
       tier: args.tier,
-    });
+    }).catch((e) =>
+      this.opts.onLog(`audio retry run: ${redactSecrets((e as Error).message)}`),
+    );
     return true;
   }
 
@@ -229,6 +234,7 @@ export class AudioCoordinator {
       d.transcribe ?? (transcribeAudio as never);
     const summarize = d.summarize ?? summarizeMeeting;
     const reserveQuota = d.reserveQuota ?? reserveAudioQuota;
+    const releaseQuota = d.releaseQuota ?? releaseAudioQuota;
     const probe = d.probe ?? probeAudio;
     const makeTempDir = d.makeTempDir ?? makeJobTempDir;
     const now = d.now ?? (() => Date.now());
@@ -256,6 +262,11 @@ export class AudioCoordinator {
 
     if (!claimAudio(file.id)) {
       this.opts.onLog(`audio: ${file.id} already claimed`);
+      await this.reply(
+        args.channelId,
+        args.threadTs,
+        "這個音訊已在處理或處理過,如需重跑請在原 thread 回 `retry`",
+      );
       return;
     }
 
@@ -278,6 +289,9 @@ export class AudioCoordinator {
     this.inFlight.add(job);
 
     const t0 = now();
+    // Hoisted so the catch block can refund quota if it was reserved.
+    let minutes = 0;
+    let quotaReserved = false;
 
     /** Update the ack message if we have its ts; otherwise post a new reply. */
     const post = async (text: string): Promise<void> => {
@@ -313,7 +327,7 @@ export class AudioCoordinator {
       }
 
       // 3. Quota gate with ACTUAL minutes (before transcription).
-      const minutes = Math.ceil(probedDuration / 60);
+      minutes = Math.ceil(probedDuration / 60);
       const q = reserveQuota({
         userId: args.userId,
         minutes,
@@ -327,6 +341,7 @@ export class AudioCoordinator {
         await post(`:no_entry: ${q.reason}。`);
         return;
       }
+      quotaReserved = true;
 
       // 4. Transcribe (only now, after quota is confirmed).
       const result = await transcribe(
@@ -344,10 +359,15 @@ export class AudioCoordinator {
         const reason = result.reason;
         appendGatewayEvent({ type: "audio.failed", actor: args.userId, reason });
         if (reason === "too-long") {
+          // FIX 4a: claim was never finalized → release it so a retry is possible.
+          // FIX 2: no usable output → refund the reserved quota.
+          releaseAudio(file.id);
+          releaseQuota({ userId: args.userId, minutes, now: () => now() });
           await post(
             `:warning: 錄音超過 ${Math.round(ac.maxDurationSec / 60)} 分鐘上限,請切段後再上傳。`,
           );
         } else if (result.partialTranscript) {
+          // Partial output was produced; real API cost incurred — do not refund quota.
           appendAttachment(args.threadKey, {
             fileId: file.id,
             name: file.name ?? file.id,
@@ -359,7 +379,9 @@ export class AudioCoordinator {
             `:warning: 部分段落轉錄失敗（第 ${(result.failedSegment ?? 0) + 1} 段）。逐字稿（含缺漏標記）已留在本 thread;在此回 \`retry\` 重跑。`,
           );
         } else {
-          releaseAudio(file.id); // failed before any usable output → allow retry
+          // Total failure, no usable output → release claim and refund quota.
+          releaseAudio(file.id);
+          releaseQuota({ userId: args.userId, minutes, now: () => now() });
           await post(":warning: 轉錄失敗,請在本 thread 回 `retry` 重跑。");
         }
         return;
@@ -413,6 +435,10 @@ export class AudioCoordinator {
       await post(summary.text + extra);
     } catch (err) {
       releaseAudio(file.id);
+      // Refund quota if it was reserved but no usable output was produced.
+      if (quotaReserved && minutes > 0) {
+        releaseQuota({ userId: args.userId, minutes, now: () => now() });
+      }
       appendGatewayEvent({
         type: "audio.failed",
         actor: args.userId,

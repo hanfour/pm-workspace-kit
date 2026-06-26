@@ -26,10 +26,10 @@ export const audioDoctorCheck: DoctorCheck = async (
   );
   const diskLabel = secretDiskLabel(rawSrc);
 
-  const ffmpegOk = await runMedia("ffmpeg", ["-version"])
+  const ffmpegOk = await runMedia("ffmpeg", ["-version"], { timeoutMs: 5000 })
     .then(() => "ok")
     .catch(() => "missing");
-  const ffprobeOk = await runMedia("ffprobe", ["-version"])
+  const ffprobeOk = await runMedia("ffprobe", ["-version"], { timeoutMs: 5000 })
     .then(() => "ok")
     .catch(() => "missing");
 
