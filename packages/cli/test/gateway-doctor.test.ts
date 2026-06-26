@@ -687,8 +687,8 @@ describe("doctor — review readiness check", () => {
 });
 
 describe("doctor — DEFAULT_CHECKS shape", () => {
-  it("exports exactly 11 checks (FR2 + secret-sources + github-token + review)", () => {
-    assert.equal(DEFAULT_CHECKS.length, 11);
+  it("exports exactly 12 checks (FR2 + secret-sources + github-token + review + audio)", () => {
+    assert.equal(DEFAULT_CHECKS.length, 12);
     const names = DEFAULT_CHECKS.map((c) => c.name);
     assert.deepEqual(names, [
       "configFileCheck",
@@ -702,6 +702,7 @@ describe("doctor — DEFAULT_CHECKS shape", () => {
       "manifestAlignmentCheck",
       "githubTokenCheck",
       "reviewDoctorCheck",
+      "audioDoctorCheck",
     ]);
   });
 });

@@ -55,3 +55,18 @@ export const IMAGE_MIMETYPES = new Set([
   "image/gif",
   "image/webp",
 ]);
+
+export const MAX_AUDIO_BYTES = 200 * 1024 * 1024;
+export const MAX_AUDIO_DURATION_SEC = 7200;
+export const AUDIO_REQUEST_MAX_BYTES = 25 * 1024 * 1024; // OpenAI 單檔上限
+export const AUDIO_CHUNK_TARGET_BYTES = 20 * 1024 * 1024; // 切片目標（留 buffer）
+export const TRANSCRIPT_CAP = 500_000;
+export const MAX_AUDIO_FILES_PER_MESSAGE = 2;
+
+export const AUDIO_MIMETYPES = new Set([
+  "audio/mpeg", "audio/mp3", "audio/mp4", "audio/m4a", "audio/x-m4a",
+  "audio/wav", "audio/x-wav", "audio/webm", "audio/ogg", "audio/flac", "audio/aac",
+]);
+export const AUDIO_FILETYPES = new Set([
+  "mp3", "m4a", "mp4", "wav", "webm", "ogg", "flac", "aac", "mpga", "mpeg",
+]);

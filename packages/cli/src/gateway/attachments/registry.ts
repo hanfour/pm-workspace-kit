@@ -1,6 +1,6 @@
-import { IMAGE_MIMETYPES } from "./types";
+import { IMAGE_MIMETYPES, AUDIO_MIMETYPES, AUDIO_FILETYPES } from "./types";
 
-export type Category = "text" | "pdf" | "image" | "unsupported";
+export type Category = "text" | "pdf" | "image" | "audio" | "unsupported";
 
 const TEXT_FILETYPES = new Set([
   "markdown", "text", "javascript", "typescript", "python", "ruby", "go",
@@ -13,7 +13,9 @@ export function categoryFor(file: { mimetype?: string; filetype?: string }): Cat
   const mt = (file.mimetype ?? "").toLowerCase();
   if (mt === "application/pdf") return "pdf";
   if (IMAGE_MIMETYPES.has(mt)) return "image";
+  if (AUDIO_MIMETYPES.has(mt)) return "audio";
   if (mt.startsWith("text/") || mt === "application/json") return "text";
+  if (file.filetype && AUDIO_FILETYPES.has(file.filetype.toLowerCase())) return "audio";
   if (file.filetype && TEXT_FILETYPES.has(file.filetype.toLowerCase())) return "text";
   return "unsupported";
 }

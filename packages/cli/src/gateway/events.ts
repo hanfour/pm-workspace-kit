@@ -226,6 +226,43 @@ export interface ReviewSkippedEvent {
   reason: string;
 }
 
+/**
+ * Emitted after a voice-message transcription completes successfully.
+ * `durationSec` is the audio length; `chunks` is the number of Whisper
+ * segments produced; `ms` is the wall-clock transcription time; `estimatedUsd`
+ * is the Whisper API cost estimate for budget tracking.
+ */
+export interface AudioTranscribedEvent {
+  type: "audio.transcribed";
+  actor: string;
+  durationSec: number;
+  chunks: number;
+  ms: number;
+  estimatedUsd: number;
+}
+
+/**
+ * Emitted after the transcription summary is produced. `mode` records which
+ * summary style was selected: `"short"` (one-liner), `"long"` (full prose),
+ * or `"instructed"` (user-provided instruction).
+ */
+export interface AudioSummarizedEvent {
+  type: "audio.summarized";
+  actor: string;
+  mode: "short" | "long" | "instructed";
+}
+
+/**
+ * Emitted when transcription or summarization fails. `reason` is a
+ * machine-readable tag (e.g. `"transcribe-failed"`, `"summarize-failed"`)
+ * so audit queries can bucket failure modes without parsing prose.
+ */
+export interface AudioFailedEvent {
+  type: "audio.failed";
+  actor: string;
+  reason: string;
+}
+
 export type GatewayEvent =
   | MraAskEndEvent
   | TurnProcessedEvent
@@ -240,7 +277,10 @@ export type GatewayEvent =
   | GithubIssueFailedEvent
   | ReviewTriggeredEvent
   | ReviewPostedEvent
-  | ReviewSkippedEvent;
+  | ReviewSkippedEvent
+  | AudioTranscribedEvent
+  | AudioSummarizedEvent
+  | AudioFailedEvent;
 
 /** What lands on disk: the event plus the ISO timestamp added at append time. */
 export type StoredGatewayEvent = GatewayEvent & { at: string };
@@ -261,6 +301,9 @@ const VALID_TYPES: ReadonlySet<string> = new Set([
   "review.triggered",
   "review.posted",
   "review.skipped",
+  "audio.transcribed",
+  "audio.summarized",
+  "audio.failed",
 ]);
 
 /**
