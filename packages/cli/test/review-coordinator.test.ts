@@ -318,6 +318,44 @@ describe("ReviewCoordinator.drainOnShutdown (A graceful drain)", () => {
     );
   });
 
+  it("posts the interruption+retry notice to the in-flight review's thread", async () => {
+    const web = new FakeWebClient();
+    let started!: () => void;
+    const startedP = new Promise<void>((r) => (started = r));
+    const c = coord(
+      web,
+      gw({
+        runMraReview: ((args: { signal?: AbortSignal }) =>
+          new Promise((resolve) => {
+            started();
+            args.signal?.addEventListener("abort", () =>
+              resolve({ ok: false, reason: "aborted", stdout: "", stderr: "" }),
+            );
+          })) as never,
+      }),
+    );
+    const p = c.fromMessage({
+      channelId: "C-REV",
+      threadTs: "9.9",
+      userId: "U1",
+      text: ":cr: <https://github.com/onead/OnePixel/pull/4|#4>",
+    });
+    await startedP; // review is registered as in-flight on C-REV / 9.9
+
+    c.drainOnShutdown(() => {});
+    // the notice is fire-and-forget (void this.reply(...)); flush microtasks
+    await new Promise((res) => setImmediate(res));
+
+    const notice = web.posted.find((m) =>
+      /因服務重新啟動中斷|retry/.test(m.text ?? ""),
+    );
+    assert.ok(notice, "drain must post an interruption+retry notice");
+    assert.equal(notice!.channel, "C-REV", "notice goes to the review's channel");
+    assert.equal(notice!.thread_ts, "9.9", "notice is threaded under the review");
+
+    await p; // settle the aborted review
+  });
+
   it("drains nothing (returns 0) when no review is in flight", async () => {
     const c = coord(new FakeWebClient(), gw());
     assert.equal(c.drainOnShutdown(() => {}), 0);

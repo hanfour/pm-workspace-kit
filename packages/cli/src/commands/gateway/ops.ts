@@ -428,8 +428,10 @@ export function statsCmd(rest: string[]): void {
 // pmk gateway stop
 // ---------------------------------------------------------------------------
 
-/** Gateway SIGTERM drain budget is 25 s; ~5 s margin. */
-const STOP_POLL_MAX = 30;
+/** Gateway SIGTERM drain budget is ~90 s (graceful turn drain + restart
+ *  notices); poll ~95 s (~5 s margin) so restart waits for the full drain
+ *  instead of force-killing or double-starting the daemon. */
+const STOP_POLL_MAX = 95;
 
 function requireUid(): number {
   const uid = process.getuid?.();
@@ -496,7 +498,8 @@ function launchctlTarget(d: OpsDeps): { label: string; loaded: boolean } | undef
  * Decision tree:
  *   a) launchd-managed (running supervised OR service is loaded) → `launchctl bootout`
  *   b) no run-state at all → "not running" message, no side effects
- *   c) standalone process → SIGTERM + 30-poll to confirm exit
+ *   c) standalone process → SIGTERM + ~95s-poll to confirm exit (waits for the
+ *      ~90s graceful drain)
  */
 export async function stopCmdImpl(d: OpsDeps = realDeps): Promise<string> {
   const live = gatewayLiveRunState();
@@ -518,7 +521,7 @@ export async function stopCmdImpl(d: OpsDeps = realDeps): Promise<string> {
 
   // Standalone process path
   d.kill(live.pid, "SIGTERM");
-  return (await awaitProcessExit(live.pid, d)) ? "gateway stopped (graceful)." : "gateway still running after 30s — check ~/.pmk/logs/gateway.err.log";
+  return (await awaitProcessExit(live.pid, d)) ? "gateway stopped (graceful)." : "gateway still running after 95s — check ~/.pmk/logs/gateway.err.log";
 }
 
 export async function stopCmd(): Promise<void> {

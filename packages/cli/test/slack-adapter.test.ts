@@ -1970,6 +1970,102 @@ describe("SlackAdapter integration: graceful shutdown drain (v0.13 #55)", () => 
     assert.match(h.web.updated[0].text ?? "", /delayed answer/);
   });
 
+  it("a DM turn that finishes mid-drain posts the '服務重新啟動' restart notice to its thread", async () => {
+    let releaseLlm: () => void = () => {};
+    const llmGate = new Promise<void>((resolve) => {
+      releaseLlm = resolve;
+    });
+    h.llm.script(async () => {
+      await llmGate;
+      return "delayed answer";
+    });
+
+    await h.adapter.start();
+
+    void h.socket.emit(
+      "message",
+      dmMessagePayload({
+        user: "U-SHUTDOWN",
+        channel: "D-SHUTDOWN",
+        text: "ask before shutdown",
+        ts: "1700000900.000900",
+      }),
+    );
+    // Let the worker reach its LLM await, THEN begin shutdown so the turn
+    // observes shuttingDown=true when it finishes during the drain.
+    await new Promise((res) => setImmediate(res));
+    const stopPromise = h.adapter.stop({ drainTimeoutMs: 5000 });
+    await new Promise((res) => setImmediate(res));
+
+    releaseLlm();
+    await stopPromise;
+
+    const notice = h.web.posted.find((p) =>
+      /服務重新啟動，預計 5–10 分鐘後重新上線/.test(p.text ?? ""),
+    );
+    assert.ok(notice, "the DM turn should post a restart notice when draining");
+    assert.equal(notice!.channel, "D-SHUTDOWN", "notice goes to the DM channel");
+    assert.equal(
+      notice!.thread_ts,
+      "1700000900.000900",
+      "notice is threaded under the bot's reply (event.ts for a top-level DM)",
+    );
+  });
+
+  it("a channel @-mention turn that finishes mid-drain posts the restart notice to its thread", async () => {
+    let releaseLlm: () => void = () => {};
+    const llmGate = new Promise<void>((resolve) => {
+      releaseLlm = resolve;
+    });
+    h.llm.script(async () => {
+      await llmGate;
+      return "delayed answer";
+    });
+
+    await h.adapter.start();
+
+    void h.socket.emit(
+      "app_mention",
+      appMentionPayload({
+        user: "U-SHUTDOWN",
+        channel: "C-SHUTDOWN",
+        text: "<@UBOTID> ask before shutdown",
+        ts: "1700000901.000901",
+      }),
+    );
+    await new Promise((res) => setImmediate(res));
+    const stopPromise = h.adapter.stop({ drainTimeoutMs: 5000 });
+    await new Promise((res) => setImmediate(res));
+
+    releaseLlm();
+    await stopPromise;
+
+    const notice = h.web.posted.find((p) =>
+      /服務重新啟動，預計 5–10 分鐘後重新上線/.test(p.text ?? ""),
+    );
+    assert.ok(notice, "the mention turn should post a restart notice when draining");
+    assert.equal(notice!.channel, "C-SHUTDOWN", "notice goes to the mention channel");
+    assert.equal(
+      notice!.thread_ts,
+      "1700000901.000901",
+      "notice is threaded under the bot's reply (event.ts for a top-level mention)",
+    );
+  });
+
+  it("a normal turn (no shutdown) posts NO restart notice", async () => {
+    h.llm.script("plain answer");
+    await h.adapter.start();
+    await h.socket.emit(
+      "message",
+      dmMessagePayload({ user: "U-OK", channel: "D-OK", text: "hi" }),
+    );
+    await h.flush();
+    assert.ok(
+      !h.web.posted.some((p) => /服務重新啟動/.test(p.text ?? "")),
+      "no restart notice should be posted outside of shutdown",
+    );
+  });
+
   it("stop() honours drainTimeoutMs and logs when in-flight work blows the budget", async () => {
     const logs: string[] = [];
     h.cleanup();

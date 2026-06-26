@@ -143,12 +143,13 @@ export async function runGateway(opts: GatewayRunOptions = {}): Promise<void> {
     // accurately.
     markGracefulShutdown();
     try {
-      // 25s drain budget — K8s SIGTERM gives ~30s before SIGKILL.
-      // The drain awaits queued / in-flight free-chat turns so users
-      // who saw "已排入隊伍" actually get their replies; if a stuck
-      // LLM round blows the budget we log + proceed so SIGKILL isn't
-      // what reaps the process.
-      await adapter.stop({ drainTimeoutMs: 25_000 });
+      // 90s drain budget. The drain awaits queued / in-flight free-chat turns
+      // so users who saw "已排入隊伍" actually get their replies AND the
+      // per-turn "服務重新啟動" restart notices have time to post; if a stuck
+      // LLM round blows the budget we log + proceed so SIGKILL isn't what reaps
+      // the process. `pmk gateway restart` waits ≥95s (see ops.awaitProcessExit)
+      // so this full drain finishes before a new instance starts.
+      await adapter.stop({ drainTimeoutMs: 90_000 });
     } catch (err) {
       log(`adapter stop error: ${(err as Error).message}`);
     }

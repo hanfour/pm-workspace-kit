@@ -186,6 +186,10 @@ export class SlackAdapter {
   private readonly realTransport: boolean;
   /** Self-heal watchdog; started in start(), stopped in stop(). */
   private watchdog?: SocketWatchdog;
+  /** Set once stop() begins draining. A turn that finishes while this is true
+   *  posts a "服務重新啟動" notice to its thread so the user knows the next
+   *  follow-up may wait for the restart. */
+  private shuttingDown = false;
   /** Epoch ms when this adapter instance was constructed. Used by admin doctor. */
   private readonly startedAt = Date.now();
   /** File-attachment ingest seam — injectable for tests, defaults to real pipeline. */
@@ -429,6 +433,9 @@ export class SlackAdapter {
    * posting/saving reply if we don't await here).
    */
   async stop(opts: { drainTimeoutMs?: number } = {}): Promise<void> {
+    // Flag first: any turn that finishes during the drain below should post the
+    // restart notice to its thread (see notifyShutdownRestart + the work closures).
+    this.shuttingDown = true;
     this.watchdog?.stop();
     // A (graceful drain): detached `:cr:` reviews run OUTSIDE the turn queue, so
     // `queue.waitForAll()` below never waits for them — a restart would orphan
@@ -463,6 +470,27 @@ export class SlackAdapter {
     }
 
     await this.presence.offline();
+  }
+
+  /**
+   * Best-effort per-turn restart notice. A turn that completes while a graceful
+   * shutdown is draining posts this so the user knows their NEXT message may wait
+   * for the gateway to come back. Swallows errors — the answer is already posted
+   * and the drain must not stall on a flaky notice.
+   */
+  private async notifyShutdownRestart(
+    channel: string,
+    threadTs: string,
+  ): Promise<void> {
+    try {
+      await this.web.chat.postMessage({
+        channel,
+        thread_ts: threadTs,
+        text: "🔄 服務重新啟動，預計 5–10 分鐘後重新上線",
+      });
+    } catch {
+      /* best-effort: the answer already posted; never block the drain */
+    }
   }
 
   // ─────────────────────────── event handlers ───────────────────────────
@@ -548,6 +576,12 @@ export class SlackAdapter {
           sessionThreadTs: replyThreadTs,
           files,
         });
+        // Answer is posted; if we're mid-drain, tell the user the bot is
+        // restarting so a follow-up isn't met with silence. Awaited so the
+        // notice is part of the drained work (won't be cut by SIGKILL).
+        if (this.shuttingDown) {
+          await this.notifyShutdownRestart(channel, replyThreadTs);
+        }
       } catch (err) {
         this.onLog(
           `error handling DM from ${userId}: ${(err as Error).message}`,
@@ -687,6 +721,12 @@ export class SlackAdapter {
           sessionThreadTs,
           files,
         });
+        // Answer is posted; if we're mid-drain, tell the user the bot is
+        // restarting so a follow-up isn't met with silence. Awaited so the
+        // notice is part of the drained work (won't be cut by SIGKILL).
+        if (this.shuttingDown) {
+          await this.notifyShutdownRestart(channelId, replyThreadTs);
+        }
       } catch (err) {
         this.onLog(
           `error handling mention in ${channelId}: ${(err as Error).message}`,

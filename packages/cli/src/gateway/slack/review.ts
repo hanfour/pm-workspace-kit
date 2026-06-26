@@ -101,6 +101,9 @@ interface InFlightReview {
   claimRef: ReviewRef;
   controller: AbortController;
   label: string;
+  /** Where to post the "interrupted by restart" notice on shutdown (B). */
+  channelId: string;
+  threadTs: string;
 }
 
 export class ReviewCoordinator {
@@ -128,6 +131,14 @@ export class ReviewCoordinator {
       releaseReview(e.claimRef);
       log(
         `review: interrupted ${e.label} by shutdown — mra killed, claim released (re-send to retry)`,
+      );
+      // B: tell the thread its review was cut short + how to re-run. Fire-and-forget
+      // (void) — drainOnShutdown is sync; stop()'s 90s queue drain that follows gives
+      // these posts time to land. reply() is best-effort (swallows its own errors).
+      void this.reply(
+        e.channelId,
+        e.threadTs,
+        ":warning: 這個 PR review 因服務重新啟動中斷，上線後在本 thread 回 `retry` 即可重跑。",
       );
     }
     this.inFlight.clear();
@@ -370,6 +381,8 @@ export class ReviewCoordinator {
       claimRef,
       controller,
       label: `${slug}#${ref.number}`,
+      channelId: ctx.channelId,
+      threadTs: ctx.threadTs,
     };
     this.inFlight.add(inflight);
 
