@@ -53,10 +53,12 @@ describe("transcribeAudio", () => {
     if (!r.ok) assert.equal(r.reason, "transcribe-failed");
   });
 
-  it("retries a plain network Error (no status) and succeeds on second attempt", async () => {
+  it("retries a wrapped network TranscribeError (no status) and succeeds on second attempt", async () => {
     let calls = 0;
+    // In real code transcribeFile wraps ECONNRESET → TranscribeError (no status).
+    // withRetry must retry those; raw non-TranscribeError are propagated immediately (see AbortError test).
     const tf = async () => {
-      if (calls++ === 0) throw new Error("ECONNRESET");
+      if (calls++ === 0) throw new TranscribeError("network error: ECONNRESET");
       return "net-seg";
     };
     const r = await transcribeAudio("/tmp/in.m4a", cfg, base({
@@ -65,6 +67,23 @@ describe("transcribeAudio", () => {
     }));
     assert.equal(r.ok, true);
     if (r.ok) assert.match(r.transcript, /net-seg/);
+  });
+
+  it("does not retry an AbortError — propagates immediately with a single transcribeFile call", async () => {
+    let calls = 0;
+    const tf = async () => {
+      calls++;
+      throw Object.assign(new Error("aborted"), { name: "AbortError" });
+    };
+    await assert.rejects(
+      () =>
+        transcribeAudio("/tmp/in.m4a", cfg, base({
+          prepare: (async () => ["/tmp/job/chunk-000.ogg"]) as never,
+          transcribeFile: tf as never,
+        })),
+      (err: unknown) => (err as Error).name === "AbortError",
+    );
+    assert.equal(calls, 1, "transcribeFile must be called exactly once — no retries on abort");
   });
 
   it("truncates a successful transcript longer than TRANSCRIPT_CAP", async () => {

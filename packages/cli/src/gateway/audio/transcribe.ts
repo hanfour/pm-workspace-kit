@@ -31,6 +31,7 @@ async function withRetry(
     try {
       return await fn();
     } catch (err) {
+      if (!(err instanceof TranscribeError)) throw err;
       lastErr = err;
       const status = err instanceof TranscribeError ? err.status : undefined;
       // Terminal: 4xx errors OTHER than 429 (e.g. 400 Bad Request, 401 Unauthorized)
@@ -73,7 +74,8 @@ export async function transcribeAudio(
         sleep,
       );
       segs.push(text);
-    } catch {
+    } catch (err) {
+      if (!(err instanceof TranscribeError)) throw err;
       const partial =
         (segs.length > 0 ? segs.join("\n") + "\n" : "") +
         `[第 ${i + 1} 段轉錄失敗，回 retry 重跑此段]`;

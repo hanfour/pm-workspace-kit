@@ -25,6 +25,7 @@ export async function transcribeFile(
   try {
     resp = await fetchImpl(ENDPOINT, { method: "POST", headers: { Authorization: `Bearer ${opts.apiKey}` }, body: form as never, signal: deps.signal });
   } catch (err) {
+    if ((err as { name?: string }).name === "AbortError") throw err; // propagate abort immediately
     throw new TranscribeError(`network error: ${(err as Error).message}`);
   }
   if (!resp.ok) {
