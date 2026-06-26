@@ -42,6 +42,10 @@ import {
   type SlackFile,
 } from "../attachments/types";
 import type { AttachmentIngestFn, AttachmentTurnContext } from "./index";
+import type { GatewayConfig } from "../config";
+import { pickAudience } from "../config";
+import { AudioCoordinator, isAudioMessage } from "../audio/coordinator";
+import { needsConsentNotice } from "../audio/consent";
 
 /**
  * v0.13 tranche 4: channel `app_mention` handler extracted from
@@ -57,6 +61,12 @@ export interface ChannelMentionHandlerOptions {
   freeChatTurn: FreeChatTurnRunner;
   slashCommand: SlashCommandHandler;
   attachmentIngest: AttachmentIngestFn;
+  /** Audio coordinator — when present, voice messages short-circuit to transcription. */
+  audio?: AudioCoordinator;
+  /** Gateway config — used to resolve audience tier for audio. */
+  config?: GatewayConfig;
+  /** Bot token forwarded to AudioCoordinator.run() for file downloads. */
+  botToken?: string;
 }
 
 export class ChannelMentionHandler {
@@ -65,6 +75,9 @@ export class ChannelMentionHandler {
   private readonly freeChatTurn: FreeChatTurnRunner;
   private readonly slashCommand: SlashCommandHandler;
   private readonly attachmentIngest: AttachmentIngestFn;
+  private readonly audio?: AudioCoordinator;
+  private readonly config?: GatewayConfig;
+  private readonly botToken: string;
 
   constructor(opts: ChannelMentionHandlerOptions) {
     this.web = opts.web;
@@ -72,6 +85,9 @@ export class ChannelMentionHandler {
     this.freeChatTurn = opts.freeChatTurn;
     this.slashCommand = opts.slashCommand;
     this.attachmentIngest = opts.attachmentIngest;
+    this.audio = opts.audio;
+    this.config = opts.config;
+    this.botToken = opts.botToken ?? "";
   }
 
   async run(args: {
@@ -112,6 +128,42 @@ export class ChannelMentionHandler {
       // turn's load, filtered by `(role, content)` so prune-trimmed
       // history (local to this request's LLM context) is NOT
       // re-appended.
+
+      // Audio short-circuit: voice messages bypass attachment ingest and go
+      // straight to the transcription pipeline. Detached so the user's turn
+      // slot frees immediately (same rationale as review). The coordinator
+      // acks and posts the summary when done.
+      if (this.audio?.isEnabled() && isAudioMessage(files ?? [])) {
+        const tier = this.config
+          ? pickAudience(this.config, userId, channelId)
+          : "tech";
+        if (needsConsentNotice(channelId)) {
+          await this.web.chat
+            .postMessage({
+              channel: channelId,
+              thread_ts: threadTs,
+              text: "_注意：音訊內容將傳送至 OpenAI 語音轉錄服務處理。_",
+            })
+            .catch(() => {});
+        }
+        void this.audio
+          .run({
+            threadKey: {
+              kind: "channel",
+              channelId,
+              threadTs: sessionThreadTs ?? threadTs,
+            },
+            channelId,
+            threadTs,
+            userId,
+            botToken: this.botToken,
+            files: files ?? [],
+            userText: text || undefined,
+            tier,
+          })
+          .catch(() => {});
+        return;
+      }
 
       // Attachment wiring (free-chat branch only): ingest new files when
       // present, then load any previously stored context for this thread.
@@ -215,6 +267,16 @@ export class ChannelMentionHandler {
     // Active-case branch: attachments are not supported — post a brief note
     // and proceed with the case turn as usual. Do NOT ingest.
     if (files && files.length > 0) {
+      // Audio-specific rejection: inform the user that audio requires DM.
+      if (isAudioMessage(files)) {
+        await this.web.chat
+          .postMessage({
+            channel: channelId,
+            thread_ts: threadTs,
+            text: "_(音訊在 case 模式下不支援，請在 DM 直接傳送音訊檔案)_",
+          })
+          .catch(() => {});
+      }
       await this.web.chat
         .postMessage({
           channel: channelId,

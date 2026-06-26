@@ -21,6 +21,7 @@ import {
 import { startKeepAwake } from "./keep-awake";
 import { installUnhandledRejectionGuard } from "./crash-guard";
 import { recoverReviewClaims } from "./review-claim";
+import { sweepStaleAudioTemp } from "./audio/temp";
 
 export interface GatewayRunOptions {
   /** Called for each one-line breadcrumb. Defaults to console.log. */
@@ -101,6 +102,11 @@ export async function runGateway(opts: GatewayRunOptions = {}): Promise<void> {
   const recoveredClaims = recoverReviewClaims(REVIEW_STALE_CLAIM_MS, log);
   if (recoveredClaims > 0) {
     log(`recovered ${recoveredClaims} orphaned review claim(s) from a prior run`);
+  }
+
+  const sweptTempDirs = sweepStaleAudioTemp();
+  if (sweptTempDirs > 0) {
+    log(`swept ${sweptTempDirs} stale audio temp dir(s) from a prior run`);
   }
 
   const dryRunStats = opts.dryRun ? createDryRunStats() : undefined;

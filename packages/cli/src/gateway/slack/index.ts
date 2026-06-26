@@ -56,6 +56,9 @@ import {
 } from "../../adapters/mra";
 import { IssueCoordinator, realGithubGateway, type GithubGateway } from "./issue";
 import { ReviewCoordinator, realReviewGateway, isReviewRequest, isRetryRequest } from "./review";
+import { AudioCoordinator, isAudioMessage } from "../audio/coordinator";
+import { needsConsentNotice } from "../audio/consent";
+import { pickAudience } from "../config";
 import {
   approveAtom,
   findAtomByApprovalMessage,
@@ -176,6 +179,8 @@ export class SlackAdapter {
   private readonly issue: IssueCoordinator;
   /** :cr: reaction → mra PR review coordinator. */
   private readonly review: ReviewCoordinator;
+  /** Voice message transcription coordinator. */
+  private readonly audio: AudioCoordinator;
   /** End-to-end free-chat turn: seed + retrieval + LLM + mra-ask + escalate + reply. */
   private readonly freeChatTurn: FreeChatTurnRunner;
   /** Channel @mention dispatcher (slash / free-chat / case-mode). */
@@ -313,6 +318,12 @@ export class SlackAdapter {
       onLog: this.onLog,
       gateway: realReviewGateway,
     });
+    this.audio = new AudioCoordinator({
+      web: this.web,
+      config: this.config,
+      onLog: this.onLog,
+      llm: this.llm,
+    });
     this.freeChatTurn = new FreeChatTurnRunner({
       web: this.web,
       config: this.config,
@@ -328,6 +339,9 @@ export class SlackAdapter {
       freeChatTurn: this.freeChatTurn,
       slashCommand: this.slashCommand,
       attachmentIngest: this.attachmentIngest,
+      audio: this.audio,
+      config: this.config,
+      botToken: this.config.slack.botToken ?? "",
     });
     this.queue = new InFlightQueue({ onLog: this.onLog });
   }
@@ -391,11 +405,14 @@ export class SlackAdapter {
           admins: this.config.admins,
           onLog: this.onLog,
           // C1: the watchdog loud-exit bypasses adapter.stop(), so drain
-          // in-flight reviews here too (abort + release) — else a socket-death
-          // restart orphans them exactly like the crashes A/C3 already fixed.
+          // in-flight reviews and audio jobs here too (abort + release) — else
+          // a socket-death restart orphans them exactly like the crashes A/C3
+          // already fixed.
           beforeExit: () => {
             const n = this.review.drainOnShutdown(this.onLog);
             if (n > 0) this.onLog(`watchdog: drained ${n} in-flight review(s) before loud exit`);
+            const na = this.audio.drainOnShutdown(this.onLog);
+            if (na > 0) this.onLog(`watchdog: drained ${na} in-flight audio job(s) before loud exit`);
           },
         }),
       );
@@ -437,13 +454,17 @@ export class SlackAdapter {
     // restart notice to its thread (see notifyShutdownRestart + the work closures).
     this.shuttingDown = true;
     this.watchdog?.stop();
-    // A (graceful drain): detached `:cr:` reviews run OUTSIDE the turn queue, so
-    // `queue.waitForAll()` below never waits for them — a restart would orphan
-    // them (mra child runs on, claim left blocking re-review). Abort + release
-    // them here. Synchronous + fast, so it fits the shutdown grace window.
+    // A (graceful drain): detached `:cr:` reviews and audio jobs run OUTSIDE
+    // the turn queue, so `queue.waitForAll()` below never waits for them — a
+    // restart would orphan them. Abort + release them here. Synchronous + fast,
+    // so it fits the shutdown grace window.
     const drainedReviews = this.review.drainOnShutdown(this.onLog);
     if (drainedReviews > 0) {
       this.onLog(`stop: drained ${drainedReviews} in-flight review(s)`);
+    }
+    const drainedAudio = this.audio.drainOnShutdown(this.onLog);
+    if (drainedAudio > 0) {
+      this.onLog(`stop: drained ${drainedAudio} in-flight audio job(s)`);
     }
     try {
       await this.socket.disconnect();
@@ -689,6 +710,25 @@ export class SlackAdapter {
       return;
     }
 
+    // Audio retry in channel mention: `retry` in an audio-result thread.
+    // Same mutual-exclusion logic as the DM path (review takes priority).
+    if (this.audio.isEnabled() && isRetryRequest(text)) {
+      const botToken = this.config.slack.botToken ?? "";
+      const tier = pickAudience(this.config, userId, channelId);
+      void this.audio
+        .retryInThread({
+          channelId,
+          threadTs: replyThreadTs,
+          userId,
+          botToken,
+          tier,
+        })
+        .catch((err) =>
+          this.onLog(`audio: detached mention retry failed: ${(err as Error).message}`),
+        );
+      return;
+    }
+
     // v0.13: queue key is per-user-per-channel. Different users in the
     // same channel run in parallel; a single user's rapid follow-ups
     // queue up FIFO behind their own in-flight round (up to 3 deep)
@@ -817,6 +857,52 @@ export class SlackAdapter {
         .fromMessage({ channelId, threadTs, userId, text })
         .catch((err) =>
           this.onLog(`review: detached DM review failed: ${(err as Error).message}`),
+        );
+      return;
+    }
+
+    // Audio retry: `retry` in an audio-result thread → re-run that thread's
+    // transcription. Only fires when review is disabled (review retry takes
+    // priority when both are on, since both fire on `retry` + `return`).
+    if (this.audio.isEnabled() && isRetryRequest(text)) {
+      const botToken = this.config.slack.botToken ?? "";
+      const tier = pickAudience(this.config, userId);
+      void this.audio
+        .retryInThread({ channelId, threadTs, userId, botToken, tier })
+        .catch((err) =>
+          this.onLog(`audio: detached DM retry failed: ${(err as Error).message}`),
+        );
+      return;
+    }
+
+    // Audio short-circuit: voice messages bypass free-chat and go straight to
+    // the transcription pipeline. Detached like review so the DM slot frees at
+    // once. The coordinator acks and posts the transcript summary when done.
+    if (this.audio.isEnabled() && isAudioMessage(files ?? [])) {
+      const botToken = this.config.slack.botToken ?? "";
+      const tier = pickAudience(this.config, userId);
+      if (needsConsentNotice(channelId)) {
+        await this.web.chat
+          .postMessage({
+            channel: channelId,
+            thread_ts: threadTs,
+            text: "_注意：音訊內容將傳送至 OpenAI 語音轉錄服務處理。_",
+          })
+          .catch(() => {});
+      }
+      void this.audio
+        .run({
+          threadKey: { kind: "dm", userId, threadTs },
+          channelId,
+          threadTs,
+          userId,
+          botToken,
+          files: files ?? [],
+          userText: text || undefined,
+          tier,
+        })
+        .catch((err) =>
+          this.onLog(`audio: detached DM run failed: ${(err as Error).message}`),
         );
       return;
     }

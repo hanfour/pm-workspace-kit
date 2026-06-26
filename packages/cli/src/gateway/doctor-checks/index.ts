@@ -10,6 +10,7 @@ import { manifestAlignmentCheck } from "./manifest-alignment";
 import { secretSourcesCheck } from "./secret-sources";
 import { githubTokenCheck } from "./github-token";
 import { reviewDoctorCheck } from "./review";
+import { audioDoctorCheck } from "./audio";
 
 export {
   configFileCheck,
@@ -23,6 +24,7 @@ export {
   secretSourcesCheck,
   githubTokenCheck,
   reviewDoctorCheck,
+  audioDoctorCheck,
 };
 
 // Order matters for output legibility: config-file first (blocks
@@ -42,4 +44,5 @@ export const DEFAULT_CHECKS: DoctorCheck[] = [
   manifestAlignmentCheck,
   githubTokenCheck,
   reviewDoctorCheck,
+  audioDoctorCheck,
 ];

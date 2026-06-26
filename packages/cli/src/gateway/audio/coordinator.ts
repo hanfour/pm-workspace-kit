@@ -163,6 +163,58 @@ export class AudioCoordinator {
     }
   }
 
+  private async fetchRootFiles(
+    channel: string,
+    ts: string,
+  ): Promise<SlackFile[]> {
+    try {
+      const res = (await this.opts.web.conversations.history({
+        channel,
+        latest: ts,
+        oldest: ts,
+        inclusive: true,
+        limit: 1,
+      } as never)) as { messages?: Array<{ files?: SlackFile[] }> };
+      return res.messages?.[0]?.files ?? [];
+    } catch (err) {
+      this.opts.onLog(
+        `audio: fetch root files failed: ${(err as Error).message}`,
+      );
+      return [];
+    }
+  }
+
+  /**
+   * Re-run the audio pipeline for the thread whose root message contained
+   * audio files. Called when a user sends `retry` in an audio thread.
+   * Returns true if the thread was recognised as an audio thread and the
+   * pipeline was re-queued; false if not an audio thread (so the caller
+   * can fall through to free-chat).
+   */
+  async retryInThread(args: {
+    channelId: string;
+    threadTs: string;
+    userId: string;
+    botToken: string;
+    tier: string;
+  }): Promise<boolean> {
+    if (!this.isEnabled()) return false;
+    const files = await this.fetchRootFiles(args.channelId, args.threadTs);
+    if (!isAudioMessage(files)) return false;
+    const audioFiles = files.filter((f) => categoryFor(f) === "audio");
+    for (const a of audioFiles) releaseAudio(a.id);
+    await this.run({
+      threadKey: { kind: "channel", channelId: args.channelId, threadTs: args.threadTs },
+      channelId: args.channelId,
+      threadTs: args.threadTs,
+      userId: args.userId,
+      botToken: args.botToken,
+      files,
+      tier: args.tier,
+    });
+    return true;
+  }
+
   async run(args: AudioRunArgs): Promise<void> {
     const d = this.opts.deps ?? {};
     const streamToTemp = d.streamToTemp ?? streamSlackFileToTemp;
