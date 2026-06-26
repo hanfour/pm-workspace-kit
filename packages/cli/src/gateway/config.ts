@@ -83,6 +83,24 @@ export interface EscalationConfig {
   repos: Record<string, string[]>;
 }
 
+export interface AudioConfig {
+  openaiApiKey?: unknown; // SecretSource on disk; validated lazily
+  model?: string;
+  language?: string;
+  enabled?: boolean;
+  maxDurationSec?: number;
+  quota?: { perUserDailyMinutes?: number; globalDailyMinutes?: number };
+}
+
+export interface ResolvedAudioConfig {
+  enabled: boolean;
+  model: string;
+  language: string;
+  maxDurationSec: number;
+  perUserDailyMinutes: number;
+  globalDailyMinutes: number;
+}
+
 export interface ReviewConfig {
   enabled: boolean;
   allowPublicRepos: boolean;
@@ -144,6 +162,8 @@ export interface GatewayConfig {
   github?: { token: SecretSource; allowPublicRepos?: boolean };
   /** Configuration for `:cr:` reaction → mra PR review feature. */
   review?: Partial<ReviewConfig>;
+  /** Configuration for audio (voice message) transcription feature. */
+  audio?: AudioConfig;
   slack: SlackConfig;
 }
 
@@ -458,6 +478,30 @@ export function resolveReviewGhToken(
   review: Partial<ReviewConfig> | undefined,
 ): string | undefined {
   return resolveSecret(review?.ghToken, "review.ghToken");
+}
+
+/**
+ * Resolve the audio config with safe defaults.
+ */
+export function resolveAudioConfig(raw?: AudioConfig): ResolvedAudioConfig {
+  return {
+    enabled: raw?.enabled ?? false,
+    model: raw?.model ?? "gpt-4o-mini-transcribe",
+    language: raw?.language ?? "zh",
+    maxDurationSec: raw?.maxDurationSec ?? 7200,
+    perUserDailyMinutes: raw?.quota?.perUserDailyMinutes ?? 120,
+    globalDailyMinutes: raw?.quota?.globalDailyMinutes ?? 600,
+  };
+}
+
+/**
+ * Resolve the OpenAI API key from the audio config block (literal or
+ * {env}/{cmd} reference). Returns undefined when unset. Resolved lazily
+ * at transcription time, never at load.
+ */
+export function resolveOpenAiKey(raw?: AudioConfig): string | undefined {
+  const src = validateSecretSource(raw?.openaiApiKey, "audio.openaiApiKey");
+  return resolveSecret(src, "audio.openaiApiKey");
 }
 
 /**
