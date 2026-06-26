@@ -31,4 +31,17 @@ describe("streamSlackFileToTemp", () => {
     await assert.rejects(() => streamSlackFileToTemp(f({ size: 1 }), "t", dest, { fetchImpl: (async () => resp("X".repeat(100))) as never, maxBytes: 10 }));
     assert.equal(fs.existsSync(dest), false);
   });
+  it("rejects before fetching when file.size exceeds maxBytes (metadata pre-check)", async () => {
+    let fetched = false;
+    await assert.rejects(
+      () => streamSlackFileToTemp(
+        f({ size: 500 }),
+        "t",
+        path.join(tmp, "precheck"),
+        { fetchImpl: (async () => { fetched = true; return resp(""); }) as never, maxBytes: 100 },
+      ),
+      /exceeds size limit/,
+    );
+    assert.equal(fetched, false, "fetch must not be called when file.size already exceeds maxBytes");
+  });
 });

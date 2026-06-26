@@ -2,6 +2,7 @@ import { describe, it } from "node:test";
 import * as assert from "node:assert/strict";
 import { transcribeAudio } from "../src/gateway/audio/transcribe";
 import { TranscribeError } from "../src/gateway/audio/transcribe-client";
+import { TRANSCRIPT_CAP } from "../src/gateway/attachments/types";
 
 const cfg = { apiKey: "sk-x", model: "m", language: "zh", maxDurationSec: 7200 };
 const base = (over: Record<string, unknown> = {}) => ({
@@ -50,5 +51,33 @@ describe("transcribeAudio", () => {
     }));
     assert.equal(r.ok, false);
     if (!r.ok) assert.equal(r.reason, "transcribe-failed");
+  });
+
+  it("retries a plain network Error (no status) and succeeds on second attempt", async () => {
+    let calls = 0;
+    const tf = async () => {
+      if (calls++ === 0) throw new Error("ECONNRESET");
+      return "net-seg";
+    };
+    const r = await transcribeAudio("/tmp/in.m4a", cfg, base({
+      prepare: (async () => ["/tmp/job/chunk-000.ogg"]) as never,
+      transcribeFile: tf as never,
+    }));
+    assert.equal(r.ok, true);
+    if (r.ok) assert.match(r.transcript, /net-seg/);
+  });
+
+  it("truncates a successful transcript longer than TRANSCRIPT_CAP", async () => {
+    const longText = "a".repeat(TRANSCRIPT_CAP + 100);
+    const tf = async () => longText;
+    const r = await transcribeAudio("/tmp/in.m4a", cfg, base({
+      prepare: (async () => ["/tmp/job/chunk-000.ogg"]) as never,
+      transcribeFile: tf as never,
+    }));
+    assert.equal(r.ok, true);
+    if (r.ok) {
+      assert.ok(r.transcript.length <= TRANSCRIPT_CAP + 20, "transcript should be near-capped");
+      assert.ok(r.transcript.includes("…(truncated)"), "truncation marker must be present");
+    }
   });
 });
