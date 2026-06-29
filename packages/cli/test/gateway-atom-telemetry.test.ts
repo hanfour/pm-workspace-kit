@@ -104,7 +104,10 @@ describe("free-chat-turn telemetry wiring", () => {
       status: "approved",
     });
 
-    // Minimal web fake: postMessage returns a ts, update is a no-op
+    // Minimal web fake: postMessage returns a ts, update is a no-op.
+    // conversations.info/members are needed by makeAtomAccessChecker (Task 10):
+    // return is_private:false so the test channel is treated as public and the
+    // atom passes the access filter (preserving pre-Task-10 telemetry behaviour).
     let postCount = 0;
     const fakeWeb = {
       chat: {
@@ -113,6 +116,10 @@ describe("free-chat-turn telemetry wiring", () => {
           return { ok: true, ts: `1700000000.${String(postCount).padStart(6, "0")}` };
         },
         update: async (_args: unknown) => ({ ok: true }),
+      },
+      conversations: {
+        info: async () => ({ channel: { is_private: false } }),
+        members: async () => ({ members: [] }),
       },
     } as unknown as WebClient;
 
@@ -190,6 +197,10 @@ describe("free-chat-turn telemetry wiring", () => {
           return { ok: true, ts: `1700000000.${String(postCount).padStart(6, "0")}` };
         },
         update: async (_args: unknown) => ({ ok: true }),
+      },
+      conversations: {
+        info: async () => ({ channel: { is_private: false } }),
+        members: async () => ({ members: [] }),
       },
     } as unknown as WebClient;
 
