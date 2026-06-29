@@ -8,6 +8,68 @@ All notable changes to **pm-workspace-kit** are documented here.
 
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Each release also has a longer narrative on [GitHub Releases](https://github.com/hanfour/pm-workspace-kit/releases) with rationale, dogfood notes, and test plans.
 
+## [v0.28.1] — 2026-06-29 — audio long-file fixes (whisper-1, quota refund, monthly cap, diagnosability)
+
+[GitHub release](https://github.com/hanfour/pm-workspace-kit/releases/tag/v0.28.1)
+
+### Why
+
+Live testing of a real **45-minute** meeting recording exposed three issues the 8-second clip hadn't: long files failed to transcribe, failed attempts silently consumed the daily quota, and the failure reason wasn't recoverable from logs.
+
+### Fixed
+
+- **Default model → `whisper-1`.** `gpt-4o-mini-transcribe` is GPT-4o-based with a ~25-min token cap → `400 input_too_large` on long recordings (root-caused live; whisper-1 transcribed the same 45-min / ~5MB file in ~2 min). whisper-1 is bounded only by the 25MB request size, which the 16 kHz-mono re-encode satisfies — consistent with the existing size-based chunking.
+- **Quota refund leak.** A single-chunk *total* failure emitted a gap-marker-only `partialTranscript`, which made the coordinator treat it as "cost incurred → don't refund" → reserved minutes leaked (two failed 45-min attempts ate 90 phantom minutes and tripped the daily cap). `transcribe` now returns `partialTranscript` only when a segment actually succeeded; total failures refund. Refunds target the **reserve-time** day/month bucket, so a job crossing a period boundary refunds the file it charged.
+- **Failure diagnosability.** The underlying transcribe failure (HTTP status + code, e.g. `400 input_too_large`) is surfaced into the `audio.failed` event reason.
+- **Cost estimate.** `USD_PER_MINUTE` 0.003 → 0.006 (whisper-1 list price) so `audio.transcribed.estimatedUsd` is accurate.
+
+### Added
+
+- **Optional whole-workspace monthly budget cap** — `audio.quota.globalMonthlyMinutes` with a monthly accumulator file; always tracked (so releases refund it), enforced only when configured.
+
+### Verified
+
+- Live: a 45-minute file transcribes end-to-end on whisper-1 (`audio.transcribed durationSec=2736 chunks=1 ms=132359` → `audio.summarized mode=long`).
+- Code-reviewed (subagent): one MEDIUM (month-boundary refund) found, fixed, and covered by a cross-month test.
+
+### Tests
+
+- `@pmk/cli`: **847** tests, 100% pass (+ monthly cap incl. cross-month refund, total-failure-no-partial, failure-detail capture, whisper-1 default).
+
+### Notes
+
+- Cost (OpenAI bills in USD): whisper-1 $0.006/min. This deployment runs per-user 600/day, global 1800/day, **global 7500/month (≈ NT$1,485)**.
+
+---
+
+## [v0.28.0] — 2026-06-29 — Slack audio transcription → summary → planning
+
+[GitHub release](https://github.com/hanfour/pm-workspace-kit/releases/tag/v0.28.0)
+
+### Why
+
+Let meeting recordings and live audio clips flow through the gateway: upload or record audio in Slack → transcribe → auto-summary with a proactive next-step → continue planning / requirement-clarification in-thread with the uploader.
+
+### Added
+
+- **Audio pipeline** (`packages/cli/src/gateway/audio/`) — a detached coordinator (mirrors the `:cr:` ReviewCoordinator pattern): `categoryFor` routes audio → `claimAudio` → `🎧 轉錄中…` ack → stream-to-temp → ffmpeg probe → too-long gate → quota gate (actual minutes, before any API cost) → OpenAI transcription (ffmpeg re-encode to 16 kHz mono + byte-budget chunking for the 25MB limit) → raw transcript stored as thread context → signal-proportionate summary (short clip vs full PM-structured `long` mode) → posted in-thread.
+- **Config** (`audio` block) — dark-launchable (`enabled:false` default) + first-use consent; OpenAI key via `{env}`/`{cmd}` SecretSource (never stored in config); `maxDurationSec` (2 hr cap); per-user / global daily quota.
+- **Resilience** — abort + drain on shutdown (in-flight jobs post a `retry` notice), claim self-heal, secret redaction, prompt-injection framing, `retry` re-run from the thread.
+
+### Fixed
+
+- **Audio classification by filename extension** (#66) — a voice-memo `.m4a` arrived with sparse Slack metadata and `categoryFor` (mimetype/filetype only) returned "unsupported", so it never reached transcription. Added an `AUDIO_EXTENSIONS` fallback on the file name.
+
+### Verified
+
+- Live end-to-end: an 8-second clip → transcript → short summary (`audio.transcribed` + `audio.summarized` events).
+
+### Tests
+
+- `@pmk/cli`: **840** tests, 100% pass.
+
+---
+
 ## [v0.19.0] — 2026-06-03 — gateway keep-awake hardening (throttle-proof + self-heal watchdog)
 
 [GitHub release](https://github.com/hanfour/pm-workspace-kit/releases/tag/v0.19.0)
