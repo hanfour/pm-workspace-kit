@@ -23,6 +23,7 @@ import { installUnhandledRejectionGuard } from "./crash-guard";
 import { recoverReviewClaims } from "./review-claim";
 import { sweepStaleAudioTemp } from "./audio/temp";
 import { sweepStaleAudioClaims } from "./audio/claim";
+import { sweepStaleAtomMarkers } from "./audio/atom-marker";
 
 export interface GatewayRunOptions {
   /** Called for each one-line breadcrumb. Defaults to console.log. */
@@ -113,6 +114,11 @@ export async function runGateway(opts: GatewayRunOptions = {}): Promise<void> {
   const sweptClaims = sweepStaleAudioClaims();
   if (sweptClaims > 0) {
     log(`swept ${sweptClaims} stale audio claim(s) from a prior run`);
+  }
+
+  const sweptMarkers = sweepStaleAtomMarkers();
+  if (sweptMarkers > 0) {
+    log(`swept ${sweptMarkers} stale audio-atom marker(s) from a prior run`);
   }
 
   const dryRunStats = opts.dryRun ? createDryRunStats() : undefined;

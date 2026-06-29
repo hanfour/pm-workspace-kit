@@ -1017,6 +1017,12 @@ export class SlackAdapter {
     // Remaining reactions (approval / ticket / citation-feedback) only apply
     // to the bot's own messages (item_user is the author of the reacted-to message).
     if (event.item_user !== this.botInfo.botUserId) return;
+
+    // 📚 on a bot audio-summary message → save it to the knowledge base.
+    if (reaction === "books") {
+      if (await this.audio.fromApproval({ channelId, messageTs, reactorUserId })) return;
+    }
+
     const isApprove =
       reaction === "white_check_mark" ||
       reaction === "heavy_check_mark" ||
