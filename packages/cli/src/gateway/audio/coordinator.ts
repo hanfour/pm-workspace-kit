@@ -37,7 +37,7 @@ import { makeJobTempDir } from "./temp";
 import { claimAudio, releaseAudio, finalizeAudio } from "./claim";
 import { redactSecrets } from "./redact";
 
-const USD_PER_MINUTE = 0.003; // gpt-4o-mini-transcribe est.; for estimatedUsd only
+const USD_PER_MINUTE = 0.006; // whisper-1 list price ($0.006/min); for estimatedUsd only
 
 /** True when any file in the array is classified as audio. */
 export function isAudioMessage(files: SlackFile[]): boolean {
@@ -292,6 +292,9 @@ export class AudioCoordinator {
     // Hoisted so the catch block can refund quota if it was reserved.
     let minutes = 0;
     let quotaReserved = false;
+    // Timestamp the quota is reserved at, so refunds target the same day/month
+    // bucket even if the job (or its failure) crosses a period boundary.
+    let reservedAtMs = 0;
     // True once transcription has incurred real API cost; catch must not refund then.
     let transcribeSucceeded = false;
 
@@ -330,11 +333,13 @@ export class AudioCoordinator {
 
       // 3. Quota gate with ACTUAL minutes (before transcription).
       minutes = Math.ceil(probedDuration / 60);
+      reservedAtMs = now();
       const q = reserveQuota({
         userId: args.userId,
         minutes,
         perUserDailyMinutes: ac.perUserDailyMinutes,
         globalDailyMinutes: ac.globalDailyMinutes,
+        globalMonthlyMinutes: ac.globalMonthlyMinutes,
         now,
       });
       if (!q.ok) {
@@ -359,12 +364,15 @@ export class AudioCoordinator {
 
       if (!result.ok) {
         const reason = result.reason;
-        appendGatewayEvent({ type: "audio.failed", actor: args.userId, reason });
+        // Surface the underlying cause (e.g. "400 input_too_large") in the event
+        // so failures are diagnosable from the event log without re-instrumenting.
+        const eventReason = result.detail ? `${reason}: ${result.detail}` : reason;
+        appendGatewayEvent({ type: "audio.failed", actor: args.userId, reason: eventReason });
         if (reason === "too-long") {
           // FIX 4a: claim was never finalized → release it so a retry is possible.
           // FIX 2: no usable output → refund the reserved quota.
           releaseAudio(file.id);
-          releaseQuota({ userId: args.userId, minutes, now: () => now() });
+          releaseQuota({ userId: args.userId, minutes, now: () => now(), reservedAt: reservedAtMs });
           await post(
             `:warning: 錄音超過 ${Math.round(ac.maxDurationSec / 60)} 分鐘上限,請切段後再上傳。`,
           );
@@ -384,7 +392,7 @@ export class AudioCoordinator {
         } else {
           // Total failure, no usable output → release claim and refund quota.
           releaseAudio(file.id);
-          releaseQuota({ userId: args.userId, minutes, now: () => now() });
+          releaseQuota({ userId: args.userId, minutes, now: () => now(), reservedAt: reservedAtMs });
           await post(":warning: 轉錄失敗,請在本 thread 回 `retry` 重跑。");
         }
         return;
@@ -445,7 +453,7 @@ export class AudioCoordinator {
       // If transcribeSucceeded is true the OpenAI charge was already spent,
       // so the daily cap must NOT be refunded regardless of what failed later.
       if (quotaReserved && minutes > 0 && !transcribeSucceeded) {
-        releaseQuota({ userId: args.userId, minutes, now: () => now() });
+        releaseQuota({ userId: args.userId, minutes, now: () => now(), reservedAt: reservedAtMs });
       }
       appendGatewayEvent({
         type: "audio.failed",

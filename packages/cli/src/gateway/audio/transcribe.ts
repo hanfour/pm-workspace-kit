@@ -6,7 +6,7 @@ import { MAX_AUDIO_DURATION_SEC, TRANSCRIPT_CAP } from "../attachments/types";
 
 export type TranscribeResult =
   | { ok: true; transcript: string; durationSec: number; chunks: number }
-  | { ok: false; reason: "too-long" | "transcribe-failed"; durationSec?: number; partialTranscript?: string; failedSegment?: number };
+  | { ok: false; reason: "too-long" | "transcribe-failed"; durationSec?: number; partialTranscript?: string; failedSegment?: number; detail?: string };
 
 export interface TranscribeDeps {
   probe?: typeof probeAudio;
@@ -76,15 +76,21 @@ export async function transcribeAudio(
       segs.push(text);
     } catch (err) {
       if (!(err instanceof TranscribeError)) throw err;
-      const partial =
-        (segs.length > 0 ? segs.join("\n") + "\n" : "") +
-        `[第 ${i + 1} 段轉錄失敗，回 retry 重跑此段]`;
+      // Only surface a partialTranscript when at least one segment actually
+      // succeeded. A gap-marker-only "partial" (no real content) incurs zero
+      // API cost — the caller relies on its absence to refund the quota.
+      const hasContent = segs.length > 0;
+      const partial = hasContent
+        ? truncate(segs.join("\n") + `\n[第 ${i + 1} 段轉錄失敗，回 retry 重跑此段]`)
+        : undefined;
+      const detail = `${err.status ?? ""} ${err.message}`.trim().slice(0, 200);
       return {
         ok: false,
         reason: "transcribe-failed",
         durationSec,
-        partialTranscript: truncate(partial),
+        partialTranscript: partial,
         failedSegment: i,
+        detail,
       };
     }
   }
