@@ -18,4 +18,13 @@ describe("categoryFor audio", () => {
     assert.equal(categoryFor({ mimetype: "image/png" }), "image");
     assert.equal(categoryFor({ mimetype: "text/markdown" }), "text");
   });
+  it("falls back to filename extension when mimetype + filetype are missing/unexpected", () => {
+    // the live-test failure: a voice memo with sparse Slack metadata
+    assert.equal(categoryFor({ name: "新錄音.m4a" }), "audio");
+    assert.equal(categoryFor({ name: "meeting.mp3", mimetype: "", filetype: "" }), "audio");
+    assert.equal(categoryFor({ name: "x.wav", mimetype: "application/octet-stream" }), "audio");
+    // non-audio extensions must NOT become audio
+    assert.equal(categoryFor({ name: "notes.txt" }), "unsupported");
+    assert.equal(categoryFor({ name: "noext" }), "unsupported");
+  });
 });

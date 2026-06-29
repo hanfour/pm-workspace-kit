@@ -71,3 +71,11 @@ export const AUDIO_MIMETYPES = new Set([
 export const AUDIO_FILETYPES = new Set([
   "mp3", "m4a", "mp4", "wav", "webm", "ogg", "flac", "aac", "mpga", "mpeg",
 ]);
+/**
+ * Audio filename extensions (lowercase, no dot). Fallback when Slack omits or
+ * sends an unexpected mimetype/filetype — classify by the file name so e.g.
+ * "新錄音.m4a" is still recognized as audio.
+ */
+export const AUDIO_EXTENSIONS = new Set([
+  "mp3", "m4a", "mp4", "wav", "webm", "ogg", "oga", "flac", "aac", "mpga", "mpeg", "m4b", "aiff", "aif",
+]);
