@@ -3,20 +3,24 @@ import * as assert from "node:assert/strict";
 import { resolveAudioConfig, resolveOpenAiKey, normaliseRawConfigForTest } from "../src/gateway/config";
 
 describe("resolveAudioConfig", () => {
-  it("applies defaults (disabled, gpt-4o-mini-transcribe, zh, quotas)", () => {
+  it("applies defaults (disabled, whisper-1, zh, quotas, no monthly cap)", () => {
     const c = resolveAudioConfig(undefined);
     assert.equal(c.enabled, false);
-    assert.equal(c.model, "gpt-4o-mini-transcribe");
+    // whisper-1 is the default: gpt-4o-mini-transcribe has a ~25-min token cap
+    // that fails on long meeting recordings (400 input_too_large).
+    assert.equal(c.model, "whisper-1");
     assert.equal(c.language, "zh");
     assert.equal(c.maxDurationSec, 7200);
     assert.equal(c.perUserDailyMinutes, 120);
     assert.equal(c.globalDailyMinutes, 600);
+    assert.equal(c.globalMonthlyMinutes, undefined, "no monthly cap unless configured");
   });
-  it("honours overrides", () => {
-    const c = resolveAudioConfig({ enabled: true, model: "whisper-1", quota: { perUserDailyMinutes: 30 } });
+  it("honours overrides incl. globalMonthlyMinutes", () => {
+    const c = resolveAudioConfig({ enabled: true, model: "gpt-4o-mini-transcribe", quota: { perUserDailyMinutes: 30, globalMonthlyMinutes: 7500 } });
     assert.equal(c.enabled, true);
-    assert.equal(c.model, "whisper-1");
+    assert.equal(c.model, "gpt-4o-mini-transcribe");
     assert.equal(c.perUserDailyMinutes, 30);
+    assert.equal(c.globalMonthlyMinutes, 7500);
   });
 });
 

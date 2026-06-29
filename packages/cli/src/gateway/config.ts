@@ -89,7 +89,7 @@ export interface AudioConfig {
   language?: string;
   enabled?: boolean;
   maxDurationSec?: number;
-  quota?: { perUserDailyMinutes?: number; globalDailyMinutes?: number };
+  quota?: { perUserDailyMinutes?: number; globalDailyMinutes?: number; globalMonthlyMinutes?: number };
 }
 
 export interface ResolvedAudioConfig {
@@ -99,6 +99,8 @@ export interface ResolvedAudioConfig {
   maxDurationSec: number;
   perUserDailyMinutes: number;
   globalDailyMinutes: number;
+  /** Whole-workspace monthly budget ceiling in minutes; undefined = no monthly cap. */
+  globalMonthlyMinutes?: number;
 }
 
 export interface ReviewConfig {
@@ -487,11 +489,15 @@ export function resolveReviewGhToken(
 export function resolveAudioConfig(raw?: AudioConfig): ResolvedAudioConfig {
   return {
     enabled: raw?.enabled ?? false,
-    model: raw?.model ?? "gpt-4o-mini-transcribe",
+    // whisper-1: gpt-4o-mini-transcribe has a ~25-min token cap (400
+    // input_too_large) that breaks long meeting recordings. whisper-1 is
+    // bounded only by the 25MB request size, which the re-encode satisfies.
+    model: raw?.model ?? "whisper-1",
     language: raw?.language ?? "zh",
     maxDurationSec: raw?.maxDurationSec ?? 7200,
     perUserDailyMinutes: raw?.quota?.perUserDailyMinutes ?? 120,
     globalDailyMinutes: raw?.quota?.globalDailyMinutes ?? 600,
+    globalMonthlyMinutes: raw?.quota?.globalMonthlyMinutes,
   };
 }
 

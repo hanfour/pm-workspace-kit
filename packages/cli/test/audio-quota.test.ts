@@ -50,3 +50,36 @@ describe("releaseAudioQuota", () => {
     assert.equal(r.ok, false, "global cap must deny: floored baseline 0+175>150");
   });
 });
+
+describe("reserveAudioQuota — global MONTHLY cap", () => {
+  let tmp: string;
+  const day1 = () => Date.parse("2026-06-26T10:00:00Z");
+  const day2 = () => Date.parse("2026-06-27T10:00:00Z"); // different day, same month
+  const HIGH = { perUserDailyMinutes: 9999, globalDailyMinutes: 9999 };
+  beforeEach(() => { tmp = fs.mkdtempSync(path.join(os.tmpdir(), "pmk-qm-")); process.env.HOME = tmp; });
+  afterEach(() => { fs.rmSync(tmp, { recursive: true, force: true }); if (ORIG) process.env.HOME = ORIG; });
+
+  it("enforces the monthly cap independent of the daily reset", () => {
+    // Daily caps are generous; only the monthly cap binds. Spend on two
+    // separate days so the daily counter resets but the monthly accrues.
+    const a = reserveAudioQuota({ userId: "U1", minutes: 60, ...HIGH, globalMonthlyMinutes: 100, now: day1 });
+    assert.equal(a.ok, true);
+    const b = reserveAudioQuota({ userId: "U2", minutes: 60, ...HIGH, globalMonthlyMinutes: 100, now: day2 });
+    assert.equal(b.ok, false, "60+60 > 100 monthly even though each day is under the daily cap");
+  });
+
+  it("releasing refunds the monthly accumulator", () => {
+    reserveAudioQuota({ userId: "U1", minutes: 60, ...HIGH, globalMonthlyMinutes: 100, now: day1 });
+    releaseAudioQuota({ userId: "U1", minutes: 60, now: day1 });
+    // monthly back to 0 → a fresh 100 reserve fits
+    const r = reserveAudioQuota({ userId: "U1", minutes: 100, ...HIGH, globalMonthlyMinutes: 100, now: day2 });
+    assert.equal(r.ok, true);
+  });
+
+  it("no monthly cap configured → never blocks on monthly", () => {
+    for (let i = 0; i < 5; i++) {
+      const r = reserveAudioQuota({ userId: "U1", minutes: 100, ...HIGH, now: day1 });
+      assert.equal(r.ok, true);
+    }
+  });
+});

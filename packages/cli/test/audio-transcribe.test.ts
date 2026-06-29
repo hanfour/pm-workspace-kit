@@ -32,6 +32,43 @@ describe("transcribeAudio", () => {
     if (!r.ok) { assert.equal(r.reason, "transcribe-failed"); assert.equal(r.failedSegment, 1); assert.match(r.partialTranscript ?? "", /ok-seg/); }
   });
 
+  it("total failure (no segment succeeded) → NO partialTranscript, so caller can refund", async () => {
+    // The only chunk fails terminally (400). segs is empty, so there is no real
+    // content — partialTranscript must be undefined (a gap-marker-only 'partial'
+    // wrongly suppressed quota refunds; see coordinator).
+    const tf = async () => { throw new TranscribeError("OpenAI transcribe 400: input_too_large", 400); };
+    const r = await transcribeAudio("/tmp/in.m4a", cfg, base({
+      prepare: (async () => ["/tmp/job/chunk-000.ogg"]) as never,
+      transcribeFile: tf as never,
+    }));
+    assert.equal(r.ok, false);
+    if (!r.ok) {
+      assert.equal(r.reason, "transcribe-failed");
+      assert.equal(r.partialTranscript, undefined, "no segment succeeded → no partial content");
+    }
+  });
+
+  it("captures the failure detail (status + message) for diagnosis", async () => {
+    const tf = async () => { throw new TranscribeError("OpenAI transcribe 400: {\"code\":\"input_too_large\"}", 400); };
+    const r = await transcribeAudio("/tmp/in.m4a", cfg, base({
+      prepare: (async () => ["/tmp/job/chunk-000.ogg"]) as never,
+      transcribeFile: tf as never,
+    }));
+    assert.equal(r.ok, false);
+    if (!r.ok) {
+      assert.match(r.detail ?? "", /400/);
+      assert.match(r.detail ?? "", /input_too_large/);
+    }
+  });
+
+  it("partial failure (some segments succeeded) still returns partialTranscript", async () => {
+    let n = 0;
+    const tf = async () => { if (n++ === 1) throw new TranscribeError("400", 400); return "ok-seg"; };
+    const r = await transcribeAudio("/tmp/in.m4a", cfg, base({ transcribeFile: tf as never }));
+    assert.equal(r.ok, false);
+    if (!r.ok) assert.match(r.partialTranscript ?? "", /ok-seg/);
+  });
+
   it("retries a transient 500 and succeeds on second attempt", async () => {
     let calls = 0;
     const tf = async () => { if (calls++ === 0) throw new TranscribeError("500", 500); return "seg"; };

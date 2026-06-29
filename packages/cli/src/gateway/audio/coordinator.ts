@@ -37,7 +37,7 @@ import { makeJobTempDir } from "./temp";
 import { claimAudio, releaseAudio, finalizeAudio } from "./claim";
 import { redactSecrets } from "./redact";
 
-const USD_PER_MINUTE = 0.003; // gpt-4o-mini-transcribe est.; for estimatedUsd only
+const USD_PER_MINUTE = 0.006; // whisper-1 list price ($0.006/min); for estimatedUsd only
 
 /** True when any file in the array is classified as audio. */
 export function isAudioMessage(files: SlackFile[]): boolean {
@@ -335,6 +335,7 @@ export class AudioCoordinator {
         minutes,
         perUserDailyMinutes: ac.perUserDailyMinutes,
         globalDailyMinutes: ac.globalDailyMinutes,
+        globalMonthlyMinutes: ac.globalMonthlyMinutes,
         now,
       });
       if (!q.ok) {
@@ -359,7 +360,10 @@ export class AudioCoordinator {
 
       if (!result.ok) {
         const reason = result.reason;
-        appendGatewayEvent({ type: "audio.failed", actor: args.userId, reason });
+        // Surface the underlying cause (e.g. "400 input_too_large") in the event
+        // so failures are diagnosable from the event log without re-instrumenting.
+        const eventReason = result.detail ? `${reason}: ${result.detail}` : reason;
+        appendGatewayEvent({ type: "audio.failed", actor: args.userId, reason: eventReason });
         if (reason === "too-long") {
           // FIX 4a: claim was never finalized → release it so a retry is possible.
           // FIX 2: no usable output → refund the reserved quota.
