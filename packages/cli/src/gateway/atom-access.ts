@@ -7,15 +7,17 @@ interface Cached<T> { value: T; at: number; }
 /** Channel-membership access checker for atom retrieval. Caches is_private +
  *  member sets for TTL_MS. Fail-closed on any lookup error. */
 export function makeAtomAccessChecker(web: WebClient, now: () => number = () => Date.now()) {
-  const privCache = new Map<string, Cached<boolean>>();
+  const pubCache = new Map<string, Cached<boolean>>();
   const memberCache = new Map<string, Cached<Set<string>>>();
 
-  async function isPrivate(channel: string): Promise<boolean> {
-    const c = privCache.get(channel);
+  /** A channel is public ONLY if it is a real public Slack channel. DMs, group
+   *  DMs, private channels, and any ambiguous response are NOT public. */
+  async function isPublicChannel(channel: string): Promise<boolean> {
+    const c = pubCache.get(channel);
     if (c && now() - c.at < TTL_MS) return c.value;
-    const r = (await web.conversations.info({ channel })) as { channel?: { is_private?: boolean } };
-    const value = r.channel?.is_private === true;
-    privCache.set(channel, { value, at: now() });
+    const r = (await web.conversations.info({ channel })) as { channel?: { is_channel?: boolean; is_private?: boolean } };
+    const value = r.channel?.is_channel === true && r.channel?.is_private === false;
+    pubCache.set(channel, { value, at: now() });
     return value;
   }
   async function members(channel: string): Promise<Set<string>> {
@@ -33,7 +35,7 @@ export function makeAtomAccessChecker(web: WebClient, now: () => number = () => 
       const channel = threadKey.includes(":") ? threadKey.split(":")[0] : "";
       if (!channel) return true; // legacy/general atom — was always retrievable
       try {
-        if (!(await isPrivate(channel))) return true; // public knowledge
+        if (await isPublicChannel(channel)) return true; // open public channel
         return (await members(channel)).has(userId);
       } catch {
         return false; // present-but-unresolvable channel → fail closed

@@ -37,6 +37,13 @@ export function acquireAtomMarker(channelId: string, summaryTs: string): AtomMar
   catch { return undefined; }
 }
 
+/** Restore a marker after a failed save: rename .saving → .json so re-react can retry. Best-effort; ignores errors. */
+export function restoreAtomMarker(channelId: string, summaryTs: string): void {
+  const file = markerPath(channelId, summaryTs);
+  const saving = `${file}.saving`;
+  try { fs.renameSync(saving, file); } catch { /* best-effort */ }
+}
+
 export function deleteAtomMarker(channelId: string, summaryTs: string): void {
   const file = markerPath(channelId, summaryTs);
   try { fs.rmSync(file, { force: true }); } catch { /* noop */ }

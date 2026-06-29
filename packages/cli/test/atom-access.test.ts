@@ -9,7 +9,11 @@ const atom = (threadKey: string): KnowledgeAtom => ({
 });
 const web = (over: Record<string, unknown> = {}) => ({
   conversations: {
-    info: async ({ channel }: { channel: string }) => ({ channel: { is_private: channel === "CPRIV" } }),
+    info: async ({ channel }: { channel: string }) => ({
+      channel: channel.startsWith("D")
+        ? { is_im: true }
+        : { is_channel: true, is_private: channel === "CPRIV" },
+    }),
     members: async () => ({ members: ["U1", "U2"] }),
     ...over,
   },
@@ -29,6 +33,18 @@ describe("canUserAccessAtom", () => {
     assert.equal(await c.canUserAccessAtom("U2", atom("CPRIV:1.1")), true);
     assert.equal(await c.canUserAccessAtom("U9", atom("CPRIV:1.1")), false);
   });
+  it("DM/IM channel → only members, non-member excluded (fail-closed bug fix)", async () => {
+    const dmMembers = ["U1"];
+    const dmWeb = ({
+      conversations: {
+        info: async () => ({ channel: { is_im: true } }),
+        members: async () => ({ members: dmMembers }),
+      },
+    }) as never;
+    const c = makeAtomAccessChecker(dmWeb);
+    assert.equal(await c.canUserAccessAtom("U1", atom("D123:1.1")), true);
+    assert.equal(await c.canUserAccessAtom("U9", atom("D123:1.1")), false);
+  });
   it("lookup error → fail closed (excluded)", async () => {
     const c = makeAtomAccessChecker(web({ info: async () => { throw new Error("boom"); } }));
     assert.equal(await c.canUserAccessAtom("U2", atom("CPRIV:1.1")), false);
@@ -36,11 +52,11 @@ describe("canUserAccessAtom", () => {
 
   // Cache: a fixed clock keeps both calls inside the TTL → the second is served
   // from cache, so info/members are each hit exactly once.
-  it("caches is_private + members within TTL (no refetch on second call)", async () => {
+  it("caches isPublicChannel + members within TTL (no refetch on second call)", async () => {
     let infoCalls = 0, memberCalls = 0;
     const counting = {
       conversations: {
-        info: async ({ channel }: { channel: string }) => { infoCalls++; return { channel: { is_private: channel === "CPRIV" } }; },
+        info: async ({ channel }: { channel: string }) => { infoCalls++; return { channel: { is_channel: true, is_private: channel === "CPRIV" } }; },
         members: async () => { memberCalls++; return { members: ["U1", "U2"] }; },
       },
     } as never;
@@ -58,7 +74,7 @@ describe("canUserAccessAtom", () => {
     let infoCalls = 0, memberCalls = 0;
     const counting = {
       conversations: {
-        info: async ({ channel }: { channel: string }) => { infoCalls++; return { channel: { is_private: channel === "CPRIV" } }; },
+        info: async ({ channel }: { channel: string }) => { infoCalls++; return { channel: { is_channel: true, is_private: channel === "CPRIV" } }; },
         members: async () => { memberCalls++; return { members: ["U1", "U2"] }; },
       },
     } as never;

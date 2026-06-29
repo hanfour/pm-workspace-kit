@@ -118,7 +118,7 @@ describe("free-chat-turn telemetry wiring", () => {
         update: async (_args: unknown) => ({ ok: true }),
       },
       conversations: {
-        info: async () => ({ channel: { is_private: false } }),
+        info: async () => ({ channel: { is_channel: true, is_private: false } }),
         members: async () => ({ members: [] }),
       },
     } as unknown as WebClient;
@@ -199,7 +199,7 @@ describe("free-chat-turn telemetry wiring", () => {
         update: async (_args: unknown) => ({ ok: true }),
       },
       conversations: {
-        info: async () => ({ channel: { is_private: false } }),
+        info: async () => ({ channel: { is_channel: true, is_private: false } }),
         members: async () => ({ members: [] }),
       },
     } as unknown as WebClient;

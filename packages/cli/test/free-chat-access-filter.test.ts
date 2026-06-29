@@ -32,7 +32,7 @@ const makeStubWeb = () =>
   ({
     conversations: {
       info: async ({ channel }: { channel: string }) => ({
-        channel: { is_private: channel === "CPRIV" },
+        channel: { is_channel: true, is_private: channel === "CPRIV" },
       }),
       members: async () => ({ members: ["U1", "U2"] }),
     },
@@ -156,7 +156,7 @@ describe("free-chat-turn access filter (Task 10)", () => {
       conversations: {
         info: async ({ channel }: { channel: string }) => {
           infoCalls++;
-          return { channel: { is_private: channel === "CPRIV" } };
+          return { channel: { is_channel: true, is_private: channel === "CPRIV" } };
         },
         members: async () => ({ members: ["U1"] }),
       },

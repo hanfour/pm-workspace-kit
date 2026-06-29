@@ -36,7 +36,7 @@ import { probeAudio } from "./probe";
 import { makeJobTempDir } from "./temp";
 import { claimAudio, releaseAudio, finalizeAudio } from "./claim";
 import { redactSecrets, countHighEntropyTokens } from "./redact";
-import { writeAtomMarker, readAtomMarker, acquireAtomMarker, deleteAtomMarker } from "./atom-marker";
+import { writeAtomMarker, readAtomMarker, acquireAtomMarker, deleteAtomMarker, restoreAtomMarker } from "./atom-marker";
 import { saveAtom, findAtomByThreadKey, generateAtomId, type KnowledgeAtom } from "../knowledge";
 import { scanForInjection } from "../atom-sanitizer";
 
@@ -68,6 +68,7 @@ export interface AudioCoordinatorDeps {
   probe?: typeof probeAudio;
   makeTempDir?: (jobId: string) => string;
   now?: () => number;
+  saveAtom?: typeof saveAtom;
 }
 
 export interface AudioCoordinatorOptions {
@@ -543,18 +544,19 @@ export class AudioCoordinator {
     const firstLine = answer.split("\n").map((l) => l.trim()).find((l) => l.length > 0)?.slice(0, 200);
     const atom: KnowledgeAtom = {
       id: generateAtomId(marker.title), createdAt: now(), scope: marker.scope,
-      question: marker.title, answer, summary: firstLine, tags: marker.tags,
+      question: redactSecrets(marker.title), answer, summary: firstLine, tags: marker.tags,
       source: { threadKey: marker.threadKey, contributorUserId: marker.uploaderId, permalink },
       status: "approved", flagged: scan.flagged || undefined,
     };
+    const saveAtomFn = this.opts.deps?.saveAtom ?? saveAtom;
     try {
-      saveAtom(atom);
+      saveAtomFn(atom);
       await this.reply(args.channelId, marker.summaryTs, `已加進知識庫 🔎 (id: \`${atom.id}\`)`);
       deleteAtomMarker(args.channelId, args.messageTs);
     } catch (err) {
       this.opts.onLog(`audio atom save failed: ${redactSecrets((err as Error).message)}`);
+      restoreAtomMarker(args.channelId, args.messageTs);
       await this.reply(args.channelId, marker.summaryTs, ":warning: 存入知識庫失敗,稍後再按一次 📚 重試。");
-      // leave the .saving file → next sweep cleans it; user can re-react after restart
     }
     return true;
   }

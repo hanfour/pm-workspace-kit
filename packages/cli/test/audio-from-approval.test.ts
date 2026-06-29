@@ -3,12 +3,12 @@ import * as assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { AudioCoordinator } from "../src/gateway/audio/coordinator";
-import { writeAtomMarker } from "../src/gateway/audio/atom-marker";
-import { loadAtoms } from "../src/gateway/knowledge";
+import { AudioCoordinator, type AudioCoordinatorDeps } from "../src/gateway/audio/coordinator";
+import { writeAtomMarker, readAtomMarker } from "../src/gateway/audio/atom-marker";
+import { loadAtoms, type KnowledgeAtom } from "../src/gateway/knowledge";
 
 const ORIG = process.env.HOME;
-function coord(opts: { admins?: string[]; getPermalink?: () => Promise<unknown>; posts: string[]; ephem: string[] }) {
+function coord(opts: { admins?: string[]; getPermalink?: () => Promise<unknown>; posts: string[]; ephem: string[]; deps?: AudioCoordinatorDeps }) {
   const web = {
     chat: {
       postMessage: async (a: { text: string }) => { opts.posts.push(a.text); return { ts: "r" }; },
@@ -16,7 +16,7 @@ function coord(opts: { admins?: string[]; getPermalink?: () => Promise<unknown>;
       getPermalink: opts.getPermalink ?? (async () => ({ permalink: "https://x.slack.com/archives/C1/p99" })),
     },
   };
-  return new AudioCoordinator({ web: web as never, config: { admins: opts.admins ?? [] } as never, onLog: () => {}, llm: {} as never });
+  return new AudioCoordinator({ web: web as never, config: { admins: opts.admins ?? [] } as never, onLog: () => {}, llm: {} as never, deps: opts.deps });
 }
 const marker = () => writeAtomMarker({ threadKey: "C1:1.1", channelId: "C1", summaryTs: "9.9", uploaderId: "U1", scope: "general", title: "認證決議", tags: ["auth"], summaryText: "決議採 OAuth。", at: Date.now() });
 
@@ -74,5 +74,19 @@ describe("AudioCoordinator.fromApproval", () => {
     await c.fromApproval({ channelId: "C1", messageTs: "9.9", reactorUserId: "U1" });
     const [a] = loadAtoms({ scope: "general" });
     assert.equal(a.source.permalink, undefined);
+  });
+
+  it("saveAtom failure → user gets error reply, marker is restored for retry, no atom saved", async () => {
+    marker();
+    const posts: string[] = [], ephem: string[] = [];
+    const throwingSave = (_atom: KnowledgeAtom): string => { throw new Error("disk full"); };
+    const c = coord({ posts, ephem, deps: { saveAtom: throwingSave } });
+    assert.equal(await c.fromApproval({ channelId: "C1", messageTs: "9.9", reactorUserId: "U1" }), true);
+    // (a) user received failure reply
+    assert.ok(posts.some((p) => p.includes("再按一次") && p.includes("📚") && p.includes("重試")));
+    // (b) marker is restored so re-react can retry
+    assert.ok(readAtomMarker("C1", "9.9") !== undefined, "marker should be restored for retry");
+    // (c) no atom was saved
+    assert.equal(loadAtoms({ scope: "general" }).length, 0);
   });
 });
