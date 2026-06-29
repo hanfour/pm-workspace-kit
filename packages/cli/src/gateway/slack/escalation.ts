@@ -40,6 +40,7 @@ import {
 } from "../knowledge";
 import { pickGatewayPrompt } from "@pmk/shared";
 import type { LlmProvider } from "../../llm";
+import { scanForInjection } from "../atom-sanitizer";
 import { parseEscalate, stripEscalateBlock } from "../escalate";
 import { stripMraAskBlock } from "../mra-ask";
 import { stripCaseUpdateBlock } from "../../case";
@@ -246,22 +247,28 @@ export class EscalationCoordinator {
       return true;
     }
     try {
+      // Heuristic injection scan — same defence applied to audio atoms.
+      // Immutably flag the atom when suspicious phrases are detected; the
+      // human approval gate is the backstop, but this surfaces the risk.
+      const scan = scanForInjection(atom.answer);
+      const atomToSave = scan.flagged ? { ...atom, flagged: true } : atom;
+      if (scan.flagged) onLog(`escalation atom flagged for injection: ${scan.reasons.join("; ")}`);
       // First save: atom in pending without approval anchor.
-      const file = saveAtom(atom);
+      const file = saveAtom(atomToSave);
       onLog(`absorbed knowledge atom (pending) → ${file}`);
       appendGatewayEvent({
         type: "escalate.absorbed",
         channelId,
         threadTs,
-        atomId: atom.id,
+        atomId: atomToSave.id,
       });
-      const idShort = atom.id.split("-").slice(0, 2).join("-");
+      const idShort = atomToSave.id.split("-").slice(0, 2).join("-");
       const post = await web.chat
         .postMessage({
           channel: channelId,
           thread_ts: threadTs,
           text:
-            `:hourglass_flowing_sand: pmk 已收下這份補充（標籤：${atom.tags.join(", ") || "—"}），暫存為 *pending*，` +
+            `:hourglass_flowing_sand: pmk 已收下這份補充（標籤：${atomToSave.tags.join(", ") || "—"}），暫存為 *pending*，` +
             `24 小時後自動生效，期間不會被其他查詢抓到。\n` +
             `直接 ✅ 或 ❌ react 這條訊息可立即 approve / reject；` +
             `或 host 端：\`pmk gateway atoms approve ${idShort}\` / \`pmk gateway atoms reject ${idShort}\``,
@@ -274,11 +281,10 @@ export class EscalationCoordinator {
         });
       // v0.8.5 (#21): if the bot's confirmation message landed, anchor
       // the atom to its `ts` so reaction-approval can find it. Re-save
-      // — cheap (one extra fs.write) and keeps the storage layer the
-      // single-source-of-truth.
+      // spreads atomToSave (not atom) so flagged is preserved.
       if (post?.ts) {
-        const updated: typeof atom = {
-          ...atom,
+        const updated: typeof atomToSave = {
+          ...atomToSave,
           approval: { channelId, messageTs: String(post.ts) },
         };
         saveAtom(updated);

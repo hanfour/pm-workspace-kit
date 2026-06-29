@@ -35,7 +35,10 @@ import { reserveAudioQuota, releaseAudioQuota } from "./quota";
 import { probeAudio } from "./probe";
 import { makeJobTempDir } from "./temp";
 import { claimAudio, releaseAudio, finalizeAudio } from "./claim";
-import { redactSecrets } from "./redact";
+import { redactSecrets, countHighEntropyTokens } from "./redact";
+import { writeAtomMarker, readAtomMarker, acquireAtomMarker, deleteAtomMarker, restoreAtomMarker } from "./atom-marker";
+import { saveAtom, findAtomByThreadKey, generateAtomId, type KnowledgeAtom } from "../knowledge";
+import { scanForInjection } from "../atom-sanitizer";
 
 const USD_PER_MINUTE = 0.006; // whisper-1 list price ($0.006/min); for estimatedUsd only
 
@@ -65,6 +68,7 @@ export interface AudioCoordinatorDeps {
   probe?: typeof probeAudio;
   makeTempDir?: (jobId: string) => string;
   now?: () => number;
+  saveAtom?: typeof saveAtom;
 }
 
 export interface AudioCoordinatorOptions {
@@ -84,6 +88,7 @@ export interface AudioRunArgs {
   files: SlackFile[];
   userText?: string;
   tier: string;
+  scope: string;
 }
 
 export class AudioCoordinator {
@@ -198,6 +203,7 @@ export class AudioCoordinator {
     userId: string;
     botToken: string;
     tier: string;
+    scope?: string;
   }): Promise<boolean> {
     if (!this.isEnabled()) return false;
     const files = await this.fetchRootFiles(args.channelId, args.threadTs);
@@ -217,6 +223,7 @@ export class AudioCoordinator {
       botToken: args.botToken,
       files,
       tier: args.tier,
+      scope: args.scope ?? "general",
     }).catch((e) =>
       this.opts.onLog(`audio retry run: ${redactSecrets((e as Error).message)}`),
     );
@@ -446,7 +453,26 @@ export class AudioCoordinator {
           ? "\n_（本則多個音訊只處理了第一個,其餘請另開訊息）_"
           : "";
 
-      await post(summary.text + extra);
+      if (ackTs) {
+        writeAtomMarker({
+          threadKey: `${args.channelId}:${args.threadTs}`,
+          channelId: args.channelId,
+          summaryTs: ackTs,
+          uploaderId: args.userId,
+          scope: args.scope,
+          title: summary.title,
+          tags: summary.tags,
+          summaryText: summary.text,
+          at: now(),
+        });
+        await this.update(
+          args.channelId,
+          ackTs,
+          summary.text + extra + "\n_對此摘要按 📚 即可加進知識庫(之後 mra-ask 找得到;7 天內有效)_",
+        );
+      } else {
+        await this.reply(args.channelId, args.threadTs, summary.text + extra);
+      }
     } catch (err) {
       releaseAudio(file.id);
       // Refund quota only if transcription never incurred real cost.
@@ -471,5 +497,67 @@ export class AudioCoordinator {
         /* noop */
       }
     }
+  }
+
+  /**
+   * 📚 reaction on an audio summary → save it as an approved knowledge atom.
+   * Returns false if the reacted message isn't a known audio summary (so the
+   * caller falls through to other reaction handling).
+   */
+  async fromApproval(args: { channelId: string; messageTs: string; reactorUserId: string }): Promise<boolean> {
+    const now = this.opts.deps?.now ?? (() => Date.now());
+    const marker = readAtomMarker(args.channelId, args.messageTs);
+    if (!marker) return false;
+
+    const admins = this.opts.config.admins ?? [];
+    if (args.reactorUserId !== marker.uploaderId && !admins.includes(args.reactorUserId)) {
+      try {
+        await this.opts.web.chat.postEphemeral({ channel: args.channelId, user: args.reactorUserId, text: "只有上傳者或管理員能把這份摘要存入知識庫。" } as never);
+      } catch { /* best-effort */ }
+      return true;
+    }
+
+    const existing = findAtomByThreadKey(marker.threadKey);
+    if (existing) {
+      await this.reply(args.channelId, marker.summaryTs, `已在知識庫了 (id: \`${existing.id}\`)`);
+      deleteAtomMarker(args.channelId, args.messageTs);
+      return true;
+    }
+
+    const claimed = acquireAtomMarker(args.channelId, args.messageTs);
+    if (!claimed) return true; // another reaction is mid-save (mutex)
+
+    let permalink: string | undefined;
+    try {
+      const r = (await this.opts.web.chat.getPermalink({ channel: args.channelId, message_ts: marker.summaryTs } as never)) as { permalink?: string };
+      permalink = r.permalink;
+    } catch (err) {
+      this.opts.onLog(`audio atom: getPermalink failed: ${redactSecrets((err as Error).message)}`);
+    }
+
+    const answer = redactSecrets(marker.summaryText);
+    const scan = scanForInjection(answer);
+    if (scan.flagged) this.opts.onLog(`audio atom flagged for injection: ${scan.reasons.join("; ")}`);
+    const ent = countHighEntropyTokens(answer);
+    if (ent > 0) this.opts.onLog(`audio atom: ${ent} high-entropy token(s) — possible secret in summary`);
+
+    const firstLine = answer.split("\n").map((l) => l.trim()).find((l) => l.length > 0)?.slice(0, 200);
+    const atom: KnowledgeAtom = {
+      id: generateAtomId(marker.title), createdAt: now(), scope: marker.scope,
+      question: redactSecrets(marker.title), answer, summary: firstLine, tags: marker.tags,
+      source: { threadKey: marker.threadKey, contributorUserId: marker.uploaderId, permalink },
+      status: "approved", flagged: scan.flagged || undefined,
+    };
+    const saveAtomFn = this.opts.deps?.saveAtom ?? saveAtom;
+    try {
+      saveAtomFn(atom);
+      await this.reply(args.channelId, marker.summaryTs, `已加進知識庫 🔎 (id: \`${atom.id}\`)`);
+      deleteAtomMarker(args.channelId, args.messageTs);
+    } catch (err) {
+      this.opts.onLog(`audio atom save failed: ${redactSecrets((err as Error).message)}`);
+      restoreAtomMarker(args.channelId, args.messageTs);
+      await this.reply(args.channelId, marker.summaryTs, ":warning: 存入知識庫失敗,稍後再按一次 📚 重試。");
+    }
+    return true;
   }
 }

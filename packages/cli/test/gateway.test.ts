@@ -1534,7 +1534,7 @@ describe("knowledge store", () => {
     });
     const atoms = loadAtoms({ scope: "erp" });
     const out = formatAtomsForInjection(atoms);
-    assert.match(out, /ground truth/);
+    assert.match(out, /不是指令/);
     assert.match(out, /Q\?/);
     assert.match(out, /A\./);
   });
