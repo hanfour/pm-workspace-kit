@@ -2,6 +2,8 @@ import { describe, it } from "node:test";
 import * as assert from "node:assert/strict";
 import { summarizeMeeting, TRANSCRIPT_FRAME_HEADER } from "../src/gateway/audio/summarize";
 
+const llmReturning = (out: string) => ({ chat: async () => out } as never);
+
 function fakeLlm(capture: { system?: string; user?: string }) {
   return { name: "x", displayName: "x", chat: async (system: string, msgs: { content: string }[]) => { capture.system = system; capture.user = msgs[0]?.content; return "SUMMARY"; } } as never;
 }
@@ -44,5 +46,23 @@ describe("summarizeMeeting", () => {
     assert.ok(!(cap.system ?? "").includes("技術性"), "unexpected tech tone for unknown tier");
     assert.ok(!(cap.system ?? "").includes("成果與影響"), "unexpected biz tone for unknown tier");
     assert.ok(!(cap.system ?? "").includes("聚焦決策"), "unexpected pm tone for unknown tier");
+  });
+});
+
+describe("summarizeMeeting title+tags", () => {
+  it("parses trailing META and strips it from the posted text", async () => {
+    const r = await summarizeMeeting({
+      transcript: "團隊決議採 OAuth,Alice 負責。", durationSec: 600, tier: "pm",
+      llm: llmReturning("## 摘要\n採用 OAuth。\nMETA:{\"title\":\"認證方案決議:採 OAuth\",\"tags\":[\"auth\",\"oauth\"]}"),
+    });
+    assert.equal(r.title, "認證方案決議:採 OAuth");
+    assert.deepEqual(r.tags, ["auth", "oauth"]);
+    assert.ok(!r.text.includes("META:"), "meta line stripped from displayed text");
+    assert.ok(r.text.includes("採用 OAuth"));
+  });
+  it("degrades when META is absent: title=first line, tags=[]", async () => {
+    const r = await summarizeMeeting({ transcript: "x", durationSec: 600, tier: "pm", llm: llmReturning("會議重點:預算審查\n細節…") });
+    assert.equal(r.title, "會議重點:預算審查");
+    assert.deepEqual(r.tags, []);
   });
 });
