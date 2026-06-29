@@ -65,4 +65,19 @@ describe("summarizeMeeting title+tags", () => {
     assert.equal(r.title, "會議重點:預算審查");
     assert.deepEqual(r.tags, []);
   });
+  it("strips a malformed META line and degrades title/tags", async () => {
+    const r = await summarizeMeeting({ transcript: "x", durationSec: 600, tier: "pm", llm: llmReturning("摘要內容\nMETA:{bad json}") });
+    assert.ok(!r.text.includes("META:"), "malformed meta line must still be stripped");
+    assert.ok(r.text.includes("摘要內容"));
+    assert.equal(r.title, "摘要內容");
+    assert.deepEqual(r.tags, []);
+  });
+  it("truncates title to 120 chars and lowercases + caps tags at 6", async () => {
+    const longTitle = "決".repeat(200);
+    const meta = JSON.stringify({ title: longTitle, tags: ["A", "B", "C", "D", "E", "F", "G", "H"] });
+    const r = await summarizeMeeting({ transcript: "x", durationSec: 600, tier: "pm", llm: llmReturning(`摘要\nMETA:${meta}`) });
+    assert.equal(r.title.length, 120);
+    assert.equal(r.tags.length, 6);
+    assert.deepEqual(r.tags, ["a", "b", "c", "d", "e", "f"]);
+  });
 });

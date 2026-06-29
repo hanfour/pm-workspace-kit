@@ -24,12 +24,16 @@ function parseMeta(raw: string): { body: string; title: string; tags: string[] }
   const lines = raw.split("\n");
   const idx = lines.findIndex((l) => l.trim().startsWith("META:"));
   if (idx !== -1) {
+    // Strip the META line up-front so it never leaks into user-facing text,
+    // regardless of whether the JSON parses or carries a usable title.
+    const body = lines.slice(0, idx).concat(lines.slice(idx + 1)).join("\n").trim();
     try {
       const meta = JSON.parse(lines[idx].trim().slice("META:".length)) as { title?: string; tags?: string[] };
-      const body = lines.slice(0, idx).concat(lines.slice(idx + 1)).join("\n").trim();
       const title = (meta.title ?? "").trim();
       if (title) return { body, title: title.slice(0, 120), tags: Array.isArray(meta.tags) ? meta.tags.slice(0, 6).map((t) => String(t).toLowerCase()) : [] };
-    } catch { /* fall through to degrade */ }
+    } catch { /* fall through to degrade — but keep the stripped body */ }
+    const firstBodyLine = body.split("\n").map((l) => l.trim()).find((l) => l.length > 0) ?? "音訊會議摘要";
+    return { body, title: firstBodyLine.slice(0, 120), tags: [] };
   }
   const firstLine = raw.split("\n").map((l) => l.trim()).find((l) => l.length > 0) ?? "音訊會議摘要";
   return { body: raw.trim(), title: firstLine.slice(0, 120), tags: [] };
