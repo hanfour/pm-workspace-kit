@@ -899,6 +899,7 @@ export class SlackAdapter {
           files: files ?? [],
           userText: text || undefined,
           tier,
+          scope: "general",
         })
         .catch((err) =>
           this.onLog(`audio: detached DM run failed: ${(err as Error).message}`),

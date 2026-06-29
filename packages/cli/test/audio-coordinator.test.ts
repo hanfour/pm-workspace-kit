@@ -85,7 +85,7 @@ function deps(over: Record<string, unknown> = {}) {
       durationSec: 600,
       chunks: 1,
     }),
-    summarize: async () => ({ text: "摘要內容", mode: "long" as const }),
+    summarize: async () => ({ text: "摘要內容", mode: "long" as const, title: "摘要標題", tags: [] as string[] }),
     reserveQuota: () => ({ ok: true as const }),
     makeTempDir: () => fs.mkdtempSync(path.join(os.tmpdir(), "pmk-job-")),
     now: () => 1,
@@ -129,6 +129,7 @@ describe("AudioCoordinator", () => {
       botToken: "t",
       files: [af()],
       tier: "pm",
+      scope: "general",
     });
     assert.equal(loadAttachments(KEY)[0].text, "逐字稿內容");
     assert.ok([...posted, ...updated].some((m) => m.includes("摘要內容")));
@@ -159,6 +160,7 @@ describe("AudioCoordinator", () => {
       botToken: "t",
       files: [af()],
       tier: "pm",
+      scope: "general",
     });
     assert.equal(transcribed, false);
     assert.equal(loadAttachments(KEY).length, 0);
@@ -271,6 +273,7 @@ describe("AudioCoordinator", () => {
       botToken: "t",
       files: [af()],
       tier: "pm",
+      scope: "general",
     });
     assert.equal(releaseQuotaCalled, true, "releaseQuota should be called on total failure");
     assert.equal(loadAttachments(KEY).length, 0, "no transcript stored on total failure");
@@ -302,6 +305,7 @@ describe("AudioCoordinator", () => {
       botToken: "t",
       files: [af()],
       tier: "pm",
+      scope: "general",
     });
     assert.equal(transcribed, false, "transcription should not run for already-claimed file");
     assert.ok(
@@ -336,6 +340,7 @@ describe("AudioCoordinator", () => {
       botToken: "t",
       files: [af()],
       tier: "pm",
+      scope: "general",
     });
     await new Promise((r) => setTimeout(r, 10));
     const n = co.drainOnShutdown(() => {});

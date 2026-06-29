@@ -160,6 +160,7 @@ export class ChannelMentionHandler {
             files: files ?? [],
             userText: text || undefined,
             tier,
+            scope: "general",
           })
           .catch(() => {});
         return;
