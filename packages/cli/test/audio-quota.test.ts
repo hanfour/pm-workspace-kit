@@ -82,4 +82,17 @@ describe("reserveAudioQuota — global MONTHLY cap", () => {
       assert.equal(r.ok, true);
     }
   });
+
+  it("release refunds the RESERVE-time month even when called in a later month", () => {
+    const june30 = () => Date.parse("2026-06-30T23:59:00Z");
+    const july1 = () => Date.parse("2026-07-01T00:03:00Z");
+    reserveAudioQuota({ userId: "U1", minutes: 60, ...HIGH, globalMonthlyMinutes: 100, now: june30 });
+    // Job fails after crossing midnight into July; release is called with
+    // now=July but reservedAt = the June reserve timestamp.
+    releaseAudioQuota({ userId: "U1", minutes: 60, now: july1, reservedAt: june30() });
+    // June's monthly accumulator must be back to 0 → a fresh 100-min June reserve fits.
+    // (Broken impl refunds July → June stays at 60 → 60+100 > 100 denies.)
+    const r = reserveAudioQuota({ userId: "U1", minutes: 100, ...HIGH, globalMonthlyMinutes: 100, now: june30 });
+    assert.equal(r.ok, true, "refund must target June (reserve month), not July");
+  });
 });

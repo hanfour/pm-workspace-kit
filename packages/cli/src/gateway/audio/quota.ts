@@ -111,9 +111,16 @@ export function releaseAudioQuota(args: {
   userId: string;
   minutes: number;
   now?: () => number;
+  /**
+   * Timestamp the quota was RESERVED at. Refunds the reserve-time day/month
+   * buckets rather than wall-clock-at-release, so a job that crosses a day or
+   * month boundary refunds the same file it charged (otherwise the refund hits
+   * a fresh next-period file — a no-op — and the charged period leaks minutes).
+   */
+  reservedAt?: number;
 }): void {
-  const now = (args.now ?? (() => Date.now()))();
-  const file = dayFile(now);
+  const ts = args.reservedAt ?? (args.now ?? (() => Date.now()))();
+  const file = dayFile(ts);
   const usage = load(file);
   const userUsed = usage.perUser[args.userId] ?? 0;
   const next: DayUsage = {
@@ -123,7 +130,7 @@ export function releaseAudioQuota(args: {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, JSON.stringify(next));
 
-  const mFile = monthFile(now);
+  const mFile = monthFile(ts);
   const month = loadMonth(mFile);
   writeMonth(mFile, { global: Math.max(0, month.global - args.minutes) });
 }
