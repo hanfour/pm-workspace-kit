@@ -1,6 +1,6 @@
 {
   "name": "@pmk/desktop",
-  "version": "0.28.1",
+  "version": "0.29.0",
   "private": true,
   "description": "Desktop app for pm-workspace-kit — Electron + Vite + React",
   "license": "MIT",
