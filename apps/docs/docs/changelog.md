@@ -8,6 +8,36 @@ All notable changes to **pm-workspace-kit** are documented here.
 
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Each release also has a longer narrative on [GitHub Releases](https://github.com/hanfour/pm-workspace-kit/releases) with rationale, dogfood notes, and test plans.
 
+## [v0.29.0] — 2026-07-02 — audio summary → knowledge atom (📚) + KB-wide injection defense & membership-gated retrieval
+
+[GitHub release](https://github.com/hanfour/pm-workspace-kit/releases/tag/v0.29.0)
+
+### Why
+
+Audio meeting summaries (v0.28.x) were thread-only — `mra-ask` couldn't find them and there was no durable link back. This makes a summary saveable to the knowledge base on demand, and hardens the whole atom corpus against two risks that saving richer content exposes.
+
+### Added
+
+- **📚 react-to-save** — react 📚 (`:books:`) on a posted audio summary → it becomes an **approved** `KnowledgeAtom` (permalink in front-matter, uploader/admin-gated, deduped by thread, atom id in the reply) that `mra-ask` retrieves. One atom per meeting; the summarizer now emits a retrieval-tuned `title`+`tags` in its existing LLM call (zero extra cost). Ephemeral `audio-atom` marker + atomic rename-mutex; `saveAtom` is now atomic (tmp+rename).
+- **Injection defense (system-wide, all atoms)** — `formatAtomsForInjection` reframed so retrieved atoms are **untrusted reference data, not instructions**; `scanForInjection` heuristic flags directive content at save (audio **and** escalation atoms); `redactSecrets` broadened (AWS/GitHub/GitLab/Google keys, email, phone).
+- **Membership-gated retrieval (system-wide)** — before injection, free-chat filters retrieved atoms by the querying user's channel access: **public → all, private/IM/mpim → members only, error → fail-closed**; cached (5-min TTL). Gates the whole corpus at the single injection chokepoint.
+
+### Verified
+
+- Full suite **888/888**, typecheck clean. Built via subagent-driven TDD (10 tasks, each spec+quality reviewed), shaped by a 6-agent design panel, gated by a whole-branch **opus** review.
+- Two opus-review **must-fix** issues resolved before merge: a **fail-open** membership gate for DM/IM-origin atoms (`is_im` has no `is_private` → was classified public → could leak corpus-wide; now "public" is a positive `is_channel && !is_private` assertion), and an unrecoverable save-failure retry (marker now restored so 📚 retry works).
+
+### Notes
+
+- The 📚 save path is unit-tested + reviewed but **not yet Slack-live-verified** at tag time.
+- Deferred follow-ups (opus-triaged): `countHighEntropyTokens` `=`-padding, `glpat-` test, phone over-redaction, atom title injected-but-not-injection-scanned, a few test-fixture/naming polish items.
+
+### Tests
+
+- `@pmk/cli`: **888** tests, 100% pass.
+
+---
+
 ## [v0.28.1] — 2026-06-29 — audio long-file fixes (whisper-1, quota refund, monthly cap, diagnosability)
 
 [GitHub release](https://github.com/hanfour/pm-workspace-kit/releases/tag/v0.28.1)
