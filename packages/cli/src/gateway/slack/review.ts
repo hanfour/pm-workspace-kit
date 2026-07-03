@@ -80,6 +80,15 @@ export function isReviewRequest(text: string): boolean {
 }
 
 /**
+ * True when a message is an inline `:a:` approve request: it contains the `:a:`
+ * token AND at least one GitHub PR link. `:a:` runs a fast single-agent review
+ * then approves iff no high-severity issue is found.
+ */
+export function isApproveRequest(text: string): boolean {
+  return text.includes(":a:") && parsePrRefs(text).length > 0;
+}
+
+/**
  * True when a message is a bare retry command (`retry` / `重試` / `重跑`), used
  * inside a review-result thread to re-run that thread's PR review. The bot
  * @-mention is stripped upstream, so we match the trimmed text exactly to avoid

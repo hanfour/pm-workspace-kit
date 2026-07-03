@@ -5,7 +5,7 @@ import * as os from "node:os";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { FakeWebClient } from "./harness/slack-fakes";
-import { ReviewCoordinator, isReviewRequest, isRetryRequest, type ReviewGateway } from "../src/gateway/slack/review";
+import { ReviewCoordinator, isReviewRequest, isRetryRequest, isApproveRequest, type ReviewGateway } from "../src/gateway/slack/review";
 import { resolveReviewConfig } from "../src/gateway/config";
 
 const ORIG_HOME = process.env.HOME; // gatewayDir() is HOME-based; isolate via HOME (not PMK_HOME)
@@ -157,6 +157,32 @@ describe("isReviewRequest (inline :cr: gate)", () => {
   it("false for neither / empty", () => {
     assert.equal(isReviewRequest("hello"), false);
     assert.equal(isReviewRequest(""), false);
+  });
+});
+
+describe("isApproveRequest (inline :a: gate)", () => {
+  it("true when :a: AND a PR link are present", () => {
+    assert.equal(
+      isApproveRequest(":a: https://github.com/onead/superdsp-ui/pull/547"),
+      true,
+    );
+    assert.equal(
+      isApproveRequest("@reviewer :a: <https://github.com/onead/superdsp-ui/pull/547|#547> lgtm"),
+      true,
+    );
+  });
+  it("false for :a: WITHOUT a PR link", () => {
+    assert.equal(isApproveRequest(":a: no pr here"), false);
+  });
+  it("false for a PR link WITHOUT :a:", () => {
+    assert.equal(
+      isApproveRequest("https://github.com/onead/superdsp-ui/pull/547"),
+      false,
+    );
+  });
+  it("false for neither / empty", () => {
+    assert.equal(isApproveRequest("hello"), false);
+    assert.equal(isApproveRequest(""), false);
   });
 });
 
