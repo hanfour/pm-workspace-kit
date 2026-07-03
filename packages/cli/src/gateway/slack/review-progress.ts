@@ -1,3 +1,4 @@
+import type { WebClient } from "@slack/web-api";
 import type { ReviewStrategy } from "../../adapters/mra";
 
 export type Phase = "prepare" | "pkb" | "analyze" | "posting" | "done";
@@ -38,4 +39,72 @@ export function renderBar(pct: number, phaseLabel: string, headline: string): st
   const filled = Math.max(0, Math.min(5, Math.round(pct / 20)));
   const bar = "▰".repeat(filled) + "▱".repeat(5 - filled);
   return `${headline}\n${bar} ${pct}%\n目前:${phaseLabel}`;
+}
+
+const TICK_MS = 5000;
+
+interface ProgressDeps {
+  web: Pick<WebClient, "chat">;
+  channel: string;
+  ts: string;
+  strategy: ReviewStrategy;
+  headline: string;
+  now?: () => number;
+  setTimer?: (fn: () => void, ms: number) => ReturnType<typeof setInterval>;
+  clearTimer?: (h: ReturnType<typeof setInterval>) => void;
+}
+
+export class ReviewProgress {
+  private phase: Phase = "prepare";
+  private phaseStart: number;
+  private lastRender = "";
+  private timer?: ReturnType<typeof setInterval>;
+  private readonly now: () => number;
+  private readonly clearTimer: (h: ReturnType<typeof setInterval>) => void;
+
+  constructor(private readonly d: ProgressDeps) {
+    this.now = d.now ?? Date.now;
+    this.clearTimer = d.clearTimer ?? clearInterval;
+    this.phaseStart = this.now();
+    const set = d.setTimer ?? setInterval;
+    this.timer = set(() => void this.tick(), TICK_MS);
+  }
+
+  onLine(line: string): void {
+    const next = phaseFromLine(line);
+    if (next && next !== this.phase) {
+      this.phase = next;
+      this.phaseStart = this.now();
+      void this.tick();
+    }
+  }
+
+  private async tick(): Promise<void> {
+    if (this.phase === "done") return;
+    const pct = computePct(this.phase, this.now() - this.phaseStart, this.d.strategy);
+    const text = renderBar(pct, PHASE_LABEL[this.phase], this.d.headline);
+    if (text === this.lastRender) return;
+    this.lastRender = text;
+    try {
+      await (this.d.web.chat.update as (args: never) => Promise<unknown>)({ channel: this.d.channel, ts: this.d.ts, text } as never);
+    } catch {
+      /* best-effort; a Slack hiccup must not break the review */
+    }
+  }
+
+  async finish(finalText: string): Promise<void> {
+    this.dispose();
+    try {
+      await (this.d.web.chat.update as (args: never) => Promise<unknown>)({ channel: this.d.channel, ts: this.d.ts, text: finalText } as never);
+    } catch {
+      /* best-effort */
+    }
+  }
+
+  dispose(): void {
+    if (this.timer !== undefined) {
+      this.clearTimer(this.timer);
+      this.timer = undefined;
+    }
+  }
 }

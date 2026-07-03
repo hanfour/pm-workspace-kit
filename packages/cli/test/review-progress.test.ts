@@ -64,3 +64,41 @@ test("renderBar — correct format with glyphs", () => {
     ":mag: review #547\n▰▰▰▱▱ 60%\n目前:分析中(debate)",
   );
 });
+
+import { ReviewProgress } from "../src/gateway/slack/review-progress";
+
+function fakeWeb() {
+  const updates: string[] = [];
+  return { updates, web: { chat: { update: async ({ text }: any) => { updates.push(text); return {}; } } } };
+}
+
+test("updates only when render changes; finish converges to final text", async () => {
+  let clock = 0;
+  const timers: Array<() => void> = [];
+  const { web, updates } = fakeWeb();
+  const p = new ReviewProgress({
+    web: web as any, channel: "C", ts: "1", strategy: "standard", headline: ":mag: review #547",
+    now: () => clock,
+    setTimer: (fn: () => void) => { timers.push(fn); return 1 as any; },
+    clearTimer: () => {},
+  });
+  p.onLine("[review] loaded existing PR discussion into review context"); // → analyze, floor 35
+  timers[0]();                        // tick at clock 0
+  clock = 90_000; timers[0]();        // tick later → pct creeps up (new render)
+  const n = updates.length;
+  timers[0]();                        // same clock → no new update
+  assert.equal(updates.length, n);
+  await p.finish(":white_check_mark: 已 approve #547");
+  assert.equal(updates[updates.length - 1], ":white_check_mark: 已 approve #547");
+});
+
+test("dispose clears the timer", () => {
+  let cleared = 0;
+  const { web } = fakeWeb();
+  const p = new ReviewProgress({
+    web: web as any, channel: "C", ts: "1", strategy: "debate", headline: "h",
+    now: () => 0, setTimer: () => 7 as any, clearTimer: () => { cleared++; },
+  });
+  p.dispose();
+  assert.equal(cleared, 1);
+});
