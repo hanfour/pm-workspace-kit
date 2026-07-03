@@ -108,7 +108,7 @@ export interface ReviewConfig {
   allowPublicRepos: boolean;
   repoAllowlist?: string[];          // e.g. ["onead/OnePixel"]; undefined = any private repo in workspace
   maxPrsPerTrigger: number;
-  strategy: "debate" | "personas";
+  strategy: "debate" | "personas" | "standard";
   expectedGhUser?: string;           // gate: gh api user must equal this before posting
   /** Allow an AI APPROVED verdict to post as a real GitHub APPROVE (sets
    * MRA_REVIEW_ALLOW_APPROVE=1). Default false → verdict downgraded to COMMENT. */
@@ -364,7 +364,7 @@ function normaliseReviewConfig(raw: unknown): Partial<ReviewConfig> | undefined 
     out.repoAllowlist = asStringArray(o.repoAllowlist);
   if (typeof o.maxPrsPerTrigger === "number")
     out.maxPrsPerTrigger = o.maxPrsPerTrigger;
-  if (o.strategy === "debate" || o.strategy === "personas")
+  if (o.strategy === "debate" || o.strategy === "personas" || o.strategy === "standard")
     out.strategy = o.strategy;
   if (typeof o.expectedGhUser === "string")
     out.expectedGhUser = o.expectedGhUser;
@@ -469,7 +469,8 @@ export function resolveReviewConfig(raw?: Partial<ReviewConfig>): ReviewConfig {
     allowPublicRepos: raw?.allowPublicRepos ?? false,
     repoAllowlist: raw?.repoAllowlist,
     maxPrsPerTrigger: Math.max(1, raw?.maxPrsPerTrigger ?? 5),
-    strategy: raw?.strategy === "personas" ? "personas" : "debate",
+    strategy: raw?.strategy === "personas" ? "personas"
+      : raw?.strategy === "standard" ? "standard" : "debate",
     expectedGhUser: raw?.expectedGhUser,
     allowApprove: raw?.allowApprove ?? false,
     ghToken: raw?.ghToken,

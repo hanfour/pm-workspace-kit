@@ -526,19 +526,23 @@ export interface MraReviewResult {
   reason?: string;
 }
 
+export type ReviewStrategy = "debate" | "personas" | "standard";
+
 /**
  * Build the argv for `mra review <project> --pr <pr>`. For strategy
- * "debate" appends `--strategy debate`; for "personas" the flag is
- * omitted and the env var `MRA_REVIEW_PERSONAS=true` is used instead
- * (see {@link reviewEnv}).
+ * "debate" appends `--strategy debate`; for "standard" appends
+ * `--strategy standard`; for "personas" the flag is omitted and the
+ * env var `MRA_REVIEW_PERSONAS=true` is used instead (see {@link reviewEnv}).
  */
 export function buildReviewArgv(
   project: string,
   pr: number,
-  strategy: "debate" | "personas",
+  strategy: ReviewStrategy,
 ): string[] {
   const base = ["review", project, "--pr", String(pr)];
-  return strategy === "debate" ? [...base, "--strategy", "debate"] : base;
+  if (strategy === "debate") return [...base, "--strategy", "debate"];
+  if (strategy === "standard") return [...base, "--strategy", "standard"];
+  return base; // personas → env flag only
 }
 
 /**
@@ -574,7 +578,7 @@ export function parseReviewStdout(stdout: string): {
 /** Clone process.env, strip secrets, pin the review token, set personas flag,
  * and cap the round-1 review agents' turns (see body). */
 export function reviewEnv(
-  strategy: "debate" | "personas",
+  strategy: ReviewStrategy,
   ghToken?: string,
 ): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...process.env };
@@ -752,7 +756,7 @@ export async function runMraReview(
     workspace: string;
     project: string;
     pr: number;
-    strategy: "debate" | "personas";
+    strategy: ReviewStrategy;
     cwd: string;
     timeoutMs?: number;
     /** Pinned GitHub token for mra's POST (GH_TOKEN). Undefined → ambient gh. */

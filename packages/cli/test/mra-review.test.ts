@@ -33,6 +33,10 @@ describe("review argv + stdout parse", () => {
     assert.deepEqual(buildReviewArgv("onepixel", 12, "personas"),
       ["review", "onepixel", "--pr", "12"]);
   });
+  it("buildReviewArgv standard passes --strategy standard", () => {
+    assert.deepEqual(buildReviewArgv("superdsp-ui", 547, "standard"),
+      ["review", "superdsp-ui", "--pr", "547", "--strategy", "standard"]);
+  });
   it("parseReviewStdout pulls status + comment count", () => {
     // EXACT sample lines from Task 0 spike — replace with real captured output:
     const out = "reviewing onepixel ...\nposting inline review to onead/OnePixel#12 (3 comments)...\nstatus: CHANGES_REQUESTED | comments: 3\n";
