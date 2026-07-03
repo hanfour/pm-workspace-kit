@@ -118,7 +118,10 @@ describe("ReviewCoordinator.fromReaction", () => {
       runMraReview: async () => { reviewed = true; return { ok: true, stdout: "", stderr: "" }; } }))
       .fromReaction({ channelId: "C1", messageTs: "1.1", reactorUserId: "U1" });
     assert.equal(reviewed, false);
-    assert.ok(web.posted.some((p) => /身分|identity|actor/i.test(p.text ?? "")));
+    // gh-actor skip happens after the progress bar is created, so the warning
+    // arrives via progress.finish() → chat.update (web.updated), not a new postMessage.
+    const allTexts = [...web.posted, ...web.updated].map((m) => m.text ?? "");
+    assert.ok(allTexts.some((t) => /身分|identity|actor/i.test(t)));
   });
 
   it("public repo (guard on) is skipped", async () => {
@@ -130,7 +133,10 @@ describe("ReviewCoordinator.fromReaction", () => {
       runMraReview: async () => { reviewed = true; return { ok: true, stdout: "", stderr: "" }; } }))
       .fromReaction({ channelId: "C1", messageTs: "1.1", reactorUserId: "U1" });
     assert.equal(reviewed, false);
-    assert.ok(web.posted.some((p) => /public/i.test(p.text ?? "")));
+    // public-repo skip happens after the progress bar is created, so the warning
+    // arrives via progress.finish() → chat.update (web.updated), not a new postMessage.
+    const allTexts = [...web.posted, ...web.updated].map((m) => m.text ?? "");
+    assert.ok(allTexts.some((t) => /public/i.test(t)));
   });
 });
 
@@ -421,6 +427,37 @@ describe("ReviewCoordinator.retryInThread", () => {
     assert.ok(
       web.posted.some((p) => /沒有可重試|重新發起/.test(p.text ?? "")),
       "retry in a non-review thread must nudge, not silently no-op",
+    );
+  });
+});
+
+describe("ReviewCoordinator progress bar on failure (frozen-bar fix)", () => {
+  it("finishes the progress message with the warning text when mra returns !ok (no frozen bar)", async () => {
+    const web = new FakeWebClient();
+    await coord(web, gw({
+      runMraReview: async () => ({ ok: false, reason: "boom", stdout: "", stderr: "" }),
+    } as unknown as Partial<ReviewGateway>)).fromMessage({
+      channelId: "C1",
+      threadTs: "1.1",
+      userId: "U1",
+      text: ":cr: https://github.com/onead/OnePixel/pull/12",
+    });
+
+    // The progress message must be FINISHED with the warning text via chat.update,
+    // not left frozen at "5% 準備工作區". The last chat.update must contain the
+    // failure warning, not the initial frozen render.
+    const lastUpdate = web.updated[web.updated.length - 1];
+    assert.ok(
+      lastUpdate !== undefined,
+      "expected at least one chat.update (the finished progress message)",
+    );
+    assert.ok(
+      /review 失敗|:warning:/.test(lastUpdate?.text ?? ""),
+      `last chat.update must contain the failure warning, got: ${lastUpdate?.text ?? "(none)"}`,
+    );
+    assert.ok(
+      !/準備工作區/.test(lastUpdate?.text ?? ""),
+      `last chat.update must NOT be the frozen 準備工作區 render, got: ${lastUpdate?.text ?? "(none)"}`,
     );
   });
 });

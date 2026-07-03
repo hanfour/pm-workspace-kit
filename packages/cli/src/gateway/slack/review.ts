@@ -307,6 +307,8 @@ export class ReviewCoordinator {
     const { gateway, onLog } = this.opts;
     const slugDisplay = `${ref.owner}/${ref.repo}`;
 
+    let progress: ReviewProgress | undefined = undefined;
+
     const skip = async (reason: string, msg: string): Promise<void> => {
       appendGatewayEvent({
         type: "review.skipped",
@@ -315,7 +317,8 @@ export class ReviewCoordinator {
         pr: ref.number,
         reason,
       });
-      await this.reply(ctx.channelId, ctx.threadTs, msg);
+      if (progress) await progress.finish(msg);
+      else await this.reply(ctx.channelId, ctx.threadTs, msg);
     };
 
     const project = gateway.resolveProjectByRemote(ctx.workspace, slugDisplay);
@@ -402,7 +405,7 @@ export class ReviewCoordinator {
       ctx.channelId, ctx.threadTs,
       `:mag: review ${slug}#${ref.number}\n▱▱▱▱▱ 5%\n目前:準備工作區`,
     );
-    const progress = progressTs
+    progress = progressTs
       ? new ReviewProgress({
           web: this.opts.web, channel: ctx.channelId, ts: progressTs,
           strategy: ctx.review.strategy, headline: `:mag: review ${slug}#${ref.number}`,
