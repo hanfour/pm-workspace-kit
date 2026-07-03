@@ -448,6 +448,7 @@ export class ReviewCoordinator {
           cwd: ctx.reviewWorkspace,
           ghToken: ctx.token, // pin mra's POST identity (GH_TOKEN), stable vs active gh
           signal: controller.signal, // A: shutdown aborts → SIGTERM the review child
+          allowApprove: ctx.review.allowApprove,
         },
         { onProgress: (line) => onLog(`mra review ${slug}#${ref.number}: ${line}`) },
       );

@@ -222,6 +222,30 @@ describe("ReviewCoordinator pinned ghToken threading", () => {
   });
 });
 
+describe("ReviewCoordinator allowApprove forwarding", () => {
+  it("passes review.allowApprove=true from config into runMraReview", async () => {
+    const web = new FakeWebClient();
+    let mraArgs: { allowApprove?: boolean } | undefined;
+    const gateway = gw({
+      runMraReview: async (a: { allowApprove?: boolean }) => {
+        mraArgs = a;
+        return { ok: true, status: "COMMENT", commentCount: 0, stdout: "", stderr: "" };
+      },
+    } as unknown as Partial<ReviewGateway>);
+    const config = {
+      version: 1, admins: [], blocklist: [], audience: {}, escalation: {}, slack: {},
+      mraWorkspace: path.join(tmp, "ws"),
+      review: { enabled: true, expectedGhUser: "expected-bot", allowApprove: true },
+    } as never;
+    const c = new ReviewCoordinator({ web: web as never, config, onLog: () => {}, gateway });
+    await c.fromMessage({
+      channelId: "C1", threadTs: "1.1", userId: "U1",
+      text: ":cr: https://github.com/onead/OnePixel/pull/12",
+    });
+    assert.equal(mraArgs?.allowApprove, true, "runMraReview must receive allowApprove=true from config");
+  });
+});
+
 describe("ReviewCoordinator immediate ack (detached UX)", () => {
   it("posts the '收到，背景 review' ack BEFORE the slow per-PR work", async () => {
     const web = new FakeWebClient();
