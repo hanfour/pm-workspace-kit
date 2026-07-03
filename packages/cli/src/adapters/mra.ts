@@ -580,6 +580,7 @@ export function parseReviewStdout(stdout: string): {
 export function reviewEnv(
   strategy: ReviewStrategy,
   ghToken?: string,
+  opts: { allowApprove?: boolean; approveIfNoHigh?: boolean } = {},
 ): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...process.env };
   for (const k of REVIEW_SECRET_ENV_DENYLIST) delete env[k];
@@ -589,6 +590,8 @@ export function reviewEnv(
   // which account is active. Unset → mra falls back to ambient gh.
   if (ghToken) env.GH_TOKEN = ghToken;
   if (strategy === "personas") env.MRA_REVIEW_PERSONAS = "true";
+  if (opts.allowApprove) env.MRA_REVIEW_ALLOW_APPROVE = "1";
+  if (opts.approveIfNoHigh) env.MRA_REVIEW_APPROVE_IF_NO_HIGH = "1";
   // Cap the debate round-1 agents' turns generously. --max-turns is a CAP, not a
   // target: a PKB-backed review finishes well under it (the agent stops at its
   // verdict sentinel), so the headroom costs nothing on fast reviews and rescues
@@ -763,6 +766,8 @@ export async function runMraReview(
     ghToken?: string;
     /** Abort to SIGTERM the review child (gateway shutdown / drain). */
     signal?: AbortSignal;
+    allowApprove?: boolean;
+    approveIfNoHigh?: boolean;
   },
   opts: { onProgress?: (line: string) => void } = {},
 ): Promise<MraReviewResult> {
@@ -775,7 +780,10 @@ export async function runMraReview(
   // legitimately exceeds 10 min even with a PKB, so 600s timed out mid-pipeline.
   const timeoutMs = args.timeoutMs ?? 1_200_000;
   const argv = buildReviewArgv(args.project, args.pr, args.strategy);
-  const env = reviewEnv(args.strategy, args.ghToken);
+  const env = reviewEnv(args.strategy, args.ghToken, {
+    allowApprove: args.allowApprove,
+    approveIfNoHigh: args.approveIfNoHigh,
+  });
 
   const raw = await spawnMraCommand(binary, argv, args.cwd, env, timeoutMs, opts.onProgress, args.signal);
   const parsed = raw.ok ? parseReviewStdout(raw.stdout) : {};

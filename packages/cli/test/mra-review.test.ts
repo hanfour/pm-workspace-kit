@@ -97,4 +97,16 @@ describe("reviewEnv", () => {
       else process.env.ANTHROPIC_API_KEY = prev;
     }
   });
+  it("sets MRA_REVIEW_ALLOW_APPROVE=1 when allowApprove is true", () => {
+    assert.equal(reviewEnv("debate", undefined, { allowApprove: true }).MRA_REVIEW_ALLOW_APPROVE, "1");
+  });
+  it("does not set MRA_REVIEW_ALLOW_APPROVE when allowApprove is absent", () => {
+    assert.equal(reviewEnv("debate").MRA_REVIEW_ALLOW_APPROVE, undefined);
+  });
+  it("does not set MRA_REVIEW_APPROVE_IF_NO_HIGH when approveIfNoHigh is absent", () => {
+    assert.equal(reviewEnv("debate").MRA_REVIEW_APPROVE_IF_NO_HIGH, undefined);
+  });
+  it("sets MRA_REVIEW_APPROVE_IF_NO_HIGH=1 when approveIfNoHigh is true", () => {
+    assert.equal(reviewEnv("standard", undefined, { approveIfNoHigh: true }).MRA_REVIEW_APPROVE_IF_NO_HIGH, "1");
+  });
 });
