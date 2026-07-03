@@ -55,7 +55,7 @@ import {
   runMraAsk as runMraAskImpl,
 } from "../../adapters/mra";
 import { IssueCoordinator, realGithubGateway, type GithubGateway } from "./issue";
-import { ReviewCoordinator, realReviewGateway, isReviewRequest, isRetryRequest } from "./review";
+import { ReviewCoordinator, realReviewGateway, isReviewRequest, isRetryRequest, isApproveRequest } from "./review";
 import { AudioCoordinator, isAudioMessage } from "../audio/coordinator";
 import { needsConsentNotice } from "../audio/consent";
 import { pickAudience } from "../config";
@@ -692,6 +692,14 @@ export class SlackAdapter {
     // mandatory so a detached rejection can't crash the process.
     // `retry` in a review-result thread → re-run that thread's PR review
     // (re-fetches the thread root `:cr:` message). Detached + .catch like below.
+    if (this.review.isEnabled() && isApproveRequest(text)) {
+      void this.review
+        .fromApproveMessage({ channelId, threadTs: replyThreadTs, userId, text })
+        .catch((err) =>
+          this.onLog(`review: detached mention approve failed: ${(err as Error).message}`),
+        );
+      return;
+    }
     if (this.review.isEnabled() && isReviewRequest(text)) {
       void this.review
         .fromMessage({ channelId, threadTs: replyThreadTs, userId, text })
@@ -840,6 +848,14 @@ export class SlackAdapter {
     // immediately and posts each PR's result when done. MUST .catch — a
     // detached rejection would crash the process (unhandled rejection).
     // `retry` in a review-result thread → re-run that thread's PR review.
+    if (this.review.isEnabled() && isApproveRequest(text)) {
+      void this.review
+        .fromApproveMessage({ channelId, threadTs, userId, text })
+        .catch((err) =>
+          this.onLog(`review: detached DM approve failed: ${(err as Error).message}`),
+        );
+      return;
+    }
     if (this.review.isEnabled() && isReviewRequest(text)) {
       void this.review
         .fromMessage({ channelId, threadTs, userId, text })
@@ -1011,6 +1027,10 @@ export class SlackAdapter {
     // bot-message guard (which only admits reactions on the bot's own messages).
     if (reaction === "cr") {
       await this.review.fromReaction({ channelId, messageTs, reactorUserId });
+      return;
+    }
+    if (reaction === "a") {
+      await this.review.fromApproveReaction({ channelId, messageTs, reactorUserId });
       return;
     }
 

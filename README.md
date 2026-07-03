@@ -92,6 +92,13 @@ npx pmk gateway atoms approve <id-prefix>     # promote a pending atom to retrie
 # After bootstrap: in Slack DM with the bot, run `/pmk admin help` for the in-Slack surface (v0.9).
 ```
 
+**Slack in-DM / @-mention review commands** (requires `review.enabled: true` in `gateway.json`):
+
+- `:cr: <PR url>` — runs a full multi-agent mra review and posts inline findings. When `review.allowApprove: true` (gateway config, default `false`) and the verdict is APPROVED, the bot posts a real GitHub approval; otherwise the AI verdict is recorded as a COMMENT.
+- `:a: <PR url>` — runs a fast single-agent review, then **approves** the PR iff no CRITICAL/HIGH issue is found (minor issues allowed); otherwise requests changes. Per-invocation it is always allowed to approve.
+- React with `:cr:` on a user's PR-link message to trigger a review without re-typing the URL.
+- React with `:a:` on a user's PR-link message to trigger the fast-approve path.
+
 The CLI delegates code-intelligence work to [**multi-repo-agent (mra)**](https://github.com/hanfour/multi-repo-agent) when present. The gateway specifically uses three integrated mechanisms:
 
 - **PKB seed** — first DM/channel turn loads the `mra:--all` summary set so the model grounds answers in real module names from turn one.
