@@ -213,6 +213,300 @@ export class ReviewCoordinator {
     });
   }
 
+  /** `:a:` REACTION on a message → fetch the message text, then approve. */
+  async fromApproveReaction(args: {
+    channelId: string;
+    messageTs: string;
+    reactorUserId: string;
+  }): Promise<void> {
+    const text = await this.fetchMessageText(args.channelId, args.messageTs);
+    await this.processApproveRequest({
+      channelId: args.channelId,
+      threadTs: args.messageTs,
+      actorUserId: args.reactorUserId,
+      text: text ?? "",
+    });
+  }
+
+  /**
+   * Inline `:a:` in a DM or @-mention message → fast review then approve if
+   * no high-severity issue found. The caller gates with `isEnabled()` +
+   * `isApproveRequest()` before routing here.
+   */
+  async fromApproveMessage(args: {
+    channelId: string;
+    threadTs: string;
+    userId: string;
+    text: string;
+  }): Promise<void> {
+    await this.processApproveRequest({
+      channelId: args.channelId,
+      threadTs: args.threadTs,
+      actorUserId: args.userId,
+      text: args.text,
+    });
+  }
+
+  /** Shared core for `:a:` approve: parse PR refs, then approve each (fail-soft). */
+  private async processApproveRequest(args: {
+    channelId: string;
+    threadTs: string;
+    actorUserId: string;
+    text: string;
+  }): Promise<void> {
+    const { channelId, threadTs, actorUserId, text } = args;
+    const { config, gateway, onLog } = this.opts;
+    const review = resolveReviewConfig(config.review);
+    if (!review.enabled) return;
+
+    const workspace = config.mraWorkspace;
+    if (!workspace) {
+      onLog("review: no mraWorkspace configured");
+      return;
+    }
+
+    const refs = parsePrRefs(text, { cap: review.maxPrsPerTrigger });
+    if (refs.length === 0) return;
+
+    appendGatewayEvent({
+      type: "review.triggered",
+      actor: actorUserId,
+      channelId,
+      prCount: refs.length,
+    });
+
+    // Immediate ack before the slow per-PR work.
+    await this.reply(
+      channelId,
+      threadTs,
+      `:lock: 收到，先快速 review 再決定是否 approve…（完成後回報）`,
+    );
+
+    const reviewWorkspace = reviewWorkspaceDir();
+    gateway.ensureReviewWorkspaceMeta(workspace, reviewWorkspace);
+    const token = resolveReviewGhToken(config.review) ?? resolveGithubToken(config.github);
+
+    for (const ref of refs) {
+      await this.approveOne(ref, {
+        channelId,
+        threadTs,
+        reactorUserId: actorUserId,
+        workspace,
+        reviewWorkspace,
+        review,
+        token,
+      });
+    }
+  }
+
+  private async approveOne(
+    ref: PrRef,
+    ctx: {
+      channelId: string;
+      threadTs: string;
+      reactorUserId: string;
+      workspace: string;
+      reviewWorkspace: string;
+      review: ReturnType<typeof resolveReviewConfig>;
+      token?: string;
+    },
+  ): Promise<void> {
+    const { gateway, onLog } = this.opts;
+    const slugDisplay = `${ref.owner}/${ref.repo}`;
+
+    let progress: ReviewProgress | undefined = undefined;
+
+    const skip = async (reason: string, msg: string): Promise<void> => {
+      appendGatewayEvent({
+        type: "review.skipped",
+        actor: ctx.reactorUserId,
+        repo: slugDisplay,
+        pr: ref.number,
+        reason,
+      });
+      if (progress) await progress.finish(msg);
+      else await this.reply(ctx.channelId, ctx.threadTs, msg);
+    };
+
+    const project = gateway.resolveProjectByRemote(ctx.workspace, slugDisplay);
+    if (!project) {
+      await skip(
+        "not-in-workspace",
+        `:information_source: \`${slugDisplay}\` 不在 mra workspace，略過 PR #${ref.number}`,
+      );
+      return;
+    }
+
+    const slug = await gateway.resolveRepoSlug(ctx.workspace, project);
+    if (!slug) {
+      await skip(
+        "slug",
+        `:warning: 無法從 \`${project}\` 推出 GitHub slug，略過 PR #${ref.number}`,
+      );
+      return;
+    }
+
+    const head = await gateway.getPrHead({ slug, pr: ref.number, token: ctx.token });
+    if (!head) {
+      await skip("pr-head", `:warning: 取不到 PR #${ref.number} 的 head，略過`);
+      return;
+    }
+
+    // public-repo / allowlist guard (checked BEFORE claim to avoid wasted claims)
+    if (ctx.review.repoAllowlist && !ctx.review.repoAllowlist.includes(slug)) {
+      await skip(
+        "allowlist",
+        `:no_entry: \`${slug}\` 不在 review allowlist，略過 PR #${ref.number}`,
+      );
+      return;
+    }
+    if (!ctx.review.allowPublicRepos) {
+      const vis = await gateway.repoVisibility({ slug, token: ctx.token });
+      if (vis !== "private") {
+        await skip(
+          "public-repo",
+          `:no_entry: \`${slug}\` 為 public（或無法判定），略過 PR #${ref.number} 以免外洩`,
+        );
+        return;
+      }
+    }
+
+    const slugParts = slug.split("/");
+    const [slugOwner, slugRepo] =
+      slugParts.length === 2
+        ? slugParts
+        : [ref.owner, ref.repo];
+    const claimRef = {
+      owner: slugOwner,
+      repo: slugRepo,
+      pr: ref.number,
+      headSha: head.sha,
+    };
+    if (!claimReview(claimRef)) {
+      onLog(`review: already done ${slug}#${ref.number}@${head.sha.slice(0, 8)}`);
+      await this.reply(
+        ctx.channelId,
+        ctx.threadTs,
+        `:information_source: ${slug}#${ref.number} 這個 commit（\`${head.sha.slice(0, 7)}\`）已經 review 過了，略過（同一 commit 不重複審）。要重審請推新 commit 後再發。`,
+      );
+      return;
+    }
+
+    const controller = new AbortController();
+    const inflight: InFlightReview = {
+      claimRef,
+      controller,
+      label: `${slug}#${ref.number}`,
+      channelId: ctx.channelId,
+      threadTs: ctx.threadTs,
+    };
+    this.inFlight.add(inflight);
+
+    const progressTs = await this.replyWithTs(
+      ctx.channelId, ctx.threadTs,
+      `:mag: approve ${slug}#${ref.number}\n▱▱▱▱▱ 5%\n目前:準備工作區`,
+    );
+    progress = progressTs
+      ? new ReviewProgress({
+          web: this.opts.web, channel: ctx.channelId, ts: progressTs,
+          strategy: ctx.review.strategy, headline: `:mag: approve ${slug}#${ref.number}`,
+        })
+      : undefined;
+
+    let posted = false;
+    try {
+      const mainClone = `${ctx.workspace}/${project}`;
+      if (gateway.pkbNeedsBuild(mainClone)) {
+        onLog(`pkb: ${project} 缺/過時 PKB — 先建(一次性,之後 review 又快又完整)`);
+        const built = await gateway.runMraAnalyze(
+          { project, cwd: ctx.workspace, signal: controller.signal },
+          { onProgress: (line) => onLog(`mra analyze ${project}: ${line}`) },
+        );
+        if (!built.ok) {
+          onLog(`pkb: build 未完成(${built.reason ?? "unknown"})— 仍繼續 review`);
+        }
+      }
+
+      const prep = await gateway.prepareReviewClone({
+        mainClone,
+        reviewWorkspace: ctx.reviewWorkspace,
+        project,
+        slug,
+        pr: ref.number,
+        expectedHeadSha: head.sha,
+        baseRef: head.baseRef,
+        ghToken: ctx.token,
+      });
+      if (!prep.ok) {
+        await skip(
+          "prepare-failed",
+          `:warning: PR #${ref.number} 準備失敗（${prep.reason}），略過`,
+        );
+        return;
+      }
+
+      const actor = await gateway.getAuthUser({ token: ctx.token });
+      if (ctx.review.expectedGhUser && actor !== ctx.review.expectedGhUser) {
+        await skip(
+          "gh-actor",
+          `:no_entry: gh 身分為 \`${actor ?? "unknown"}\`，非預期帳號，未貼 review（避免身分混淆）`,
+        );
+        return;
+      }
+
+      const t0 = Date.now();
+      const res = await gateway.runMraReview(
+        {
+          workspace: ctx.reviewWorkspace,
+          project,
+          pr: ref.number,
+          strategy: "standard",
+          cwd: ctx.reviewWorkspace,
+          ghToken: ctx.token,
+          signal: controller.signal,
+          allowApprove: true,
+          approveIfNoHigh: true,
+        },
+        { onProgress: (line) => { onLog(`mra approve ${slug}#${ref.number}: ${line}`); progress?.onLine(line); } },
+      );
+      if (!res.ok) {
+        await skip(
+          "mra-failed",
+          `:warning: PR #${ref.number} approve 失敗：${res.reason ?? "unknown"}`,
+        );
+        return;
+      }
+
+      posted = true;
+      finalizeReview(claimRef, { status: res.status });
+      appendGatewayEvent({
+        type: "review.posted",
+        actor: ctx.reactorUserId,
+        repo: slug,
+        pr: ref.number,
+        status: res.status ?? "COMMENT",
+        commentCount: res.commentCount ?? 0,
+        durationMs: Date.now() - t0,
+      });
+      const approved = (res.status ?? "") === "APPROVED";
+      const resultText = approved
+        ? `:white_check_mark: 已 approve ${slug}#${ref.number}（無重大問題；${res.commentCount ?? 0} 則 minor 建議）：${ref.url}`
+        : `:no_entry: 未 approve ${slug}#${ref.number} — 發現重大問題，已請求修改（${res.status ?? "COMMENT"}，${res.commentCount ?? 0} 則）：${ref.url}`;
+      if (progress) await progress.finish(resultText);
+      else await this.reply(ctx.channelId, ctx.threadTs, resultText);
+    } catch (err) {
+      await skip(
+        "error",
+        `:warning: PR #${ref.number} approve 例外：${(err as Error).message}`,
+      );
+    } finally {
+      progress?.dispose();
+      this.inFlight.delete(inflight);
+      if (!posted) releaseReview(claimRef);
+      gateway.teardownReviewClone({ reviewWorkspace: ctx.reviewWorkspace, project });
+    }
+  }
+
   /**
    * `retry` posted in a review-result thread → re-run that thread's PR review.
    * Stateless: a Slack thread shares its root ts, so `threadTs` IS the original

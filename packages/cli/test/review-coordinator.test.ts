@@ -457,6 +457,47 @@ describe("ReviewCoordinator.retryInThread", () => {
   });
 });
 
+describe("ReviewCoordinator.fromApproveMessage (:a: approve flow)", () => {
+  it("APPROVED path: runMraReview called with strategy=standard/allowApprove=true/approveIfNoHigh=true and posts '已 approve'", async () => {
+    const web = new FakeWebClient();
+    let capturedArgs: Record<string, unknown> | undefined;
+    const gateway = gw({
+      runMraReview: async (a: Record<string, unknown>) => {
+        capturedArgs = a;
+        return { ok: true, status: "APPROVED", commentCount: 1, stdout: "", stderr: "" };
+      },
+    } as unknown as Partial<ReviewGateway>);
+    await coord(web, gateway).fromApproveMessage({
+      channelId: "C1",
+      threadTs: "1.1",
+      userId: "U1",
+      text: ":a: https://github.com/onead/OnePixel/pull/12",
+    });
+    assert.equal(capturedArgs?.["strategy"], "standard", "strategy must be 'standard'");
+    assert.equal(capturedArgs?.["allowApprove"], true, "allowApprove must be true");
+    assert.equal(capturedArgs?.["approveIfNoHigh"], true, "approveIfNoHigh must be true");
+    const allTexts = [...web.posted, ...web.updated].map((m) => m.text ?? "");
+    assert.ok(allTexts.some((t) => /已 approve/.test(t)), "APPROVED result must post '已 approve'");
+  });
+
+  it("CHANGES_REQUESTED path: posts '未 approve'", async () => {
+    const web = new FakeWebClient();
+    const gateway = gw({
+      runMraReview: async () => ({
+        ok: true, status: "CHANGES_REQUESTED", commentCount: 2, stdout: "", stderr: "",
+      }),
+    } as unknown as Partial<ReviewGateway>);
+    await coord(web, gateway).fromApproveMessage({
+      channelId: "C1",
+      threadTs: "1.1",
+      userId: "U1",
+      text: ":a: https://github.com/onead/OnePixel/pull/12",
+    });
+    const allTexts = [...web.posted, ...web.updated].map((m) => m.text ?? "");
+    assert.ok(allTexts.some((t) => /未 approve/.test(t)), "CHANGES_REQUESTED result must post '未 approve'");
+  });
+});
+
 describe("ReviewCoordinator progress bar on failure (frozen-bar fix)", () => {
   it("finishes the progress message with the warning text when mra returns !ok (no frozen bar)", async () => {
     const web = new FakeWebClient();
