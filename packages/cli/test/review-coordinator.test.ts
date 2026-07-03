@@ -424,3 +424,36 @@ describe("ReviewCoordinator.retryInThread", () => {
     );
   });
 });
+
+describe("ReviewCoordinator in-place progress bar", () => {
+  it("morphs the progress message via chat.update and delivers the result via update (not a new postMessage)", async () => {
+    const web = new FakeWebClient();
+    const progressLines = ["reviewing onead/OnePixel#12", "loaded existing PR discussion"];
+    await coord(web, gw({
+      runMraReview: async (_args: unknown, opts: { onProgress?: (line: string) => void } | undefined) => {
+        for (const line of progressLines) {
+          opts?.onProgress?.(line);
+        }
+        return { ok: true, status: "APPROVED", commentCount: 0, stdout: "", stderr: "" };
+      },
+    } as unknown as Partial<ReviewGateway>)).fromMessage({
+      channelId: "C1",
+      threadTs: "1.1",
+      userId: "U1",
+      text: ":cr: https://github.com/onead/OnePixel/pull/12",
+    });
+
+    // At least one chat.update must contain a progress bar render (▰)
+    assert.ok(
+      web.updated.some((u) => (u.text ?? "").includes("▰")),
+      "at least one chat.update must contain a progress bar render (▰)",
+    );
+
+    // The LAST chat.update must contain the result text (已對), NOT a new postMessage
+    const lastUpdate = web.updated[web.updated.length - 1];
+    assert.ok(
+      (lastUpdate?.text ?? "").includes("已對"),
+      "the result text must be delivered via the last chat.update (in-place), not a separate postMessage",
+    );
+  });
+});

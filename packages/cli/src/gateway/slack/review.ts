@@ -14,6 +14,7 @@
  */
 import type { WebClient } from "@slack/web-api";
 import type { GatewayConfig } from "../config";
+import { ReviewProgress } from "./review-progress";
 import {
   resolveReviewConfig,
   resolveGithubToken,
@@ -150,6 +151,17 @@ export class ReviewCoordinator {
       await this.opts.web.chat.postMessage({ channel, thread_ts: threadTs, text });
     } catch (err) {
       this.opts.onLog(`review: reply failed: ${(err as Error).message}`);
+    }
+  }
+
+  /** Like reply() but returns the posted message ts (for in-place progress edits). */
+  private async replyWithTs(channel: string, threadTs: string, text: string): Promise<string | undefined> {
+    try {
+      const res = (await this.opts.web.chat.postMessage({ channel, thread_ts: threadTs, text })) as { ts?: string };
+      return res.ts;
+    } catch (err) {
+      this.opts.onLog(`review: reply failed: ${(err as Error).message}`);
+      return undefined;
     }
   }
 
@@ -386,6 +398,17 @@ export class ReviewCoordinator {
     };
     this.inFlight.add(inflight);
 
+    const progressTs = await this.replyWithTs(
+      ctx.channelId, ctx.threadTs,
+      `:mag: review ${slug}#${ref.number}\n▱▱▱▱▱ 5%\n目前:準備工作區`,
+    );
+    const progress = progressTs
+      ? new ReviewProgress({
+          web: this.opts.web, channel: ctx.channelId, ts: progressTs,
+          strategy: ctx.review.strategy, headline: `:mag: review ${slug}#${ref.number}`,
+        })
+      : undefined;
+
     let posted = false;
     try {
       // Ensure a fresh PKB on the main clone BEFORE prepareReviewClone copies it
@@ -450,7 +473,7 @@ export class ReviewCoordinator {
           signal: controller.signal, // A: shutdown aborts → SIGTERM the review child
           allowApprove: ctx.review.allowApprove,
         },
-        { onProgress: (line) => onLog(`mra review ${slug}#${ref.number}: ${line}`) },
+        { onProgress: (line) => { onLog(`mra review ${slug}#${ref.number}: ${line}`); progress?.onLine(line); } },
       );
       if (!res.ok) {
         await skip(
@@ -471,17 +494,16 @@ export class ReviewCoordinator {
         commentCount: res.commentCount ?? 0,
         durationMs: Date.now() - t0,
       });
-      await this.reply(
-        ctx.channelId,
-        ctx.threadTs,
-        `:white_check_mark: 已對 ${slug}#${ref.number} 貼 review（${res.status ?? "COMMENT"}，${res.commentCount ?? 0} 則）：${ref.url}`,
-      );
+      const resultText = `:white_check_mark: 已對 ${slug}#${ref.number} 貼 review（${res.status ?? "COMMENT"}，${res.commentCount ?? 0} 則）：${ref.url}`;
+      if (progress) await progress.finish(resultText);
+      else await this.reply(ctx.channelId, ctx.threadTs, resultText);
     } catch (err) {
       await skip(
         "error",
         `:warning: PR #${ref.number} review 例外：${(err as Error).message}`,
       );
     } finally {
+      progress?.dispose();
       this.inFlight.delete(inflight);
       if (!posted) releaseReview(claimRef);
       gateway.teardownReviewClone({ reviewWorkspace: ctx.reviewWorkspace, project });
