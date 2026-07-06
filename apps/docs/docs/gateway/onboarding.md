@@ -374,6 +374,45 @@ fail with a "needs files:read" notice. Limits: 10 MB/file, 5 MB/image, 10 files 
 message; images are read once and kept as a text description (pixel detail isn't
 retained for follow-ups); linked Google/Box files and Office formats aren't supported.
 
+## Reviewing & approving PRs
+
+Post a GitHub PR link with a trigger, or react on someone else's PR-link message:
+
+- **`:cr: <PR url>`** (or a `:cr:` reaction) — runs a full multi-agent mra review
+  and posts inline findings. The AI verdict is recorded as a **COMMENT** by default;
+  it becomes a real GitHub **approval** only when `review.allowApprove: true` is set
+  in `gateway.json` **and** the verdict is APPROVED.
+- **`:a: <PR url>`** (or a `:a:` reaction) — runs a fast single-agent review, then
+  **approves** the PR iff no CRITICAL/HIGH issue is found (minor issues allowed),
+  else requests changes. `:a:` is the explicit per-invocation opt-in to approve, so
+  it does not require `allowApprove` — but it still honors the same repo guards.
+
+A live progress bar edits itself in place while the review runs; if the gateway is
+restarted mid-review it posts an interruption notice — reply `retry` in that thread
+to re-run (works for both `:cr:` and `:a:`).
+
+The `review` config block (all optional, safe-by-default):
+
+```jsonc
+{
+  "review": {
+    "enabled": false,          // master switch for :cr: / :a:
+    "allowApprove": false,     // let a :cr: APPROVED verdict post a real GitHub approval
+    "allowPublicRepos": false, // default-deny: only private repos are reviewed
+    "repoAllowlist": [],       // optional owner/repo allowlist (empty = all private repos)
+    "expectedGhUser": "",      // abort if the posting gh identity isn't this user
+    "strategy": "debate",      // debate | personas | standard
+    "maxPrsPerTrigger": 3,
+    "ghToken": ""              // pinned review token (falls back to github.token)
+  }
+}
+```
+
+Only workspace members who are **not** blocklisted can trigger a review or approve;
+the bot posts under its pinned gh identity (`expectedGhUser` guards against posting
+as the wrong account). Private-repo default-deny and the allowlist are checked
+**before** any work starts.
+
 ## Where this sits in the 30-day path
 
 Onboarding is the **Week 1** milestone in the README adoption path.
