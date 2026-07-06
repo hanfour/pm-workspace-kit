@@ -17,3 +17,12 @@ describe("resolveReviewConfig", () => {
     assert.equal(c.strategy, "personas");
   });
 });
+
+describe("allowApprove", () => {
+  it("defaults to false", () => {
+    assert.equal(resolveReviewConfig({}).allowApprove, false);
+  });
+  it("passes through when true", () => {
+    assert.equal(resolveReviewConfig({ allowApprove: true }).allowApprove, true);
+  });
+});

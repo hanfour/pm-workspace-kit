@@ -5,7 +5,7 @@ import * as os from "node:os";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { FakeWebClient } from "./harness/slack-fakes";
-import { ReviewCoordinator, isReviewRequest, isRetryRequest, type ReviewGateway } from "../src/gateway/slack/review";
+import { ReviewCoordinator, isReviewRequest, isRetryRequest, isApproveRequest, reviewResultText, approveResultText, describeMraFailure, type ReviewGateway } from "../src/gateway/slack/review";
 import { resolveReviewConfig } from "../src/gateway/config";
 
 const ORIG_HOME = process.env.HOME; // gatewayDir() is HOME-based; isolate via HOME (not PMK_HOME)
@@ -30,13 +30,14 @@ function gw(over: Partial<ReviewGateway> = {}): ReviewGateway {
   } as unknown as ReviewGateway;
 }
 
-function coord(web: FakeWebClient, gateway: ReviewGateway) {
+function coord(web: FakeWebClient, gateway: ReviewGateway, onLog: (m: string) => void = () => {}) {
   const config = {
     version: 1 as const, admins: [], blocklist: [], audience: {} as never,
     escalation: {} as never, slack: {}, mraWorkspace: path.join(tmp, "ws"),
     review: { enabled: true, expectedGhUser: "expected-bot" },
   } as never;
-  return new ReviewCoordinator({ web: web as never, config, onLog: () => {}, gateway });
+  // sleep is a no-op in tests so the transient-failure retry backoff doesn't wait.
+  return new ReviewCoordinator({ web: web as never, config, onLog, gateway, sleep: async () => {} });
 }
 
 describe("ReviewCoordinator.fromReaction", () => {
@@ -118,7 +119,10 @@ describe("ReviewCoordinator.fromReaction", () => {
       runMraReview: async () => { reviewed = true; return { ok: true, stdout: "", stderr: "" }; } }))
       .fromReaction({ channelId: "C1", messageTs: "1.1", reactorUserId: "U1" });
     assert.equal(reviewed, false);
-    assert.ok(web.posted.some((p) => /身分|identity|actor/i.test(p.text ?? "")));
+    // gh-actor skip happens after the progress bar is created, so the warning
+    // arrives via progress.finish() → chat.update (web.updated), not a new postMessage.
+    const allTexts = [...web.posted, ...web.updated].map((m) => m.text ?? "");
+    assert.ok(allTexts.some((t) => /身分|identity|actor/i.test(t)));
   });
 
   it("public repo (guard on) is skipped", async () => {
@@ -130,7 +134,10 @@ describe("ReviewCoordinator.fromReaction", () => {
       runMraReview: async () => { reviewed = true; return { ok: true, stdout: "", stderr: "" }; } }))
       .fromReaction({ channelId: "C1", messageTs: "1.1", reactorUserId: "U1" });
     assert.equal(reviewed, false);
-    assert.ok(web.posted.some((p) => /public/i.test(p.text ?? "")));
+    // public-repo skip happens after the progress bar is created, so the warning
+    // arrives via progress.finish() → chat.update (web.updated), not a new postMessage.
+    const allTexts = [...web.posted, ...web.updated].map((m) => m.text ?? "");
+    assert.ok(allTexts.some((t) => /public/i.test(t)));
   });
 });
 
@@ -151,6 +158,32 @@ describe("isReviewRequest (inline :cr: gate)", () => {
   it("false for neither / empty", () => {
     assert.equal(isReviewRequest("hello"), false);
     assert.equal(isReviewRequest(""), false);
+  });
+});
+
+describe("isApproveRequest (inline :a: gate)", () => {
+  it("true when :a: AND a PR link are present", () => {
+    assert.equal(
+      isApproveRequest(":a: https://github.com/onead/superdsp-ui/pull/547"),
+      true,
+    );
+    assert.equal(
+      isApproveRequest("@reviewer :a: <https://github.com/onead/superdsp-ui/pull/547|#547> lgtm"),
+      true,
+    );
+  });
+  it("false for :a: WITHOUT a PR link", () => {
+    assert.equal(isApproveRequest(":a: no pr here"), false);
+  });
+  it("false for a PR link WITHOUT :a:", () => {
+    assert.equal(
+      isApproveRequest("https://github.com/onead/superdsp-ui/pull/547"),
+      false,
+    );
+  });
+  it("false for neither / empty", () => {
+    assert.equal(isApproveRequest("hello"), false);
+    assert.equal(isApproveRequest(""), false);
   });
 });
 
@@ -222,16 +255,38 @@ describe("ReviewCoordinator pinned ghToken threading", () => {
   });
 });
 
-describe("ReviewCoordinator immediate ack (detached UX)", () => {
-  it("posts the '收到，背景 review' ack BEFORE the slow per-PR work", async () => {
+describe("ReviewCoordinator allowApprove forwarding", () => {
+  it("passes review.allowApprove=true from config into runMraReview", async () => {
     const web = new FakeWebClient();
-    let ackedBeforeReview = false;
+    let mraArgs: { allowApprove?: boolean } | undefined;
+    const gateway = gw({
+      runMraReview: async (a: { allowApprove?: boolean }) => {
+        mraArgs = a;
+        return { ok: true, status: "COMMENT", commentCount: 0, stdout: "", stderr: "" };
+      },
+    } as unknown as Partial<ReviewGateway>);
+    const config = {
+      version: 1, admins: [], blocklist: [], audience: {}, escalation: {}, slack: {},
+      mraWorkspace: path.join(tmp, "ws"),
+      review: { enabled: true, expectedGhUser: "expected-bot", allowApprove: true },
+    } as never;
+    const c = new ReviewCoordinator({ web: web as never, config, onLog: () => {}, gateway });
+    await c.fromMessage({
+      channelId: "C1", threadTs: "1.1", userId: "U1",
+      text: ":cr: https://github.com/onead/OnePixel/pull/12",
+    });
+    assert.equal(mraArgs?.allowApprove, true, "runMraReview must receive allowApprove=true from config");
+  });
+});
+
+describe("ReviewCoordinator immediate ack (detached UX)", () => {
+  it("single PR: NO standalone 收到 ack — the progress bar is the ack — but it still precedes mra", async () => {
+    const web = new FakeWebClient();
+    let progressBeforeReview = false;
     const gateway = gw({
       runMraReview: async () => {
-        // by the time mra runs, the ack must already be on the thread
-        ackedBeforeReview = web.posted.some((p) =>
-          /收到.*背景 review/.test(p.text ?? ""),
-        );
+        // by the time mra runs, the per-PR progress anchor is already on the thread
+        progressBeforeReview = web.posted.some((p) => /準備工作區/.test(p.text ?? ""));
         return { ok: true, status: "COMMENT", commentCount: 0, stdout: "", stderr: "" };
       },
     } as unknown as Partial<ReviewGateway>);
@@ -239,7 +294,41 @@ describe("ReviewCoordinator immediate ack (detached UX)", () => {
       channelId: "C1", threadTs: "1.1", userId: "U1",
       text: ":cr: https://github.com/onead/OnePixel/pull/12",
     });
-    assert.equal(ackedBeforeReview, true, "ack must precede the per-PR review work");
+    assert.equal(progressBeforeReview, true, "the progress bar must precede the per-PR review work");
+    assert.ok(
+      !web.posted.some((p) => /收到.*背景 review/.test(p.text ?? "")),
+      "a single PR must NOT get a separate 收到 ack (it would be dead clutter above the progress bar)",
+    );
+  });
+
+  it("multiple PRs: posts ONE summary 收到 ack before the per-PR work", async () => {
+    const web = new FakeWebClient();
+    let ackedBeforeReview = false;
+    const gateway = gw({
+      runMraReview: async () => {
+        ackedBeforeReview = web.posted.some((p) => /收到.*背景 review 2 個 PR/.test(p.text ?? ""));
+        return { ok: true, status: "COMMENT", commentCount: 0, stdout: "", stderr: "" };
+      },
+    } as unknown as Partial<ReviewGateway>);
+    await coord(web, gateway).fromMessage({
+      channelId: "C1", threadTs: "1.1", userId: "U1",
+      text: ":cr: https://github.com/onead/OnePixel/pull/12 https://github.com/onead/OnePixel/pull/13",
+    });
+    assert.equal(ackedBeforeReview, true, "the summary ack must precede the per-PR work for N>1 PRs");
+  });
+
+  it("single :a: approve: NO standalone :lock: ack (progress bar covers it)", async () => {
+    const web = new FakeWebClient();
+    await coord(web, gw({
+      runMraReview: async () => ({ ok: true, status: "APPROVED", commentCount: 0, stdout: "", stderr: "" }),
+    } as unknown as Partial<ReviewGateway>)).fromApproveMessage({
+      channelId: "C1", threadTs: "1.1", userId: "U1",
+      text: ":a: https://github.com/onead/OnePixel/pull/12",
+    });
+    assert.ok(
+      !web.posted.some((p) => /先快速 review 再決定是否 approve/.test(p.text ?? "")),
+      "a single :a: must not post the standalone 收到 ack",
+    );
   });
 
   it("no ack when there are no PR refs (silent, no spurious post)", async () => {
@@ -397,6 +486,250 @@ describe("ReviewCoordinator.retryInThread", () => {
     assert.ok(
       web.posted.some((p) => /沒有可重試|重新發起/.test(p.text ?? "")),
       "retry in a non-review thread must nudge, not silently no-op",
+    );
+  });
+
+  // M5: a drained :a: approve posts "回 retry 即可重跑", but the old retry path
+  // only recognised :cr: roots → replied "沒有可重試" and silently downgraded the
+  // user's approve intent. Retry of an :a: thread must re-run the APPROVE flow.
+  it("re-runs the APPROVE flow when the thread root is an :a: request (not the nudge)", async () => {
+    const web = new FakeWebClient();
+    web.conversationsHistoryResponse = {
+      ok: true,
+      messages: [{ text: ":a: <https://github.com/onead/OnePixel/pull/7|#7>" }],
+    };
+    let approveArgs: Record<string, unknown> | undefined;
+    await coord(web, gw({
+      runMraReview: async (a: Record<string, unknown>) => {
+        approveArgs = a;
+        return { ok: true, status: "APPROVED", commentCount: 0, stdout: "", stderr: "" };
+      },
+    } as unknown as Partial<ReviewGateway>)).retryInThread({ channelId: "C1", threadTs: "1.1", userId: "U1" });
+    assert.equal(approveArgs?.["approveIfNoHigh"], true, "retry of an :a: thread must re-run the approve flow (approveIfNoHigh=true)");
+    const allTexts = [...web.posted, ...web.updated].map((m) => m.text ?? "");
+    assert.ok(!allTexts.some((t) => /沒有可重試/.test(t)), "must NOT post the nudge for an :a: thread root");
+  });
+});
+
+describe("ReviewCoordinator.fromApproveMessage (:a: approve flow)", () => {
+  it("APPROVED path: runMraReview called with strategy=standard/allowApprove=true/approveIfNoHigh=true and posts '已 approve'", async () => {
+    const web = new FakeWebClient();
+    let capturedArgs: Record<string, unknown> | undefined;
+    const gateway = gw({
+      runMraReview: async (a: Record<string, unknown>) => {
+        capturedArgs = a;
+        return { ok: true, status: "APPROVED", commentCount: 1, stdout: "", stderr: "" };
+      },
+    } as unknown as Partial<ReviewGateway>);
+    await coord(web, gateway).fromApproveMessage({
+      channelId: "C1",
+      threadTs: "1.1",
+      userId: "U1",
+      text: ":a: https://github.com/onead/OnePixel/pull/12",
+    });
+    assert.equal(capturedArgs?.["strategy"], "standard", "strategy must be 'standard'");
+    assert.equal(capturedArgs?.["allowApprove"], true, "allowApprove must be true");
+    assert.equal(capturedArgs?.["approveIfNoHigh"], true, "approveIfNoHigh must be true");
+    const allTexts = [...web.posted, ...web.updated].map((m) => m.text ?? "");
+    assert.ok(allTexts.some((t) => /已 approve/.test(t)), "APPROVED result must post '已 approve'");
+  });
+
+  it("CHANGES_REQUESTED path: posts '未 approve'", async () => {
+    const web = new FakeWebClient();
+    const gateway = gw({
+      runMraReview: async () => ({
+        ok: true, status: "CHANGES_REQUESTED", commentCount: 2, stdout: "", stderr: "",
+      }),
+    } as unknown as Partial<ReviewGateway>);
+    await coord(web, gateway).fromApproveMessage({
+      channelId: "C1",
+      threadTs: "1.1",
+      userId: "U1",
+      text: ":a: https://github.com/onead/OnePixel/pull/12",
+    });
+    const allTexts = [...web.posted, ...web.updated].map((m) => m.text ?? "");
+    assert.ok(allTexts.some((t) => /未 approve/.test(t)), "CHANGES_REQUESTED result must post '未 approve'");
+  });
+
+  // M1: on mra's batch-fallback path there is no `status:` line → status is
+  // undefined. The old code computed approved=false and claimed "未 approve —
+  // 發現重大問題", which is a false statement on both axes (GitHub may actually
+  // have approved). The honest result points the user to GitHub instead.
+  it("undefined-status (batch-fallback) path: does NOT falsely claim '發現重大問題'; points to GitHub", async () => {
+    const web = new FakeWebClient();
+    const gateway = gw({
+      runMraReview: async () => ({
+        ok: true, status: undefined, commentCount: 0, stdout: "", stderr: "",
+      }),
+    } as unknown as Partial<ReviewGateway>);
+    await coord(web, gateway).fromApproveMessage({
+      channelId: "C1",
+      threadTs: "1.1",
+      userId: "U1",
+      text: ":a: https://github.com/onead/OnePixel/pull/12",
+    });
+    const allTexts = [...web.posted, ...web.updated].map((m) => m.text ?? "");
+    assert.ok(
+      allTexts.some((t) => /確認是否已 approve|未回報 approve/.test(t)),
+      "undefined status must produce an informational GitHub-check message",
+    );
+    assert.ok(
+      !allTexts.some((t) => /發現重大問題/.test(t)),
+      "must NOT claim 發現重大問題 when the approve verdict is unknown",
+    );
+  });
+});
+
+describe("review/approve result text (pure)", () => {
+  const ref = { owner: "onead", repo: "OnePixel", number: 12, url: "https://x/pull/12" } as never;
+  it("reviewResultText always reports the posted status/count", () => {
+    assert.match(reviewResultText("onead/OnePixel", ref, { status: "COMMENT", commentCount: 3 } as never), /已對 .*貼 review.*COMMENT.*3/);
+  });
+  it("approveResultText: APPROVED → 已 approve", () => {
+    assert.match(approveResultText("onead/OnePixel", ref, { status: "APPROVED", commentCount: 1 } as never), /已 approve/);
+  });
+  it("approveResultText: CHANGES_REQUESTED → 未 approve / 已請求修改", () => {
+    assert.match(approveResultText("onead/OnePixel", ref, { status: "CHANGES_REQUESTED", commentCount: 2 } as never), /未 approve.*已請求修改/);
+  });
+  it("approveResultText: undefined status → informational, no false '發現重大問題'", () => {
+    const t = approveResultText("onead/OnePixel", ref, { status: undefined, commentCount: 0 } as never);
+    assert.doesNotMatch(t, /發現重大問題/);
+    assert.match(t, /確認是否已 approve|未回報 approve/);
+  });
+});
+
+describe("describeMraFailure (pure)", () => {
+  it("uses the last non-empty stderr line (ANSI stripped, capped) as the detail", () => {
+    const { detail } = describeMraFailure({
+      reason: "mra exited with code=1",
+      stderr: "some warning\n\u001b[0;31mfatal: could not read Username\u001b[0m",
+      stdout: "",
+    } as never);
+    assert.match(detail, /fatal: could not read Username/);
+    assert.ok(!detail.includes("\u001b"), "ANSI escape bytes must be stripped");
+    assert.ok(!/\[0;3\dm/.test(detail), "ANSI colour codes must be stripped");
+  });
+  it("falls back to the last stdout phase when stderr is empty (mra swallowed claude's error)", () => {
+    const { detail, logDump } = describeMraFailure({
+      reason: "mra exited with code=1",
+      stderr: "",
+      stdout: "[1;37m[review] reviewing erp[0m\n[1;37m[review] running Claude (sonnet)...[0m",
+    } as never);
+    assert.match(detail, /最後階段.*running Claude/);
+    assert.match(logDump, /swallow|2>\/dev\/null|empty/i);
+  });
+});
+
+describe("ReviewCoordinator transient-failure retry", () => {
+  it("retries once after a transient mra failure, then posts the success result", async () => {
+    const web = new FakeWebClient();
+    let calls = 0;
+    const gateway = gw({
+      runMraReview: async () => {
+        calls++;
+        if (calls === 1) {
+          return { ok: false, reason: "mra exited with code=1", stdout: "reviewing\nrunning Claude", stderr: "" };
+        }
+        return { ok: true, status: "APPROVED", commentCount: 0, stdout: "", stderr: "" };
+      },
+    } as unknown as Partial<ReviewGateway>);
+    await coord(web, gateway).fromApproveMessage({
+      channelId: "C1", threadTs: "1.1", userId: "U1",
+      text: ":a: https://github.com/onead/OnePixel/pull/12",
+    });
+    assert.equal(calls, 2, "a transient mra failure must trigger exactly one retry");
+    const allTexts = [...web.posted, ...web.updated].map((m) => m.text ?? "");
+    assert.ok(allTexts.some((t) => /已 approve/.test(t)), "the retry's success result must be delivered");
+    assert.ok(!allTexts.some((t) => /失敗/.test(t)), "no failure message when the retry succeeds");
+  });
+
+  it("after the retry also fails: posts an enriched failure (reason + detail) and logs a dump", async () => {
+    const web = new FakeWebClient();
+    const logs: string[] = [];
+    let calls = 0;
+    const gateway = gw({
+      runMraReview: async () => {
+        calls++;
+        return {
+          ok: false, reason: "mra exited with code=1",
+          stdout: "[1;37m[review] running Claude (sonnet)...[0m", stderr: "",
+        };
+      },
+    } as unknown as Partial<ReviewGateway>);
+    await coord(web, gateway, (m) => logs.push(m)).fromApproveMessage({
+      channelId: "C1", threadTs: "1.1", userId: "U1",
+      text: ":a: https://github.com/onead/OnePixel/pull/12",
+    });
+    assert.equal(calls, 2, "exactly one retry before giving up");
+    const allTexts = [...web.posted, ...web.updated].map((m) => m.text ?? "");
+    const fail = allTexts.find((t) => /失敗/.test(t));
+    assert.ok(fail, "a failure message must be posted");
+    assert.match(fail!, /mra exited with code=1/, "the reason is surfaced");
+    assert.match(fail!, /最後階段|running Claude/, "the last phase is surfaced so 'code=1' isn't a dead end");
+    assert.ok(logs.some((l) => /FAILED/.test(l)), "a full failure dump is logged for the operator");
+  });
+});
+
+describe("ReviewCoordinator progress bar on failure (frozen-bar fix)", () => {
+  it("finishes the progress message with the warning text when mra returns !ok (no frozen bar)", async () => {
+    const web = new FakeWebClient();
+    await coord(web, gw({
+      runMraReview: async () => ({ ok: false, reason: "boom", stdout: "", stderr: "" }),
+    } as unknown as Partial<ReviewGateway>)).fromMessage({
+      channelId: "C1",
+      threadTs: "1.1",
+      userId: "U1",
+      text: ":cr: https://github.com/onead/OnePixel/pull/12",
+    });
+
+    // The progress message must be FINISHED with the warning text via chat.update,
+    // not left frozen at "5% 準備工作區". The last chat.update must contain the
+    // failure warning, not the initial frozen render.
+    const lastUpdate = web.updated[web.updated.length - 1];
+    assert.ok(
+      lastUpdate !== undefined,
+      "expected at least one chat.update (the finished progress message)",
+    );
+    assert.ok(
+      /review 失敗|:warning:/.test(lastUpdate?.text ?? ""),
+      `last chat.update must contain the failure warning, got: ${lastUpdate?.text ?? "(none)"}`,
+    );
+    assert.ok(
+      !/準備工作區/.test(lastUpdate?.text ?? ""),
+      `last chat.update must NOT be the frozen 準備工作區 render, got: ${lastUpdate?.text ?? "(none)"}`,
+    );
+  });
+});
+
+describe("ReviewCoordinator in-place progress bar", () => {
+  it("morphs the progress message via chat.update and delivers the result via update (not a new postMessage)", async () => {
+    const web = new FakeWebClient();
+    const progressLines = ["reviewing onead/OnePixel#12", "loaded existing PR discussion"];
+    await coord(web, gw({
+      runMraReview: async (_args: unknown, opts: { onProgress?: (line: string) => void } | undefined) => {
+        for (const line of progressLines) {
+          opts?.onProgress?.(line);
+        }
+        return { ok: true, status: "APPROVED", commentCount: 0, stdout: "", stderr: "" };
+      },
+    } as unknown as Partial<ReviewGateway>)).fromMessage({
+      channelId: "C1",
+      threadTs: "1.1",
+      userId: "U1",
+      text: ":cr: https://github.com/onead/OnePixel/pull/12",
+    });
+
+    // At least one chat.update must contain a progress bar render (▰)
+    assert.ok(
+      web.updated.some((u) => (u.text ?? "").includes("▰")),
+      "at least one chat.update must contain a progress bar render (▰)",
+    );
+
+    // The LAST chat.update must contain the result text (已對), NOT a new postMessage
+    const lastUpdate = web.updated[web.updated.length - 1];
+    assert.ok(
+      (lastUpdate?.text ?? "").includes("已對"),
+      "the result text must be delivered via the last chat.update (in-place), not a separate postMessage",
     );
   });
 });

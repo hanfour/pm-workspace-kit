@@ -1128,20 +1128,79 @@ describe("SlackAdapter integration: :cr: reaction routes to ReviewCoordinator", 
     );
     await h.flush();
 
-    // The coordinator acks immediately, then reaches resolveProjectByRemote →
-    // not found → posts a skip note. Both prove the gate routed :cr: through.
+    // Single PR gets no standalone ack (the progress bar is the ack); this
+    // workspace-miss path skips at resolveProjectByRemote BEFORE the progress
+    // bar, so the skip note itself proves the gate routed :cr: through.
     const posts = h.web.postsTo("C-CH");
     assert.ok(
       posts.length > 0,
-      "ReviewCoordinator should post (ack + skip note) when routed",
-    );
-    assert.ok(
-      posts.some((p) => /收到.*背景 review/.test(p.text ?? "")),
-      "an immediate ack should be posted",
+      "ReviewCoordinator should post a skip note when routed",
     );
     assert.ok(
       posts.some((p) => /略過/.test(p.text ?? "")),
       "a skip note ('略過') should be posted when project is not in workspace",
+    );
+  });
+
+  it("a blocklisted user's :cr: reaction is ignored (parity with the message/mention paths)", async () => {
+    h = buildHarness({
+      config: {
+        blocklist: ["U-BAD"],
+        review: { enabled: true },
+        mraWorkspace: "/tmp/no-such-workspace-cr-block",
+      },
+    });
+    h.web.conversationsHistoryResponse = {
+      ok: true,
+      messages: [{ text: ":cr: https://github.com/onead/OnePixel/pull/12" }],
+    };
+    await h.adapter.start();
+    await h.socket.emit(
+      "reaction_added",
+      reactionAddedPayload({
+        user: "U-BAD",
+        reaction: "cr",
+        itemChannel: "C-CH",
+        itemTs: "1700000201.000201",
+        itemUser: "U-HUMAN-POSTER",
+      }),
+    );
+    await h.flush();
+    assert.equal(
+      h.web.postsTo("C-CH").length,
+      0,
+      "a blocklisted user must not drive any :cr: review side-effect",
+    );
+  });
+
+  it("a blocklisted user's :a: approve reaction is ignored (no GitHub approve side-effect)", async () => {
+    h = buildHarness({
+      config: {
+        blocklist: ["U-BAD"],
+        review: { enabled: true },
+        mraWorkspace: "/tmp/no-such-workspace-a-block",
+      },
+    });
+    h.web.conversationsHistoryResponse = {
+      ok: true,
+      messages: [{ text: ":a: https://github.com/onead/OnePixel/pull/12" }],
+    };
+    await h.adapter.start();
+    await h.socket.emit(
+      "reaction_added",
+      reactionAddedPayload({
+        user: "U-BAD",
+        reaction: "a",
+        itemChannel: "C-CH",
+        itemTs: "1700000202.000202",
+        itemUser: "U-HUMAN-POSTER",
+      }),
+    );
+    await h.flush();
+    assert.equal(
+      h.web.postsTo("C-CH").length,
+      0,
+      "a blocklisted user must not drive any :a: approve side-effect",
     );
   });
 });

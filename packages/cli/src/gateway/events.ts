@@ -21,10 +21,9 @@ import type { AudienceKey } from "@pmk/shared";
 import { gatewayDir } from "./config";
 import { appendJsonl, monthlyPath, readJsonl } from "./monthly-jsonl";
 
-// TODO(v0.10.x): events.log grows unbounded. At single-host workloads
-// (~100 events/day) we'd hit ~1MB/year — acceptable for now but the
-// admin.log has the same gap; a single rotation helper covering both
-// is the right shape when we get there.
+// Note: the gateway event log is month-partitioned via `monthlyPath` (v0.11+),
+// so it no longer grows unbounded. The sibling admin.log is NOT yet partitioned;
+// a single rotation helper covering it is the remaining follow-up.
 
 /** Activity window for status/doctor "turns/30m" + recent-events queries. */
 export const RECENT_ACTIVITY_WINDOW_MS = 30 * 60_000;

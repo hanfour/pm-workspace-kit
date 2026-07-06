@@ -108,8 +108,11 @@ export interface ReviewConfig {
   allowPublicRepos: boolean;
   repoAllowlist?: string[];          // e.g. ["onead/OnePixel"]; undefined = any private repo in workspace
   maxPrsPerTrigger: number;
-  strategy: "debate" | "personas";
+  strategy: "debate" | "personas" | "standard";
   expectedGhUser?: string;           // gate: gh api user must equal this before posting
+  /** Allow an AI APPROVED verdict to post as a real GitHub APPROVE (sets
+   * MRA_REVIEW_ALLOW_APPROVE=1). Default false → verdict downgraded to COMMENT. */
+  allowApprove: boolean;
   /**
    * Pinned GitHub token for ALL review GitHub interactions (PR head, repo
    * visibility, actor-verify) AND mra's review POST. Literal or {env}/{cmd}
@@ -361,10 +364,11 @@ function normaliseReviewConfig(raw: unknown): Partial<ReviewConfig> | undefined 
     out.repoAllowlist = asStringArray(o.repoAllowlist);
   if (typeof o.maxPrsPerTrigger === "number")
     out.maxPrsPerTrigger = o.maxPrsPerTrigger;
-  if (o.strategy === "debate" || o.strategy === "personas")
+  if (o.strategy === "debate" || o.strategy === "personas" || o.strategy === "standard")
     out.strategy = o.strategy;
   if (typeof o.expectedGhUser === "string")
     out.expectedGhUser = o.expectedGhUser;
+  if (typeof o.allowApprove === "boolean") out.allowApprove = o.allowApprove;
   const ghToken = validateSecretSource(o.ghToken, "review.ghToken");
   if (ghToken !== undefined) out.ghToken = ghToken;
   return out;
@@ -465,8 +469,10 @@ export function resolveReviewConfig(raw?: Partial<ReviewConfig>): ReviewConfig {
     allowPublicRepos: raw?.allowPublicRepos ?? false,
     repoAllowlist: raw?.repoAllowlist,
     maxPrsPerTrigger: Math.max(1, raw?.maxPrsPerTrigger ?? 5),
-    strategy: raw?.strategy === "personas" ? "personas" : "debate",
+    strategy: raw?.strategy === "personas" ? "personas"
+      : raw?.strategy === "standard" ? "standard" : "debate",
     expectedGhUser: raw?.expectedGhUser,
+    allowApprove: raw?.allowApprove ?? false,
     ghToken: raw?.ghToken,
   };
 }
