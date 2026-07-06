@@ -92,22 +92,30 @@ export function isApproveRequest(text: string): boolean {
 interface ReviewOutcome {
   status?: string;
   commentCount?: number;
+  /** mra posted a neutral REVIEW_INCOMPLETE placeholder — the review never evaluated the PR. */
+  incomplete?: boolean;
 }
 
 /** Result line for a plain `:cr:` review (reports whatever status mra posted). */
 export function reviewResultText(slug: string, ref: PrRef, res: ReviewOutcome): string {
+  if (res.incomplete)
+    return `:warning: ${slug}#${ref.number} review 未完成（mra 回報 REVIEW_INCOMPLETE，未真正評估此 PR — 可能 max-turns 截斷或 claude 呼叫失敗）；已貼中性佔位，claim 已釋放，請重試 :cr:：${ref.url}`;
   return `:white_check_mark: 已對 ${slug}#${ref.number} 貼 review（${res.status ?? "COMMENT"}，${res.commentCount ?? 0} 則）：${ref.url}`;
 }
 
 /**
- * Result line for a `:a:` approve. Three-way on the mra status: the batch-fallback
- * path (review.sh) posts individual comments and prints NO `status:` line, so
- * `status` is undefined there — we must NOT claim "發現重大問題 / 未 approve" then,
- * because GitHub may in fact have recorded an APPROVE. Point the user to the PR
- * instead of asserting a verdict we can't read.
+ * Result line for a `:a:` approve. Incomplete first (a REVIEW_INCOMPLETE run posts a
+ * neutral placeholder whose GitHub event reads COMMENT — without this branch it would
+ * fall through to the misleading "請至 PR 確認是否已 approve"). Then three-way on the
+ * mra status: the batch-fallback path (review.sh) posts individual comments and prints
+ * NO `status:` line, so `status` is undefined there — we must NOT claim "發現重大問題 /
+ * 未 approve" then, because GitHub may in fact have recorded an APPROVE. Point the user
+ * to the PR instead of asserting a verdict we can't read.
  */
 export function approveResultText(slug: string, ref: PrRef, res: ReviewOutcome): string {
   const cc = res.commentCount ?? 0;
+  if (res.incomplete)
+    return `:warning: 未 approve ${slug}#${ref.number} — review 未完成（mra 回報 REVIEW_INCOMPLETE，可能 max-turns 截斷或 claude 呼叫失敗），未做任何 approve；請重試 :a: 或手動 review：${ref.url}`;
   if (res.status === "APPROVED")
     return `:white_check_mark: 已 approve ${slug}#${ref.number}（無重大問題；${cc} 則 minor 建議）：${ref.url}`;
   if (res.status === "CHANGES_REQUESTED")
@@ -694,16 +702,20 @@ export class ReviewCoordinator {
       };
       let res = await gateway.runMraReview(mraArgs, { onProgress });
       let retried = false;
-      // Retry once on a transient failure. mra runs `claude` under set -e with
-      // 2>/dev/null, so an intermittent non-zero claude exit (rate-limit /
-      // overload under concurrent load) surfaces as a bare `exited with code=1`
-      // and kills the whole review — a single-pass approve has no internal retry,
-      // so one blip = total failure. A short backoff + one re-run recovers it.
-      // Skip the retry if the run was aborted (shutdown drain) — that's not
-      // transient, and the clone is about to be torn down.
-      if (!res.ok && !controller.signal.aborted) {
+      // Retry once on a transient failure OR a REVIEW_INCOMPLETE. mra runs `claude`
+      // under set -e with 2>/dev/null: an intermittent non-zero claude exit
+      // (rate-limit / overload under concurrent load) surfaces as a bare `exited
+      // with code=1` (res.ok=false), while an empty / unparseable claude response
+      // makes mra EXIT 0 but post a neutral REVIEW_INCOMPLETE placeholder
+      // (res.ok=true, res.incomplete=true). Both are the same flaky single-pass
+      // claude and both routinely recover on a re-run, so retry either. Skip the
+      // retry if aborted (shutdown drain) — not transient, clone about to be torn down.
+      if ((!res.ok || res.incomplete) && !controller.signal.aborted) {
+        const why = res.ok
+          ? "回報 REVIEW_INCOMPLETE"
+          : `失敗 — ${describeMraFailure(res).logDump}`;
         onLog(
-          `mra ${verb} ${slug}#${ref.number} 第一次失敗，${MRA_RETRY_BACKOFF_MS / 1000}s 後重試一次 — ${describeMraFailure(res).logDump}`,
+          `mra ${verb} ${slug}#${ref.number} 第一次${why}，${MRA_RETRY_BACKOFF_MS / 1000}s 後重試一次`,
         );
         await this.backoff(MRA_RETRY_BACKOFF_MS, controller.signal);
         if (!controller.signal.aborted) {
@@ -717,6 +729,20 @@ export class ReviewCoordinator {
         await skip(
           "mra-failed",
           `:warning: PR #${ref.number} ${verb} 失敗${retried ? "（已重試）" : ""}：${res.reason ?? "unknown"}${detail ? `\n> ${detail}` : ""}`,
+        );
+        return;
+      }
+      if (res.incomplete) {
+        // Still REVIEW_INCOMPLETE after the retry: mra only posted a neutral
+        // placeholder, so the PR was never actually evaluated. Do NOT finalize the
+        // per-commit claim (that would reject a same-commit re-:a: as "already
+        // reviewed" and make the "請重試" advice a dead end) — route through skip so
+        // the finally releases the claim, and report honestly instead of the
+        // misleading ambiguous-approve line.
+        onLog(`mra ${verb} ${slug}#${ref.number} REVIEW_INCOMPLETE${retried ? "（重試後仍）" : ""} — 釋放 claim 供重試`);
+        await skip(
+          "review-incomplete",
+          isApprove ? approveResultText(slug, ref, res) : reviewResultText(slug, ref, res),
         );
         return;
       }

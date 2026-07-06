@@ -580,6 +580,57 @@ describe("ReviewCoordinator.fromApproveMessage (:a: approve flow)", () => {
   });
 });
 
+describe("ReviewCoordinator REVIEW_INCOMPLETE handling", () => {
+  it(":a: retries once when the first review is REVIEW_INCOMPLETE, then posts the recovered outcome", async () => {
+    const web = new FakeWebClient();
+    let calls = 0;
+    const gateway = gw({
+      runMraReview: async () => {
+        calls++;
+        return calls === 1
+          ? { ok: true, status: "COMMENT", commentCount: 0, incomplete: true, stdout: "posting REVIEW_INCOMPLETE", stderr: "" }
+          : { ok: true, status: "APPROVED", commentCount: 0, incomplete: false, stdout: "", stderr: "" };
+      },
+    } as unknown as Partial<ReviewGateway>);
+    await coord(web, gateway).fromApproveMessage({
+      channelId: "C1", threadTs: "1.1", userId: "U1",
+      text: ":a: https://github.com/onead/OnePixel/pull/12",
+    });
+    assert.equal(calls, 2, "an incomplete first review must trigger exactly one retry");
+    const allTexts = [...web.posted, ...web.updated].map((m) => m.text ?? "");
+    assert.ok(allTexts.some((t) => /已 approve/.test(t)), "the recovered (approved) outcome must be delivered");
+  });
+
+  it(":a: still REVIEW_INCOMPLETE after the retry → honest '未完成' message, and the claim is released so a same-commit :a: re-runs", async () => {
+    const web = new FakeWebClient();
+    let calls = 0;
+    const gateway = gw({
+      runMraReview: async () => {
+        calls++;
+        return { ok: true, status: "COMMENT", commentCount: 0, incomplete: true, stdout: "posting REVIEW_INCOMPLETE", stderr: "" };
+      },
+    } as unknown as Partial<ReviewGateway>);
+    const c = coord(web, gateway);
+    await c.fromApproveMessage({
+      channelId: "C1", threadTs: "1.1", userId: "U1",
+      text: ":a: https://github.com/onead/OnePixel/pull/12",
+    });
+    assert.equal(calls, 2, "one retry, then give up");
+    const allTexts = [...web.posted, ...web.updated].map((m) => m.text ?? "");
+    assert.ok(allTexts.some((t) => /未完成|REVIEW_INCOMPLETE/.test(t)), "must honestly report the review did not complete");
+    assert.ok(!allTexts.some((t) => /確認是否已 approve/.test(t)), "must NOT emit the misleading ambiguous approve message");
+    // The incomplete review released (did NOT finalize) the per-commit claim, so a
+    // second :a: on the SAME commit re-runs mra rather than being rejected as
+    // "already reviewed" — otherwise the "請重試" advice is a dead end.
+    calls = 0;
+    await c.fromApproveMessage({
+      channelId: "C1", threadTs: "1.2", userId: "U1",
+      text: ":a: https://github.com/onead/OnePixel/pull/12",
+    });
+    assert.ok(calls >= 1, "same-commit retry must actually re-run mra (claim released, not finalized)");
+  });
+});
+
 describe("review/approve result text (pure)", () => {
   const ref = { owner: "onead", repo: "OnePixel", number: 12, url: "https://x/pull/12" } as never;
   it("reviewResultText always reports the posted status/count", () => {
@@ -595,6 +646,19 @@ describe("review/approve result text (pure)", () => {
     const t = approveResultText("onead/OnePixel", ref, { status: undefined, commentCount: 0 } as never);
     assert.doesNotMatch(t, /發現重大問題/);
     assert.match(t, /確認是否已 approve|未回報 approve/);
+  });
+  it("approveResultText: REVIEW_INCOMPLETE → honest 未完成/未 approve/重試, NOT the ambiguous '確認是否已 approve'", () => {
+    // status reads COMMENT on the incomplete path — without the incomplete flag this
+    // would fall through to the misleading "請至 PR 確認是否已 approve" (the live bug).
+    const t = approveResultText("onead/OnePixel", ref, { status: "COMMENT", commentCount: 0, incomplete: true } as never);
+    assert.match(t, /未完成|REVIEW_INCOMPLETE/);
+    assert.match(t, /未 approve/);
+    assert.match(t, /重試|手動 review/);
+    assert.doesNotMatch(t, /確認是否已 approve/);
+  });
+  it("reviewResultText: REVIEW_INCOMPLETE → honest 未完成 note, not a plain '已貼 review'", () => {
+    const t = reviewResultText("onead/OnePixel", ref, { status: "COMMENT", commentCount: 0, incomplete: true } as never);
+    assert.match(t, /未完成|REVIEW_INCOMPLETE/);
   });
 });
 

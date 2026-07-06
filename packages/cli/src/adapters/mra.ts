@@ -535,6 +535,8 @@ export interface MraReviewResult {
   ok: boolean;
   status?: string;
   commentCount?: number;
+  /** True when mra posted a neutral REVIEW_INCOMPLETE placeholder (see parseReviewStdout). */
+  incomplete?: boolean;
   stdout: string;
   stderr: string;
   reason?: string;
@@ -585,12 +587,22 @@ export function buildReviewArgv(
 export function parseReviewStdout(stdout: string): {
   status?: string;
   commentCount?: number;
+  incomplete: boolean;
 } {
   const status = [...stdout.matchAll(/status:\s*([A-Z_]+)/g)].at(-1)?.[1];
   const cc = [...stdout.matchAll(/\((\d+)\s+comments?\)/g)].at(-1)?.[1];
+  // REVIEW_INCOMPLETE: mra's single-pass claude emitted no completion sentinel /
+  // an empty / unparseable response, so mra EXITS 0 but posts a neutral placeholder
+  // review whose GitHub event is COMMENT (review.sh:516 "posting REVIEW_INCOMPLETE";
+  // review-verdict.sh "⚠️ REVIEW_INCOMPLETE — … This is NOT an approval; re-run or
+  // review manually."). The `status:` line therefore reads COMMENT and the token is
+  // the ONLY honest signal the review never actually evaluated the PR. Both emissions
+  // are mra-authored progress lines (not diff echo), so a plain token match is safe.
+  const incomplete = /REVIEW_INCOMPLETE/.test(stdout);
   return {
     status,
     commentCount: cc !== undefined ? Number(cc) : undefined,
+    incomplete,
   };
 }
 
