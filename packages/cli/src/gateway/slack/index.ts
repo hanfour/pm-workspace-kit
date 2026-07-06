@@ -1022,6 +1022,13 @@ export class SlackAdapter {
     const reactorUserId = event.user;
     if (!channelId || !messageTs || !reactorUserId) return;
 
+    // Blocklist parity with the message / @-mention / slash paths: a blocklisted
+    // user must not drive ANY reaction side-effect — :cr: review, :a: GitHub
+    // approve, 📚 atom save, or ticket. The typed paths all gate on blocklist;
+    // the reaction path previously did not, letting a banned user still trigger
+    // the most privileged action (a real PR approve) with a single emoji.
+    if (this.config.blocklist.includes(reactorUserId)) return;
+
     // :cr: → PR review. Unlike approval/ticket reactions, this lands on a
     // USER's message (the PR-request post), so it is handled BEFORE the
     // bot-message guard (which only admits reactions on the bot's own messages).

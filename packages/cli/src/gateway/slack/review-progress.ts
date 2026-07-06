@@ -19,7 +19,19 @@ export const PHASE_LABEL: Record<Phase, string> = {
 export function phaseFromLine(line: string): Phase | undefined {
   if (line.includes("review posted")) return "done";
   if (line.includes("posting inline review")) return "posting";
-  if (line.includes("loaded existing PR discussion")) return "analyze";
+  // Analyze markers. `loaded existing PR discussion` is CONDITIONAL (only when the
+  // PR already has discussion), so a fresh PR would never reach analyze on that
+  // line alone. `running Claude` (single-pass, review.sh:461) is UNCONDITIONAL on
+  // stdout; the debate round markers are on stderr (usually invisible here) but
+  // matched too, in case stderr is ever merged into the progress stream.
+  if (
+    line.includes("running Claude") ||
+    line.includes("loaded existing PR discussion") ||
+    line.includes("independent analysis") ||
+    line.includes("mailbox voting") ||
+    line.includes("synthesizing review")
+  )
+    return "analyze";
   if (line.includes("PKB available") || line.includes("updating PKB")) return "pkb";
   if (line.includes("reviewing ")) return "prepare";
   return undefined;
@@ -42,6 +54,16 @@ export function renderBar(pct: number, phaseLabel: string, headline: string): st
 }
 
 const TICK_MS = 5000;
+/**
+ * How long a setup phase (prepare/pkb) may sit before we assume mra is actually
+ * analyzing and advance the bar ourselves. mra's debate analysis markers go to
+ * stderr (invisible to this stdout stream) and a fresh PR emits no PKB/discussion
+ * line, so without this the bar would freeze at 5–20% for the whole analyze.
+ * prepare→pkb→running-Claude normally happens within a couple of seconds (the
+ * heavy PKB *build* runs as a separate step before the review), so 20s of no
+ * transition reliably means "analyzing".
+ */
+const SETUP_BUDGET_MS = 20_000;
 
 interface ProgressDeps {
   web: Pick<WebClient, "chat">;
@@ -52,6 +74,8 @@ interface ProgressDeps {
   now?: () => number;
   setTimer?: (fn: () => void, ms: number) => ReturnType<typeof setInterval>;
   clearTimer?: (h: ReturnType<typeof setInterval>) => void;
+  /** Log sink for best-effort update failures (so a lost update is debuggable). */
+  onLog?: (m: string) => void;
 }
 
 export class ReviewProgress {
@@ -59,6 +83,9 @@ export class ReviewProgress {
   private phaseStart: number;
   private lastRender = "";
   private timer?: ReturnType<typeof setInterval>;
+  private finished = false;
+  /** Serializes all chat.update calls so a stale tick can't race finish(). */
+  private chain: Promise<void> = Promise.resolve();
   private readonly now: () => number;
   private readonly clearTimer: (h: ReturnType<typeof setInterval>) => void;
 
@@ -71,6 +98,7 @@ export class ReviewProgress {
   }
 
   onLine(line: string): void {
+    if (this.finished) return;
     const next = phaseFromLine(line);
     if (next && next !== this.phase) {
       this.phase = next;
@@ -79,26 +107,57 @@ export class ReviewProgress {
     }
   }
 
+  /**
+   * mra's analysis often produces no stdout phase marker (debate markers go to
+   * stderr; a fresh PR has no PKB/discussion line). Once a setup phase overruns
+   * the budget, treat it as analyze so the time-creep engages instead of freezing.
+   */
+  private maybeAutoAdvance(): void {
+    if (
+      (this.phase === "prepare" || this.phase === "pkb") &&
+      this.now() - this.phaseStart > SETUP_BUDGET_MS
+    ) {
+      this.phase = "analyze";
+      this.phaseStart = this.now();
+    }
+  }
+
+  /**
+   * Enqueue a chat.update on the serialized chain. Progress ticks (`isFinal`
+   * false) are skipped once finish() has run, so a stale in-flight tick can
+   * never overwrite the delivered result. Dedupe state is committed only on a
+   * successful update, so a transient failure re-sends the same render next tick
+   * instead of freezing the bar. Failures are logged (best-effort, non-fatal).
+   */
+  private queueUpdate(text: string, isFinal: boolean): Promise<void> {
+    this.chain = this.chain.then(async () => {
+      if (this.finished && !isFinal) return;
+      try {
+        await (this.d.web.chat.update as (args: never) => Promise<unknown>)(
+          { channel: this.d.channel, ts: this.d.ts, text } as never,
+        );
+        if (!isFinal) this.lastRender = text;
+      } catch (err) {
+        this.d.onLog?.(`review: progress update failed: ${(err as Error).message}`);
+      }
+    });
+    return this.chain;
+  }
+
   private async tick(): Promise<void> {
+    if (this.finished) return;
+    this.maybeAutoAdvance();
     if (this.phase === "done") return;
     const pct = computePct(this.phase, this.now() - this.phaseStart, this.d.strategy);
     const text = renderBar(pct, PHASE_LABEL[this.phase], this.d.headline);
     if (text === this.lastRender) return;
-    this.lastRender = text;
-    try {
-      await (this.d.web.chat.update as (args: never) => Promise<unknown>)({ channel: this.d.channel, ts: this.d.ts, text } as never);
-    } catch {
-      /* best-effort; a Slack hiccup must not break the review */
-    }
+    await this.queueUpdate(text, false);
   }
 
   async finish(finalText: string): Promise<void> {
+    this.finished = true;
     this.dispose();
-    try {
-      await (this.d.web.chat.update as (args: never) => Promise<unknown>)({ channel: this.d.channel, ts: this.d.ts, text: finalText } as never);
-    } catch {
-      /* best-effort */
-    }
+    await this.queueUpdate(finalText, true);
   }
 
   dispose(): void {

@@ -16,6 +16,18 @@ test("phaseFromLine — analyze", () => {
   );
 });
 
+test("phaseFromLine — analyze fires on the unconditional 'running Claude' line (fresh PR / standard)", () => {
+  // review.sh:461 logs this to stdout on every single-pass review, unlike the
+  // conditional 'loaded existing PR discussion' line — so a fresh PR still enters
+  // analyze instead of freezing at prepare/pkb.
+  assert.equal(phaseFromLine("[review] running Claude (sonnet)..."), "analyze");
+});
+
+test("phaseFromLine — analyze fires on debate round markers", () => {
+  assert.equal(phaseFromLine("[debate] [round 1] independent analysis — 2 agents searching codebase..."), "analyze");
+  assert.equal(phaseFromLine("[debate] [final] synthesizing review from debate results..."), "analyze");
+});
+
 test("phaseFromLine — posting", () => {
   assert.equal(
     phaseFromLine(
@@ -90,6 +102,74 @@ test("updates only when render changes; finish converges to final text", async (
   assert.equal(updates.length, n);
   await p.finish(":white_check_mark: 已 approve #547");
   assert.equal(updates[updates.length - 1], ":white_check_mark: 已 approve #547");
+});
+
+const flush = () => new Promise((r) => setImmediate(r));
+
+test("auto-advances prepare→analyze after the setup budget (fresh PR: no PKB/discussion, debate markers on stderr) (M4)", async () => {
+  let clock = 0;
+  const timers: Array<() => void> = [];
+  const { web, updates } = fakeWeb();
+  const p = new ReviewProgress({
+    web: web as any, channel: "C", ts: "1", strategy: "standard", headline: ":mag: review #7",
+    now: () => clock,
+    setTimer: (fn: () => void) => { timers.push(fn); return 1 as any; },
+    clearTimer: () => {},
+  });
+  // No onLine marker ever arrives; time passes past the setup budget while in prepare.
+  clock = 25_000;
+  timers[0]();
+  await flush();
+  assert.ok(
+    updates.some((u) => u.includes("分析中")),
+    `bar must advance to analyze after the setup budget, got: ${JSON.stringify(updates)}`,
+  );
+  p.dispose();
+});
+
+test("a failed chat.update does not commit dedupe state — an identical render retries, and the failure is logged (M6a/M6c)", async () => {
+  let clock = 0, calls = 0;
+  const timers: Array<() => void> = [];
+  const logs: string[] = [];
+  const web = { chat: { update: async () => { calls++; throw new Error("slack hiccup"); } } };
+  const p = new ReviewProgress({
+    web: web as any, channel: "C", ts: "1", strategy: "standard", headline: "h",
+    now: () => clock,
+    setTimer: (fn: () => void) => { timers.push(fn); return 1 as any; },
+    clearTimer: () => {},
+    onLog: (m: string) => logs.push(m),
+  });
+  p.onLine("[review] running Claude (sonnet)..."); // → analyze, triggers a tick that fails
+  await flush();
+  const after1 = calls;
+  timers[0](); // same clock + same render → must RETRY because the prior update failed
+  await flush();
+  assert.ok(calls > after1, "an identical render must retry after a failed update (dedupe not committed on failure)");
+  assert.ok(logs.some((l) => /progress update failed/.test(l)), "a failed progress update must be logged");
+  p.dispose();
+});
+
+test("a stale progress tick fired after finish() does not overwrite the final result (M6b)", async () => {
+  let clock = 0;
+  const timers: Array<() => void> = [];
+  const { web, updates } = fakeWeb();
+  const p = new ReviewProgress({
+    web: web as any, channel: "C", ts: "1", strategy: "standard", headline: ":mag: review #7",
+    now: () => clock,
+    setTimer: (fn: () => void) => { timers.push(fn); return 1 as any; },
+    clearTimer: () => {},
+  });
+  p.onLine("[review] running Claude (sonnet)..."); // analyze
+  clock = 30_000;
+  await p.finish(":white_check_mark: 已 approve #7");
+  timers[0](); // a stale interval tick fires AFTER finish
+  await flush();
+  assert.equal(
+    updates[updates.length - 1],
+    ":white_check_mark: 已 approve #7",
+    "the final result must remain the last update; a stale tick must not clobber it",
+  );
+  p.dispose();
 });
 
 test("dispose clears the timer", () => {

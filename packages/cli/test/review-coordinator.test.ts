@@ -5,7 +5,7 @@ import * as os from "node:os";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { FakeWebClient } from "./harness/slack-fakes";
-import { ReviewCoordinator, isReviewRequest, isRetryRequest, isApproveRequest, type ReviewGateway } from "../src/gateway/slack/review";
+import { ReviewCoordinator, isReviewRequest, isRetryRequest, isApproveRequest, reviewResultText, approveResultText, type ReviewGateway } from "../src/gateway/slack/review";
 import { resolveReviewConfig } from "../src/gateway/config";
 
 const ORIG_HOME = process.env.HOME; // gatewayDir() is HOME-based; isolate via HOME (not PMK_HOME)
@@ -455,6 +455,27 @@ describe("ReviewCoordinator.retryInThread", () => {
       "retry in a non-review thread must nudge, not silently no-op",
     );
   });
+
+  // M5: a drained :a: approve posts "回 retry 即可重跑", but the old retry path
+  // only recognised :cr: roots → replied "沒有可重試" and silently downgraded the
+  // user's approve intent. Retry of an :a: thread must re-run the APPROVE flow.
+  it("re-runs the APPROVE flow when the thread root is an :a: request (not the nudge)", async () => {
+    const web = new FakeWebClient();
+    web.conversationsHistoryResponse = {
+      ok: true,
+      messages: [{ text: ":a: <https://github.com/onead/OnePixel/pull/7|#7>" }],
+    };
+    let approveArgs: Record<string, unknown> | undefined;
+    await coord(web, gw({
+      runMraReview: async (a: Record<string, unknown>) => {
+        approveArgs = a;
+        return { ok: true, status: "APPROVED", commentCount: 0, stdout: "", stderr: "" };
+      },
+    } as unknown as Partial<ReviewGateway>)).retryInThread({ channelId: "C1", threadTs: "1.1", userId: "U1" });
+    assert.equal(approveArgs?.["approveIfNoHigh"], true, "retry of an :a: thread must re-run the approve flow (approveIfNoHigh=true)");
+    const allTexts = [...web.posted, ...web.updated].map((m) => m.text ?? "");
+    assert.ok(!allTexts.some((t) => /沒有可重試/.test(t)), "must NOT post the nudge for an :a: thread root");
+  });
 });
 
 describe("ReviewCoordinator.fromApproveMessage (:a: approve flow)", () => {
@@ -495,6 +516,52 @@ describe("ReviewCoordinator.fromApproveMessage (:a: approve flow)", () => {
     });
     const allTexts = [...web.posted, ...web.updated].map((m) => m.text ?? "");
     assert.ok(allTexts.some((t) => /未 approve/.test(t)), "CHANGES_REQUESTED result must post '未 approve'");
+  });
+
+  // M1: on mra's batch-fallback path there is no `status:` line → status is
+  // undefined. The old code computed approved=false and claimed "未 approve —
+  // 發現重大問題", which is a false statement on both axes (GitHub may actually
+  // have approved). The honest result points the user to GitHub instead.
+  it("undefined-status (batch-fallback) path: does NOT falsely claim '發現重大問題'; points to GitHub", async () => {
+    const web = new FakeWebClient();
+    const gateway = gw({
+      runMraReview: async () => ({
+        ok: true, status: undefined, commentCount: 0, stdout: "", stderr: "",
+      }),
+    } as unknown as Partial<ReviewGateway>);
+    await coord(web, gateway).fromApproveMessage({
+      channelId: "C1",
+      threadTs: "1.1",
+      userId: "U1",
+      text: ":a: https://github.com/onead/OnePixel/pull/12",
+    });
+    const allTexts = [...web.posted, ...web.updated].map((m) => m.text ?? "");
+    assert.ok(
+      allTexts.some((t) => /確認是否已 approve|未回報 approve/.test(t)),
+      "undefined status must produce an informational GitHub-check message",
+    );
+    assert.ok(
+      !allTexts.some((t) => /發現重大問題/.test(t)),
+      "must NOT claim 發現重大問題 when the approve verdict is unknown",
+    );
+  });
+});
+
+describe("review/approve result text (pure)", () => {
+  const ref = { owner: "onead", repo: "OnePixel", number: 12, url: "https://x/pull/12" } as never;
+  it("reviewResultText always reports the posted status/count", () => {
+    assert.match(reviewResultText("onead/OnePixel", ref, { status: "COMMENT", commentCount: 3 } as never), /已對 .*貼 review.*COMMENT.*3/);
+  });
+  it("approveResultText: APPROVED → 已 approve", () => {
+    assert.match(approveResultText("onead/OnePixel", ref, { status: "APPROVED", commentCount: 1 } as never), /已 approve/);
+  });
+  it("approveResultText: CHANGES_REQUESTED → 未 approve / 已請求修改", () => {
+    assert.match(approveResultText("onead/OnePixel", ref, { status: "CHANGES_REQUESTED", commentCount: 2 } as never), /未 approve.*已請求修改/);
+  });
+  it("approveResultText: undefined status → informational, no false '發現重大問題'", () => {
+    const t = approveResultText("onead/OnePixel", ref, { status: undefined, commentCount: 0 } as never);
+    assert.doesNotMatch(t, /發現重大問題/);
+    assert.match(t, /確認是否已 approve|未回報 approve/);
   });
 });
 
