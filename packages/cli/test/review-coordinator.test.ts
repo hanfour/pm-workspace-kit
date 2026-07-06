@@ -5,7 +5,7 @@ import * as os from "node:os";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { FakeWebClient } from "./harness/slack-fakes";
-import { ReviewCoordinator, isReviewRequest, isRetryRequest, isApproveRequest, reviewResultText, approveResultText, type ReviewGateway } from "../src/gateway/slack/review";
+import { ReviewCoordinator, isReviewRequest, isRetryRequest, isApproveRequest, reviewResultText, approveResultText, describeMraFailure, type ReviewGateway } from "../src/gateway/slack/review";
 import { resolveReviewConfig } from "../src/gateway/config";
 
 const ORIG_HOME = process.env.HOME; // gatewayDir() is HOME-based; isolate via HOME (not PMK_HOME)
@@ -30,13 +30,14 @@ function gw(over: Partial<ReviewGateway> = {}): ReviewGateway {
   } as unknown as ReviewGateway;
 }
 
-function coord(web: FakeWebClient, gateway: ReviewGateway) {
+function coord(web: FakeWebClient, gateway: ReviewGateway, onLog: (m: string) => void = () => {}) {
   const config = {
     version: 1 as const, admins: [], blocklist: [], audience: {} as never,
     escalation: {} as never, slack: {}, mraWorkspace: path.join(tmp, "ws"),
     review: { enabled: true, expectedGhUser: "expected-bot" },
   } as never;
-  return new ReviewCoordinator({ web: web as never, config, onLog: () => {}, gateway });
+  // sleep is a no-op in tests so the transient-failure retry backoff doesn't wait.
+  return new ReviewCoordinator({ web: web as never, config, onLog, gateway, sleep: async () => {} });
 }
 
 describe("ReviewCoordinator.fromReaction", () => {
@@ -562,6 +563,78 @@ describe("review/approve result text (pure)", () => {
     const t = approveResultText("onead/OnePixel", ref, { status: undefined, commentCount: 0 } as never);
     assert.doesNotMatch(t, /發現重大問題/);
     assert.match(t, /確認是否已 approve|未回報 approve/);
+  });
+});
+
+describe("describeMraFailure (pure)", () => {
+  it("uses the last non-empty stderr line (ANSI stripped, capped) as the detail", () => {
+    const { detail } = describeMraFailure({
+      reason: "mra exited with code=1",
+      stderr: "some warning\n\u001b[0;31mfatal: could not read Username\u001b[0m",
+      stdout: "",
+    } as never);
+    assert.match(detail, /fatal: could not read Username/);
+    assert.ok(!detail.includes("\u001b"), "ANSI escape bytes must be stripped");
+    assert.ok(!/\[0;3\dm/.test(detail), "ANSI colour codes must be stripped");
+  });
+  it("falls back to the last stdout phase when stderr is empty (mra swallowed claude's error)", () => {
+    const { detail, logDump } = describeMraFailure({
+      reason: "mra exited with code=1",
+      stderr: "",
+      stdout: "[1;37m[review] reviewing erp[0m\n[1;37m[review] running Claude (sonnet)...[0m",
+    } as never);
+    assert.match(detail, /最後階段.*running Claude/);
+    assert.match(logDump, /swallow|2>\/dev\/null|empty/i);
+  });
+});
+
+describe("ReviewCoordinator transient-failure retry", () => {
+  it("retries once after a transient mra failure, then posts the success result", async () => {
+    const web = new FakeWebClient();
+    let calls = 0;
+    const gateway = gw({
+      runMraReview: async () => {
+        calls++;
+        if (calls === 1) {
+          return { ok: false, reason: "mra exited with code=1", stdout: "reviewing\nrunning Claude", stderr: "" };
+        }
+        return { ok: true, status: "APPROVED", commentCount: 0, stdout: "", stderr: "" };
+      },
+    } as unknown as Partial<ReviewGateway>);
+    await coord(web, gateway).fromApproveMessage({
+      channelId: "C1", threadTs: "1.1", userId: "U1",
+      text: ":a: https://github.com/onead/OnePixel/pull/12",
+    });
+    assert.equal(calls, 2, "a transient mra failure must trigger exactly one retry");
+    const allTexts = [...web.posted, ...web.updated].map((m) => m.text ?? "");
+    assert.ok(allTexts.some((t) => /已 approve/.test(t)), "the retry's success result must be delivered");
+    assert.ok(!allTexts.some((t) => /失敗/.test(t)), "no failure message when the retry succeeds");
+  });
+
+  it("after the retry also fails: posts an enriched failure (reason + detail) and logs a dump", async () => {
+    const web = new FakeWebClient();
+    const logs: string[] = [];
+    let calls = 0;
+    const gateway = gw({
+      runMraReview: async () => {
+        calls++;
+        return {
+          ok: false, reason: "mra exited with code=1",
+          stdout: "[1;37m[review] running Claude (sonnet)...[0m", stderr: "",
+        };
+      },
+    } as unknown as Partial<ReviewGateway>);
+    await coord(web, gateway, (m) => logs.push(m)).fromApproveMessage({
+      channelId: "C1", threadTs: "1.1", userId: "U1",
+      text: ":a: https://github.com/onead/OnePixel/pull/12",
+    });
+    assert.equal(calls, 2, "exactly one retry before giving up");
+    const allTexts = [...web.posted, ...web.updated].map((m) => m.text ?? "");
+    const fail = allTexts.find((t) => /失敗/.test(t));
+    assert.ok(fail, "a failure message must be posted");
+    assert.match(fail!, /mra exited with code=1/, "the reason is surfaced");
+    assert.match(fail!, /最後階段|running Claude/, "the last phase is surfaced so 'code=1' isn't a dead end");
+    assert.ok(logs.some((l) => /FAILED/.test(l)), "a full failure dump is logged for the operator");
   });
 });
 

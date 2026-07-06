@@ -115,6 +115,50 @@ export function approveResultText(slug: string, ref: PrRef, res: ReviewOutcome):
   return `:information_source: 已完成 ${slug}#${ref.number} review（GitHub 未回報 approve 狀態，${cc} 則；請至 PR 確認是否已 approve）：${ref.url}`;
 }
 
+/** Backoff before a single transient-failure retry of the mra review call. */
+const MRA_RETRY_BACKOFF_MS = 4000;
+
+/** Last non-empty line of `s`, with ANSI colour escapes stripped and trimmed. */
+function lastNonEmptyLine(s?: string): string | undefined {
+  if (!s) return undefined;
+  const lines = s
+    .split("\n")
+    .map((l) => l.replace(/\[[0-9;]*m/g, "").trim())
+    .filter(Boolean);
+  return lines[lines.length - 1];
+}
+
+/**
+ * Turn an mra failure into something actionable. mra runs `claude` under
+ * `set -euo pipefail` with `2>/dev/null`, so a non-zero claude exit becomes a
+ * silent `mra exited with code=1` with no stderr — `detail` then falls back to
+ * the last stdout phase (e.g. "running Claude") so the Slack message says WHERE
+ * it died; `logDump` records the full picture for the operator's gateway log.
+ */
+export function describeMraFailure(res: {
+  reason?: string;
+  stderr?: string;
+  stdout?: string;
+}): { detail: string; logDump: string } {
+  const errTail = lastNonEmptyLine(res.stderr);
+  const outTail = lastNonEmptyLine(res.stdout);
+  const detail = errTail
+    ? errTail.slice(0, 200)
+    : outTail
+      ? `最後階段：${outTail.slice(0, 140)}`
+      : "";
+  const logDump = [
+    `reason=${res.reason ?? "unknown"}`,
+    errTail
+      ? `stderr=${errTail}`
+      : "stderr=(empty — mra likely swallowed claude's error via 2>/dev/null)",
+    outTail ? `stdout(last)=${outTail}` : "",
+  ]
+    .filter(Boolean)
+    .join(" | ");
+  return { detail, logDump };
+}
+
 /**
  * True when a message is a bare retry command (`retry` / `重試` / `重跑`), used
  * inside a review-result thread to re-run that thread's PR review. The bot
@@ -131,6 +175,8 @@ export interface ReviewCoordinatorOptions {
   config: GatewayConfig;
   onLog: (m: string) => void;
   gateway: ReviewGateway;
+  /** Injectable sleep for the transient-failure retry backoff (tests pass a no-op). */
+  sleep?: (ms: number) => Promise<void>;
 }
 
 /** A review currently running detached — tracked so shutdown can drain it (A). */
@@ -180,6 +226,13 @@ export class ReviewCoordinator {
     }
     this.inFlight.clear();
     return entries.length;
+  }
+
+  /** Wait before a single retry, unless the run was aborted (shutdown drain). */
+  private async backoff(ms: number, signal: AbortSignal): Promise<void> {
+    if (signal.aborted) return;
+    const sleep = this.opts.sleep ?? ((m: number) => new Promise<void>((r) => setTimeout(r, m)));
+    await sleep(ms);
   }
 
   private async reply(channel: string, threadTs: string, text: string): Promise<void> {
@@ -615,26 +668,48 @@ export class ReviewCoordinator {
       }
 
       const t0 = Date.now();
-      const res = await gateway.runMraReview(
-        {
-          workspace: ctx.reviewWorkspace,
-          project,
-          pr: ref.number,
-          strategy,
-          cwd: ctx.reviewWorkspace,
-          ghToken: ctx.token, // pin mra's POST identity (GH_TOKEN), stable vs active gh
-          signal: controller.signal, // A: shutdown aborts → SIGTERM the review child
-          // :a: is the explicit per-invocation opt-in to approve; :cr: honors the
-          // config gate. approveIfNoHigh only makes sense on the approve path.
-          allowApprove: isApprove ? true : ctx.review.allowApprove,
-          ...(isApprove ? { approveIfNoHigh: true } : {}),
-        },
-        { onProgress: (line) => { onLog(`mra ${verb} ${slug}#${ref.number}: ${line}`); progress?.onLine(line); } },
-      );
+      const mraArgs = {
+        workspace: ctx.reviewWorkspace,
+        project,
+        pr: ref.number,
+        strategy,
+        cwd: ctx.reviewWorkspace,
+        ghToken: ctx.token, // pin mra's POST identity (GH_TOKEN), stable vs active gh
+        signal: controller.signal, // A: shutdown aborts → SIGTERM the review child
+        // :a: is the explicit per-invocation opt-in to approve; :cr: honors the
+        // config gate. approveIfNoHigh only makes sense on the approve path.
+        allowApprove: isApprove ? true : ctx.review.allowApprove,
+        ...(isApprove ? { approveIfNoHigh: true } : {}),
+      };
+      const onProgress = (line: string) => {
+        onLog(`mra ${verb} ${slug}#${ref.number}: ${line}`);
+        progress?.onLine(line);
+      };
+      let res = await gateway.runMraReview(mraArgs, { onProgress });
+      let retried = false;
+      // Retry once on a transient failure. mra runs `claude` under set -e with
+      // 2>/dev/null, so an intermittent non-zero claude exit (rate-limit /
+      // overload under concurrent load) surfaces as a bare `exited with code=1`
+      // and kills the whole review — a single-pass approve has no internal retry,
+      // so one blip = total failure. A short backoff + one re-run recovers it.
+      // Skip the retry if the run was aborted (shutdown drain) — that's not
+      // transient, and the clone is about to be torn down.
+      if (!res.ok && !controller.signal.aborted) {
+        onLog(
+          `mra ${verb} ${slug}#${ref.number} 第一次失敗，${MRA_RETRY_BACKOFF_MS / 1000}s 後重試一次 — ${describeMraFailure(res).logDump}`,
+        );
+        await this.backoff(MRA_RETRY_BACKOFF_MS, controller.signal);
+        if (!controller.signal.aborted) {
+          retried = true;
+          res = await gateway.runMraReview(mraArgs, { onProgress });
+        }
+      }
       if (!res.ok) {
+        const { detail, logDump } = describeMraFailure(res);
+        onLog(`mra ${verb} ${slug}#${ref.number} FAILED${retried ? " (after retry)" : ""}: ${logDump}`);
         await skip(
           "mra-failed",
-          `:warning: PR #${ref.number} ${verb} 失敗：${res.reason ?? "unknown"}`,
+          `:warning: PR #${ref.number} ${verb} 失敗${retried ? "（已重試）" : ""}：${res.reason ?? "unknown"}${detail ? `\n> ${detail}` : ""}`,
         );
         return;
       }
