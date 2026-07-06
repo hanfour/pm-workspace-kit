@@ -27,6 +27,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
 import type { ChatMessage } from "@pmk/shared";
+import { assertSafeSegment } from "./session-store";
 
 const PLATFORM_SLACK = "slack";
 
@@ -35,8 +36,11 @@ function gatewaySlackChannelsDir(): string {
 }
 
 function channelDir(channelId: string, threadTs?: string): string {
-  const base = path.join(gatewaySlackChannelsDir(), channelId);
-  return threadTs ? path.join(base, "threads", threadTs) : base;
+  // channelId/threadTs originate from an external Slack payload — guard every
+  // path segment (parity with session-store / issue-candidate) so a forged event
+  // can't escape ~/.pmk/gateway/ via `/`, `..`, or a control char.
+  const base = path.join(gatewaySlackChannelsDir(), assertSafeSegment(channelId, "channelId"));
+  return threadTs ? path.join(base, "threads", assertSafeSegment(threadTs, "threadTs")) : base;
 }
 
 function channelLogPath(channelId: string, threadTs?: string): string {

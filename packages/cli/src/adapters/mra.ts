@@ -400,6 +400,10 @@ function runMraAskOnce(
       child = spawn(binary, ["ask", args.repo, args.question], {
         cwd: args.cwd,
         stdio: ["ignore", "pipe", "pipe"],
+        // The question is LLM-generated from untrusted chat and mra runs agents
+        // over the repo, so strip secrets from the child env (mra self-auths via
+        // its claude CLI). Same guard the review path already relies on.
+        env: strippedChildEnv(),
       });
     } catch (err) {
       settle({
@@ -506,16 +510,26 @@ function runMraAskOnce(
 // mra review — write-protected, secrets-stripped subprocess
 // ---------------------------------------------------------------------------
 
-/** Keys removed from the child env before spawning `mra review`. */
-const REVIEW_SECRET_ENV_DENYLIST = [
-  "ANTHROPIC_API_KEY",
-  "GH_TOKEN",
-  "GITHUB_TOKEN",
-  "OPENAI_API_KEY",
-  "SLACK_APP_TOKEN",
-  "SLACK_BOT_TOKEN",
-  "AWS_SECRET_ACCESS_KEY",
-]; // strip secrets so an injected review prompt can't exfiltrate them
+/**
+ * Secret-shaped env var names. Any key matching this is stripped from an mra
+ * subprocess env so an injected review/ask prompt can't exfiltrate it. Broad by
+ * design — mirrors the audio ffmpeg/ffprobe strip (gateway/audio/spawn.ts) so
+ * the two paths can't drift — and crucially catches the documented `PMK_SLACK_*`
+ * production token path that an explicit name list previously missed. mra still
+ * authenticates: its `claude` CLI uses its own keychain/OAuth (not the env key),
+ * which is why the review path already runs stripped in production.
+ */
+const SECRET_ENV_RE = /(_TOKEN|_KEY|_SECRET|PASSWORD|APIKEY|ANTHROPIC|OPENAI|SLACK|GITHUB|PMK_)/i;
+
+/** A clone of `process.env` with every secret-shaped var removed. */
+export function strippedChildEnv(base: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {};
+  for (const [k, v] of Object.entries(base)) {
+    if (SECRET_ENV_RE.test(k)) continue;
+    env[k] = v;
+  }
+  return env;
+}
 
 export interface MraReviewResult {
   ok: boolean;
@@ -562,13 +576,18 @@ export function buildReviewArgv(
  * Matches:
  *   `status: CHANGES_REQUESTED`  → status field
  *   `(3 comments)`               → commentCount field
+ *
+ * Uses the LAST match of each, not the first: mra's authoritative summary lines
+ * (review.sh:842/857) are emitted at the very end, AFTER any PR diff content is
+ * echoed in progress output. A decoy `status: APPROVED` inside the reviewed diff
+ * must not spoof the outcome the gateway then reports to Slack.
  */
 export function parseReviewStdout(stdout: string): {
   status?: string;
   commentCount?: number;
 } {
-  const status = /status:\s*([A-Z_]+)/.exec(stdout)?.[1];
-  const cc = /\((\d+)\s+comments?\)/.exec(stdout)?.[1];
+  const status = [...stdout.matchAll(/status:\s*([A-Z_]+)/g)].at(-1)?.[1];
+  const cc = [...stdout.matchAll(/\((\d+)\s+comments?\)/g)].at(-1)?.[1];
   return {
     status,
     commentCount: cc !== undefined ? Number(cc) : undefined,
@@ -582,8 +601,15 @@ export function reviewEnv(
   ghToken?: string,
   opts: { allowApprove?: boolean; approveIfNoHigh?: boolean } = {},
 ): NodeJS.ProcessEnv {
-  const env: NodeJS.ProcessEnv = { ...process.env };
-  for (const k of REVIEW_SECRET_ENV_DENYLIST) delete env[k];
+  const env = strippedChildEnv();
+  // Privilege flags are derived SOLELY from `opts`/`strategy` below — never
+  // inherited. They are not secret-shaped (so the strip above leaves them), yet
+  // a stray parent-env MRA_REVIEW_ALLOW_APPROVE would silently turn an ordinary
+  // :cr: review (allowApprove: false) into a real GitHub approve. Delete them
+  // first so only the explicit intent from this call survives.
+  delete env.MRA_REVIEW_ALLOW_APPROVE;
+  delete env.MRA_REVIEW_APPROVE_IF_NO_HIGH;
+  delete env.MRA_REVIEW_PERSONAS;
   // Pin the GitHub token for mra's `gh` POST. Set AFTER the strip so it is the
   // ONLY github token in the review env; `GH_TOKEN` takes priority over the
   // host's active gh account, so the posting identity is stable regardless of
@@ -808,8 +834,8 @@ export async function runMraAnalyze(
     return { ok: false, stdout: "", stderr: "", reason: "`mra` binary not found on PATH" };
   }
   const timeoutMs = args.timeoutMs ?? 900_000; // 15 min — PKB gen runs many agents
-  const env: NodeJS.ProcessEnv = { ...process.env, MRA_WORKSPACE: args.cwd };
-  for (const k of REVIEW_SECRET_ENV_DENYLIST) delete env[k];
+  const env = strippedChildEnv();
+  env.MRA_WORKSPACE = args.cwd;
   return spawnMraCommand(
     binary,
     ["analyze", args.project],
