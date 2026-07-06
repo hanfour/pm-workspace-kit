@@ -1128,16 +1128,13 @@ describe("SlackAdapter integration: :cr: reaction routes to ReviewCoordinator", 
     );
     await h.flush();
 
-    // The coordinator acks immediately, then reaches resolveProjectByRemote →
-    // not found → posts a skip note. Both prove the gate routed :cr: through.
+    // Single PR gets no standalone ack (the progress bar is the ack); this
+    // workspace-miss path skips at resolveProjectByRemote BEFORE the progress
+    // bar, so the skip note itself proves the gate routed :cr: through.
     const posts = h.web.postsTo("C-CH");
     assert.ok(
       posts.length > 0,
-      "ReviewCoordinator should post (ack + skip note) when routed",
-    );
-    assert.ok(
-      posts.some((p) => /收到.*背景 review/.test(p.text ?? "")),
-      "an immediate ack should be posted",
+      "ReviewCoordinator should post a skip note when routed",
     );
     assert.ok(
       posts.some((p) => /略過/.test(p.text ?? "")),

@@ -280,15 +280,13 @@ describe("ReviewCoordinator allowApprove forwarding", () => {
 });
 
 describe("ReviewCoordinator immediate ack (detached UX)", () => {
-  it("posts the '收到，背景 review' ack BEFORE the slow per-PR work", async () => {
+  it("single PR: NO standalone 收到 ack — the progress bar is the ack — but it still precedes mra", async () => {
     const web = new FakeWebClient();
-    let ackedBeforeReview = false;
+    let progressBeforeReview = false;
     const gateway = gw({
       runMraReview: async () => {
-        // by the time mra runs, the ack must already be on the thread
-        ackedBeforeReview = web.posted.some((p) =>
-          /收到.*背景 review/.test(p.text ?? ""),
-        );
+        // by the time mra runs, the per-PR progress anchor is already on the thread
+        progressBeforeReview = web.posted.some((p) => /準備工作區/.test(p.text ?? ""));
         return { ok: true, status: "COMMENT", commentCount: 0, stdout: "", stderr: "" };
       },
     } as unknown as Partial<ReviewGateway>);
@@ -296,7 +294,41 @@ describe("ReviewCoordinator immediate ack (detached UX)", () => {
       channelId: "C1", threadTs: "1.1", userId: "U1",
       text: ":cr: https://github.com/onead/OnePixel/pull/12",
     });
-    assert.equal(ackedBeforeReview, true, "ack must precede the per-PR review work");
+    assert.equal(progressBeforeReview, true, "the progress bar must precede the per-PR review work");
+    assert.ok(
+      !web.posted.some((p) => /收到.*背景 review/.test(p.text ?? "")),
+      "a single PR must NOT get a separate 收到 ack (it would be dead clutter above the progress bar)",
+    );
+  });
+
+  it("multiple PRs: posts ONE summary 收到 ack before the per-PR work", async () => {
+    const web = new FakeWebClient();
+    let ackedBeforeReview = false;
+    const gateway = gw({
+      runMraReview: async () => {
+        ackedBeforeReview = web.posted.some((p) => /收到.*背景 review 2 個 PR/.test(p.text ?? ""));
+        return { ok: true, status: "COMMENT", commentCount: 0, stdout: "", stderr: "" };
+      },
+    } as unknown as Partial<ReviewGateway>);
+    await coord(web, gateway).fromMessage({
+      channelId: "C1", threadTs: "1.1", userId: "U1",
+      text: ":cr: https://github.com/onead/OnePixel/pull/12 https://github.com/onead/OnePixel/pull/13",
+    });
+    assert.equal(ackedBeforeReview, true, "the summary ack must precede the per-PR work for N>1 PRs");
+  });
+
+  it("single :a: approve: NO standalone :lock: ack (progress bar covers it)", async () => {
+    const web = new FakeWebClient();
+    await coord(web, gw({
+      runMraReview: async () => ({ ok: true, status: "APPROVED", commentCount: 0, stdout: "", stderr: "" }),
+    } as unknown as Partial<ReviewGateway>)).fromApproveMessage({
+      channelId: "C1", threadTs: "1.1", userId: "U1",
+      text: ":a: https://github.com/onead/OnePixel/pull/12",
+    });
+    assert.ok(
+      !web.posted.some((p) => /先快速 review 再決定是否 approve/.test(p.text ?? "")),
+      "a single :a: must not post the standalone 收到 ack",
+    );
   });
 
   it("no ack when there are no PR refs (silent, no spurious post)", async () => {

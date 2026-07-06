@@ -355,12 +355,16 @@ export class ReviewCoordinator {
       prCount: refs.length,
     });
 
-    // Immediate ack before the slow per-PR work.
-    await this.reply(
-      channelId,
-      threadTs,
-      `:lock: 收到，先快速 review 再決定是否 approve…（完成後回報）`,
-    );
+    // Multi-PR summary ack only. For a single PR the per-PR progress bar (posted
+    // in runOne) IS the ack, so a separate "收到" message would just leave dead
+    // clutter above the morphing progress message.
+    if (refs.length > 1) {
+      await this.reply(
+        channelId,
+        threadTs,
+        `:lock: 收到，先快速 review ${refs.length} 個 PR 再決定是否 approve…（完成後逐一回報）`,
+      );
+    }
 
     const reviewWorkspace = reviewWorkspaceDir();
     gateway.ensureReviewWorkspaceMeta(workspace, reviewWorkspace);
@@ -448,13 +452,16 @@ export class ReviewCoordinator {
       prCount: refs.length,
     });
 
-    // Immediate ack — the review runs detached (minutes), so without this the
-    // user gets no feedback until the first PR finishes and may re-send.
-    await this.reply(
-      channelId,
-      threadTs,
-      `:mag: 收到，背景 review ${refs.length} 個 PR…（完成後逐一回報；你可以繼續聊或再發）`,
-    );
+    // Multi-PR summary ack only — a single PR's own progress bar (runOne) is its
+    // ack. The review runs detached (minutes); for N>1 PRs this one message tells
+    // the user all N were received before the per-PR bars start arriving.
+    if (refs.length > 1) {
+      await this.reply(
+        channelId,
+        threadTs,
+        `:mag: 收到，背景 review ${refs.length} 個 PR…（完成後逐一回報；你可以繼續聊或再發）`,
+      );
+    }
 
     const reviewWorkspace = reviewWorkspaceDir(); // ~/.pmk/review-workspace
     gateway.ensureReviewWorkspaceMeta(workspace, reviewWorkspace);
