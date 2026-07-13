@@ -27,6 +27,7 @@ describe("review config parse", () => {
       expectedGhUser: "HanfourHuangOneAD",
       strategy: "debate",
       allowPublicRepos: false,
+      providerMode: "claude",
     });
     // and it resolves to an enabled, debate-strategy config
     const resolved = resolveReviewConfig(c.review);

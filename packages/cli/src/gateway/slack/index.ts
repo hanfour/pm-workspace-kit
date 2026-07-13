@@ -55,7 +55,7 @@ import {
   runMraAsk as runMraAskImpl,
 } from "../../adapters/mra";
 import { IssueCoordinator, realGithubGateway, type GithubGateway } from "./issue";
-import { ReviewCoordinator, realReviewGateway, isReviewRequest, isRetryRequest, isApproveRequest } from "./review";
+import { ReviewCoordinator, realReviewGateway, isReviewRequest, isRetryRequest, isRerunRequest, isApproveRequest, isApproveConfirmationRequest } from "./review";
 import { AudioCoordinator, isAudioMessage } from "../audio/coordinator";
 import { needsConsentNotice } from "../audio/consent";
 import { pickAudience } from "../config";
@@ -317,6 +317,7 @@ export class SlackAdapter {
       config: this.config,
       onLog: this.onLog,
       gateway: realReviewGateway,
+      strictLiveConfigReload: true,
     });
     this.audio = new AudioCoordinator({
       web: this.web,
@@ -692,7 +693,7 @@ export class SlackAdapter {
     // mandatory so a detached rejection can't crash the process.
     // `retry` in a review-result thread → re-run that thread's PR review
     // (re-fetches the thread root `:cr:` message). Detached + .catch like below.
-    if (this.review.isEnabled() && isApproveRequest(text)) {
+    if (isApproveRequest(text) && this.review.isEnabled()) {
       void this.review
         .fromApproveMessage({ channelId, threadTs: replyThreadTs, userId, text })
         .catch((err) =>
@@ -700,7 +701,7 @@ export class SlackAdapter {
         );
       return;
     }
-    if (this.review.isEnabled() && isReviewRequest(text)) {
+    if (isReviewRequest(text) && this.review.isEnabled()) {
       void this.review
         .fromMessage({ channelId, threadTs: replyThreadTs, userId, text })
         .catch((err) =>
@@ -713,6 +714,14 @@ export class SlackAdapter {
     // review. audio.retryInThread returns false (and posts nothing) for
     // non-audio threads; the caller then falls through to review. Nothing is
     // silently swallowed regardless of which coordinators are enabled.
+    if (isRerunRequest(text)) {
+      if (this.review.isEnabled()) {
+        await this.review.rerunInThread({ channelId, threadTs: replyThreadTs, userId }).catch((err) =>
+          this.onLog(`review: mention rerun failed: ${(err as Error).message}`),
+        );
+      }
+      return;
+    }
     if (isRetryRequest(text)) {
       const botToken = this.config.slack.botToken ?? "";
       const tier = pickAudience(this.config, userId, channelId);
@@ -729,6 +738,24 @@ export class SlackAdapter {
         // of silently dropping the bare retry.
         await this.web.chat
           .postMessage({ channel: channelId, thread_ts: replyThreadTs, text: "這個 thread 沒有可重試的音訊或 PR review。" })
+          .catch(() => {});
+      }
+      return;
+    }
+
+    // `approve` in a review thread is the explicit authorization step offered
+    // by a clean `:cr:` result. It runs the approve path; `:cr:` itself never
+    // submits GitHub APPROVE.
+    if (isApproveConfirmationRequest(text)) {
+      if (this.review.isEnabled()) {
+        await this.review
+          .confirmApproveInThread({ channelId, threadTs: replyThreadTs, userId })
+          .catch((err) =>
+            this.onLog(`review: mention approve confirmation failed: ${(err as Error).message}`),
+          );
+      } else {
+        await this.web.chat
+          .postMessage({ channel: channelId, thread_ts: replyThreadTs, text: "PR review 功能未啟用，無法執行 approve。" })
           .catch(() => {});
       }
       return;
@@ -848,7 +875,7 @@ export class SlackAdapter {
     // immediately and posts each PR's result when done. MUST .catch — a
     // detached rejection would crash the process (unhandled rejection).
     // `retry` in a review-result thread → re-run that thread's PR review.
-    if (this.review.isEnabled() && isApproveRequest(text)) {
+    if (isApproveRequest(text) && this.review.isEnabled()) {
       void this.review
         .fromApproveMessage({ channelId, threadTs, userId, text })
         .catch((err) =>
@@ -856,7 +883,7 @@ export class SlackAdapter {
         );
       return;
     }
-    if (this.review.isEnabled() && isReviewRequest(text)) {
+    if (isReviewRequest(text) && this.review.isEnabled()) {
       void this.review
         .fromMessage({ channelId, threadTs, userId, text })
         .catch((err) =>
@@ -869,6 +896,14 @@ export class SlackAdapter {
     // review. audio.retryInThread returns false (and posts nothing) for
     // non-audio threads; the caller then falls through to review. Nothing is
     // silently swallowed regardless of which coordinators are enabled.
+    if (isRerunRequest(text)) {
+      if (this.review.isEnabled()) {
+        await this.review.rerunInThread({ channelId, threadTs, userId }).catch((err) =>
+          this.onLog(`review: DM rerun failed: ${(err as Error).message}`),
+        );
+      }
+      return;
+    }
     if (isRetryRequest(text)) {
       const botToken = this.config.slack.botToken ?? "";
       const tier = pickAudience(this.config, userId);
@@ -885,6 +920,24 @@ export class SlackAdapter {
         // of silently dropping the bare retry.
         await this.web.chat
           .postMessage({ channel: channelId, thread_ts: threadTs, text: "這個 thread 沒有可重試的音訊或 PR review。" })
+          .catch(() => {});
+      }
+      return;
+    }
+
+    // `approve` in a `:cr:` result thread confirms that pmk may run the
+    // approval path. The approve gate still re-reviews and only approves when
+    // no HIGH/CRITICAL blocker is found.
+    if (isApproveConfirmationRequest(text)) {
+      if (this.review.isEnabled()) {
+        await this.review
+          .confirmApproveInThread({ channelId, threadTs, userId })
+          .catch((err) =>
+            this.onLog(`review: DM approve confirmation failed: ${(err as Error).message}`),
+          );
+      } else {
+        await this.web.chat
+          .postMessage({ channel: channelId, thread_ts: threadTs, text: "PR review 功能未啟用，無法執行 approve。" })
           .catch(() => {});
       }
       return;

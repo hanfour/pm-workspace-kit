@@ -205,6 +205,10 @@ export interface ReviewTriggeredEvent {
   actor: string;
   channelId: string;
   prCount: number;
+  intent?: "review" | "approve";
+  providerMode?: string;
+  strategy?: string;
+  forced?: boolean;
 }
 
 export interface ReviewPostedEvent {
@@ -214,6 +218,12 @@ export interface ReviewPostedEvent {
   pr: number;
   status: string;    // APPROVED | CHANGES_REQUESTED | COMMENT
   commentCount: number;
+  blockerCount?: number;
+  intent?: "review" | "approve";
+  providerMode?: string;
+  strategy?: string;
+  headSha?: string;
+  forced?: boolean;
   durationMs: number;
 }
 

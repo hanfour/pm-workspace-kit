@@ -16,11 +16,12 @@ test("phaseFromLine — analyze", () => {
   );
 });
 
-test("phaseFromLine — analyze fires on the unconditional 'running Claude' line (fresh PR / standard)", () => {
-  // review.sh:461 logs this to stdout on every single-pass review, unlike the
+test("phaseFromLine — analyze fires on the unconditional provider running line (fresh PR / standard)", () => {
+  // review.sh logs this to stdout on every single-pass review, unlike the
   // conditional 'loaded existing PR discussion' line — so a fresh PR still enters
   // analyze instead of freezing at prepare/pkb.
   assert.equal(phaseFromLine("[review] running Claude (sonnet)..."), "analyze");
+  assert.equal(phaseFromLine("[review] running codex (default model)..."), "analyze");
 });
 
 test("phaseFromLine — analyze fires on debate round markers", () => {

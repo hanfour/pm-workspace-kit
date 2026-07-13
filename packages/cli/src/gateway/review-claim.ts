@@ -6,6 +6,7 @@
  */
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { randomUUID } from "node:crypto";
 import { gatewayDir } from "./config"; // SAME base as issue-candidate.ts (imports gatewayDir from ./config)
 
 export interface ReviewRef {
@@ -13,22 +14,31 @@ export interface ReviewRef {
   repo: string;
   pr: number;
   headSha: string;
+  intent?: "review" | "approve";
+  contextVersion?: string;
 }
 
 interface ClaimRecord {
   key: string;
   claimedAt: string;
+  ownerPid?: number;
+  ownerId?: string;
   done?: boolean;
   status?: string;
   reviewUrl?: string;
 }
+
+const activeOwners = new Map<string, string>();
 
 function sanitize(s: string): string {
   return s.replace(/[^A-Za-z0-9._-]/g, "_");
 }
 
 export function reviewClaimKey(r: ReviewRef): string {
-  return [sanitize(r.owner), sanitize(r.repo), String(r.pr), sanitize(r.headSha)].join("__");
+  const base = [sanitize(r.owner), sanitize(r.repo), String(r.pr), sanitize(r.headSha)];
+  const intent = r.intent ?? "review";
+  const withIntent = intent === "review" ? base : [...base, sanitize(intent)];
+  return (r.contextVersion ? [...withIntent, sanitize(r.contextVersion)] : withIntent).join("__");
 }
 
 function reviewsDir(): string {
@@ -42,9 +52,12 @@ function claimPath(r: ReviewRef): string {
 }
 
 export function claimReview(r: ReviewRef): boolean {
-  const rec: ClaimRecord = { key: reviewClaimKey(r), claimedAt: nowIso() };
+  const key = reviewClaimKey(r);
+  const ownerId = randomUUID();
+  const rec: ClaimRecord = { key, claimedAt: nowIso(), ownerPid: process.pid, ownerId };
   try {
     fs.writeFileSync(claimPath(r), JSON.stringify(rec), { flag: "wx", mode: 0o600 });
+    activeOwners.set(key, ownerId);
     return true;
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === "EEXIST") return false;
@@ -52,21 +65,56 @@ export function claimReview(r: ReviewRef): boolean {
   }
 }
 
-export function finalizeReview(r: ReviewRef, info: { reviewUrl?: string; status?: string }): void {
+/** Archive a completed claim and atomically claim the same SHA again. */
+export function forceClaimReview(r: ReviewRef): boolean {
   const p = claimPath(r);
   let rec: ClaimRecord;
   try {
     rec = JSON.parse(fs.readFileSync(p, "utf8")) as ClaimRecord;
   } catch {
-    rec = { key: reviewClaimKey(r), claimedAt: nowIso() };
+    return claimReview(r);
   }
+  if (rec.done !== true) return false;
+  const archive = path.join(
+    reviewsDir(),
+    `${reviewClaimKey(r)}.history.${Date.now()}.${process.pid}.json`,
+  );
+  try {
+    fs.renameSync(p, archive);
+  } catch {
+    return false;
+  }
+  if (claimReview(r)) return true;
+  try { fs.renameSync(archive, p); } catch { /* best-effort restore */ }
+  return false;
+}
+
+export function finalizeReview(r: ReviewRef, info: { reviewUrl?: string; status?: string }): void {
+  const p = claimPath(r);
+  const key = reviewClaimKey(r);
+  const ownerId = activeOwners.get(key);
+  if (!ownerId) return;
+  let rec: ClaimRecord;
+  try {
+    rec = JSON.parse(fs.readFileSync(p, "utf8")) as ClaimRecord;
+  } catch {
+    return;
+  }
+  if (rec.ownerId !== ownerId) return;
   const updated: ClaimRecord = { ...rec, done: true, status: info.status, reviewUrl: info.reviewUrl };
   fs.writeFileSync(p, JSON.stringify(updated), { mode: 0o600 });
+  activeOwners.delete(key);
 }
 
 export function releaseReview(r: ReviewRef): void {
+  const key = reviewClaimKey(r);
+  const ownerId = activeOwners.get(key);
+  if (!ownerId) return;
   try {
+    const rec = JSON.parse(fs.readFileSync(claimPath(r), "utf8")) as ClaimRecord;
+    if (rec.ownerId !== ownerId) return;
     fs.rmSync(claimPath(r), { force: true });
+    activeOwners.delete(key);
   } catch {
     /* best-effort */
   }
@@ -119,12 +167,21 @@ export function recoverReviewClaims(
     if (!name.endsWith(".json")) continue;
     const p = path.join(dir, name);
     let done = false;
+    let ownerPid: number | undefined;
     try {
-      done = (JSON.parse(fs.readFileSync(p, "utf8")) as ClaimRecord).done === true;
+      const record = JSON.parse(fs.readFileSync(p, "utf8")) as ClaimRecord;
+      done = record.done === true;
+      ownerPid = record.ownerPid;
     } catch {
       done = false; // unreadable / malformed — treat as a non-finalized orphan
     }
     if (done) continue; // completed review — keep (idempotency record)
+    if (ownerPid && ownerPid > 0) {
+      try {
+        process.kill(ownerPid, 0);
+        continue; // another live gateway still owns this review
+      } catch { /* owner exited; age gate below still applies */ }
+    }
     let ageMs: number;
     try {
       // clamp to 0 against sub-ms / future-skew, mirroring recoverIssueClaims

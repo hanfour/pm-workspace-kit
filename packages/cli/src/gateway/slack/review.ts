@@ -12,28 +12,51 @@
  *   on any pre-post failure: releaseReview + review.skipped + thread note;
  *   always: teardownReviewClone.
  */
+import * as fs from "node:fs";
+import { randomUUID } from "node:crypto";
+import * as path from "node:path";
 import type { WebClient } from "@slack/web-api";
 import type { GatewayConfig } from "../config";
 import { ReviewProgress } from "./review-progress";
 import {
+  gatewayConfigPath,
+  loadRawGatewayConfig,
   resolveReviewConfig,
   resolveGithubToken,
   resolveReviewGhToken,
   reviewWorkspaceDir,
+  isAdmin,
 } from "../config";
 import { appendGatewayEvent } from "../events";
 import { parsePrRefs, type PrRef } from "../pr-ref";
-import { claimReview, finalizeReview, releaseReview, type ReviewRef } from "../review-claim";
+import { claimReview, forceClaimReview, finalizeReview, releaseReview, type ReviewRef } from "../review-claim";
+import {
+  consumeApprovalReservation,
+  listPendingApprovalReconciliations,
+  markApprovalPendingReconcile,
+  releaseApprovalReservation,
+  reserveApprovalOffer,
+  resolveApprovalReconciliation,
+  saveApprovalOffer,
+  type ApprovalOfferRef,
+  type ApprovalReservation,
+} from "../review-approval";
 import {
   resolveProjectByRemote as resolveProjectByRemoteImpl,
   runMraReview as runMraReviewImpl,
   runMraAnalyze as runMraAnalyzeImpl,
 } from "../../adapters/mra";
+import { AUTOMATIC_APPROVAL_RELEASE_READY, effectiveMraReviewStrategy } from "../review-policy";
+export { effectiveMraReviewStrategy } from "../review-policy";
 import {
   resolveRepoSlug as resolveRepoSlugImpl,
   repoVisibility as repoVisibilityImpl,
   getAuthUser as getAuthUserImpl,
   getPrHead as getPrHeadImpl,
+  approvalProtectionReady as approvalProtectionReadyImpl,
+  createPullRequestApproval as createPullRequestApprovalImpl,
+  hasPullRequestApproval as hasPullRequestApprovalImpl,
+  createPullRequestReview as createPullRequestReviewImpl,
 } from "../../adapters/github";
 import {
   prepareReviewClone as prepareReviewCloneImpl,
@@ -50,6 +73,10 @@ export interface ReviewGateway {
   repoVisibility: typeof repoVisibilityImpl;
   getAuthUser: typeof getAuthUserImpl;
   getPrHead: typeof getPrHeadImpl;
+  approvalProtectionReady: typeof approvalProtectionReadyImpl;
+  createPullRequestApproval: typeof createPullRequestApprovalImpl;
+  hasPullRequestApproval: typeof hasPullRequestApprovalImpl;
+  createPullRequestReview: typeof createPullRequestReviewImpl;
   prepareReviewClone: typeof prepareReviewCloneImpl;
   teardownReviewClone: typeof teardownReviewCloneImpl;
   ensureReviewWorkspaceMeta: typeof ensureReviewWorkspaceMetaImpl;
@@ -64,6 +91,10 @@ export const realReviewGateway: ReviewGateway = {
   repoVisibility: repoVisibilityImpl,
   getAuthUser: getAuthUserImpl,
   getPrHead: getPrHeadImpl,
+  approvalProtectionReady: approvalProtectionReadyImpl,
+  createPullRequestApproval: createPullRequestApprovalImpl,
+  hasPullRequestApproval: hasPullRequestApprovalImpl,
+  createPullRequestReview: createPullRequestReviewImpl,
   prepareReviewClone: prepareReviewCloneImpl,
   teardownReviewClone: teardownReviewCloneImpl,
   ensureReviewWorkspaceMeta: ensureReviewWorkspaceMetaImpl,
@@ -88,19 +119,61 @@ export function isApproveRequest(text: string): boolean {
   return text.includes(":a:") && parsePrRefs(text).length > 0;
 }
 
-/** Fields of an mra review result that shape the Slack result line. */
-interface ReviewOutcome {
-  status?: string;
-  commentCount?: number;
-  /** mra posted a neutral REVIEW_INCOMPLETE placeholder — the review never evaluated the PR. */
-  incomplete?: boolean;
+/**
+ * Bare confirmation inside a review thread. This is intentionally narrower than
+ * ordinary chat: `:cr:` may offer approval, but GitHub APPROVE only happens after
+ * an explicit user confirmation.
+ */
+export function isApproveConfirmationRequest(text: string): boolean {
+  const t = text
+    .trim()
+    .toLowerCase()
+    .replace(/[。.!！]+$/g, "")
+    .replace(/\s+/g, " ");
+  return [
+    "approve",
+    "approve pr",
+    "approve this",
+    "confirm approve",
+    "yes approve",
+    "確認 approve",
+    "確認approve",
+    "請 approve",
+    "可以 approve",
+    "進行 approve",
+    "核准",
+  ].includes(t);
 }
 
-/** Result line for a plain `:cr:` review (reports whatever status mra posted). */
-export function reviewResultText(slug: string, ref: PrRef, res: ReviewOutcome): string {
+/** Fields of an mra review result that shape the Slack result line. */
+export interface ReviewOutcome {
+  status?: string;
+  commentCount?: number;
+  blockerCount?: number;
+  /** mra posted a neutral REVIEW_INCOMPLETE placeholder — the review never evaluated the PR. */
+  incomplete?: boolean;
+  protocolVersion?: "1.0";
+  artifactSha256?: string;
+  analyzedHeadSha?: string;
+}
+
+export function canConfirmApproveFromReview(res: ReviewOutcome): boolean {
+  if (res.incomplete === true) return false;
+  return res.protocolVersion === "1.0" && typeof res.artifactSha256 === "string" &&
+    typeof res.analyzedHeadSha === "string" && res.blockerCount === 0 &&
+    (res.status === "COMMENT" || res.status === "COMMENTED");
+}
+
+/** Result line for a plain `:cr:` review. It never claims GitHub approval. */
+export function reviewResultText(slug: string, ref: PrRef, res: ReviewOutcome, approvalEnabled = true): string {
   if (res.incomplete)
-    return `:warning: ${slug}#${ref.number} review 未完成（mra 回報 REVIEW_INCOMPLETE，未真正評估此 PR — 可能 max-turns 截斷或 claude 呼叫失敗）；已貼中性佔位，claim 已釋放，請重試 :cr:：${ref.url}`;
-  return `:white_check_mark: 已對 ${slug}#${ref.number} 貼 review（${res.status ?? "COMMENT"}，${res.commentCount ?? 0} 則）：${ref.url}`;
+    return `:warning: ${slug}#${ref.number} review 未完成（mra 回報 REVIEW_INCOMPLETE，未真正評估此 PR — 可能 max-turns 截斷或 provider 呼叫失敗）；已貼中性佔位，claim 已釋放，請重試 :cr:：${ref.url}`;
+  const status = res.status ?? "COMMENT";
+  const count = res.commentCount ?? 0;
+  if (approvalEnabled && canConfirmApproveFromReview(res)) {
+    return `:mag: 已完成 ${slug}#${ref.number} review（GitHub action: ${status}；${count} 則）。這個結果沒有 HIGH/CRITICAL blocker，可進一步 approve，但 :cr: 不會主動 approve；請由 PMK admin 在此 channel thread @PMK 回覆 \`approve\` 授權（DM 可直接回覆）：${ref.url}`;
+  }
+  return `:mag: 已完成 ${slug}#${ref.number} review（GitHub action: ${status}；${count} 則；未執行 GitHub approve）：${ref.url}`;
 }
 
 /**
@@ -115,7 +188,7 @@ export function reviewResultText(slug: string, ref: PrRef, res: ReviewOutcome): 
 export function approveResultText(slug: string, ref: PrRef, res: ReviewOutcome): string {
   const cc = res.commentCount ?? 0;
   if (res.incomplete)
-    return `:warning: 未 approve ${slug}#${ref.number} — review 未完成（mra 回報 REVIEW_INCOMPLETE，可能 max-turns 截斷或 claude 呼叫失敗），未做任何 approve；請重試 :a: 或手動 review：${ref.url}`;
+    return `:warning: 未 approve ${slug}#${ref.number} — review 未完成（mra 回報 REVIEW_INCOMPLETE，可能 max-turns 截斷或 provider 呼叫失敗），未做任何 approve；請重試 :a: 或手動 review：${ref.url}`;
   if (res.status === "APPROVED")
     return `:white_check_mark: 已 approve ${slug}#${ref.number}（無重大問題；${cc} 則 minor 建議）：${ref.url}`;
   if (res.status === "CHANGES_REQUESTED")
@@ -137,11 +210,11 @@ function lastNonEmptyLine(s?: string): string | undefined {
 }
 
 /**
- * Turn an mra failure into something actionable. mra runs `claude` under
- * `set -euo pipefail` with `2>/dev/null`, so a non-zero claude exit becomes a
- * silent `mra exited with code=1` with no stderr — `detail` then falls back to
- * the last stdout phase (e.g. "running Claude") so the Slack message says WHERE
- * it died; `logDump` records the full picture for the operator's gateway log.
+ * Turn an mra failure into something actionable. Older mra review paths ran
+ * providers under `set -euo pipefail` with `2>/dev/null`, so a non-zero provider
+ * exit can become a silent `mra exited with code=1` with no stderr — `detail`
+ * then falls back to the last stdout phase so the Slack message says WHERE it
+ * died; `logDump` records the full picture for the operator's gateway log.
  */
 export function describeMraFailure(res: {
   reason?: string;
@@ -159,7 +232,7 @@ export function describeMraFailure(res: {
     `reason=${res.reason ?? "unknown"}`,
     errTail
       ? `stderr=${errTail}`
-      : "stderr=(empty — mra likely swallowed claude's error via 2>/dev/null)",
+      : "stderr=(empty — mra likely swallowed the provider error via 2>/dev/null)",
     outTail ? `stdout(last)=${outTail}` : "",
   ]
     .filter(Boolean)
@@ -175,7 +248,12 @@ export function describeMraFailure(res: {
  */
 export function isRetryRequest(text: string): boolean {
   const t = text.trim().toLowerCase();
-  return t === "retry" || t === "重試" || t === "重跑";
+  return t === "retry" || t === "重試";
+}
+
+export function isRerunRequest(text: string): boolean {
+  const t = text.trim().toLowerCase();
+  return t === "rerun" || t === "重跑";
 }
 
 export interface ReviewCoordinatorOptions {
@@ -185,6 +263,8 @@ export interface ReviewCoordinatorOptions {
   gateway: ReviewGateway;
   /** Injectable sleep for the transient-failure retry backoff (tests pass a no-op). */
   sleep?: (ms: number) => Promise<void>;
+  /** Production mode: stale startup review credentials must not survive a bad live reload. */
+  strictLiveConfigReload?: boolean;
 }
 
 /** A review currently running detached — tracked so shutdown can drain it (A). */
@@ -195,6 +275,8 @@ interface InFlightReview {
   /** Where to post the "interrupted by restart" notice on shutdown (B). */
   channelId: string;
   threadTs: string;
+  actorUserId: string;
+  projectKey: string;
 }
 
 export class ReviewCoordinator {
@@ -202,6 +284,33 @@ export class ReviewCoordinator {
   private readonly inFlight = new Set<InFlightReview>();
 
   constructor(private readonly opts: ReviewCoordinatorOptions) {}
+
+  private currentConfig(): GatewayConfig {
+    try {
+      // Tests and embedding callers may construct the coordinator without a
+      // gateway.json. In the daemon, once the file exists, treat its review policy
+      // as authoritative so deleting a token/approval flag/review block is a live
+      // revocation rather than a stale merge with startup config.
+      if (!fs.existsSync(gatewayConfigPath())) {
+        if (!this.opts.strictLiveConfigReload) return this.opts.config;
+        this.opts.onLog("review: live config missing; review disabled fail-closed");
+        return { ...this.opts.config, github: undefined, review: undefined };
+      }
+      const loaded = loadRawGatewayConfig();
+      return {
+        ...this.opts.config,
+        admins: loaded.admins,
+        blocklist: loaded.blocklist,
+        mraWorkspace: process.env.PMK_MRA_WORKSPACE ?? loaded.mraWorkspace,
+        github: loaded.github,
+        review: loaded.review,
+      };
+    } catch (err) {
+      this.opts.onLog(`review: live config reload failed: ${(err as Error).message}`);
+      if (!this.opts.strictLiveConfigReload) return this.opts.config;
+      return { ...this.opts.config, github: undefined, review: undefined };
+    }
+  }
 
   /**
    * A (graceful drain): on gateway shutdown, abort every in-flight review —
@@ -264,7 +373,7 @@ export class ReviewCoordinator {
 
   /** Whether the `:cr:` review flow is enabled (config-gated). */
   isEnabled(): boolean {
-    return resolveReviewConfig(this.opts.config.review).enabled;
+    return resolveReviewConfig(this.currentConfig().review).enabled;
   }
 
   /** `:cr:` REACTION on a message → fetch the message text, then review. */
@@ -317,8 +426,8 @@ export class ReviewCoordinator {
   }
 
   /**
-   * Inline `:a:` in a DM or @-mention message → fast review then approve if
-   * no high-severity issue found. The caller gates with `isEnabled()` +
+   * Inline `:a:` in a DM or @-mention message starts review plus approval
+   * intent. A separate thread confirmation is still required. The caller gates with `isEnabled()` +
    * `isApproveRequest()` before routing here.
    */
   async fromApproveMessage(args: {
@@ -341,11 +450,32 @@ export class ReviewCoordinator {
     threadTs: string;
     actorUserId: string;
     text: string;
+    offeredRefs?: ApprovalOfferRef[];
+    forced?: boolean;
   }): Promise<void> {
     const { channelId, threadTs, actorUserId, text } = args;
-    const { config, gateway, onLog } = this.opts;
+    const { gateway, onLog } = this.opts;
+    const config = this.currentConfig();
     const review = resolveReviewConfig(config.review);
     if (!review.enabled) return;
+    if (!review.approval.enabled) {
+      await this.reply(channelId, threadTs, ":lock: GitHub automatic approval 目前為安全停用狀態；`:cr:` review 仍可正常使用。");
+      return;
+    }
+    if (!isAdmin(config, actorUserId)) {
+      await this.reply(channelId, threadTs, ":no_entry: GitHub approve 只能由 PMK admin 明確授權；`:cr:` review 仍可由一般使用者執行。");
+      return;
+    }
+    if (!args.offeredRefs) {
+      await this.reply(channelId, threadTs, ":mag: `:a:` 會先執行安全 review；完成且沒有 blocker 後，我會再請你於 thread 明確回覆 `approve`，不會直接核准。");
+      await this.processReviewRequest({
+        channelId,
+        threadTs,
+        actorUserId,
+        text: text.replace(":a:", ":cr:"),
+      });
+      return;
+    }
 
     const workspace = config.mraWorkspace;
     if (!workspace) {
@@ -353,7 +483,8 @@ export class ReviewCoordinator {
       return;
     }
 
-    const refs = parsePrRefs(text, { cap: review.maxPrsPerTrigger });
+    const refs = args.offeredRefs?.map(({ owner, repo, number, url }) => ({ owner, repo, number, url }))
+      ?? parsePrRefs(text, { cap: review.maxPrsPerTrigger });
     if (refs.length === 0) return;
 
     appendGatewayEvent({
@@ -361,6 +492,10 @@ export class ReviewCoordinator {
       actor: actorUserId,
       channelId,
       prCount: refs.length,
+      intent: "approve",
+      providerMode: review.providerMode,
+      strategy: effectiveMraReviewStrategy(review.strategy, review.providerMode, true),
+      forced: args.forced,
     });
 
     // Multi-PR summary ack only. For a single PR the per-PR progress bar (posted
@@ -374,11 +509,13 @@ export class ReviewCoordinator {
       );
     }
 
-    const reviewWorkspace = reviewWorkspaceDir();
-    gateway.ensureReviewWorkspaceMeta(workspace, reviewWorkspace);
+    const reviewWorkspaceRoot = reviewWorkspaceDir();
     const token = resolveReviewGhToken(config.review) ?? resolveGithubToken(config.github);
 
     for (const ref of refs) {
+      const reviewWorkspace = path.join(reviewWorkspaceRoot, "runs", randomUUID());
+      gateway.ensureReviewWorkspaceMeta(workspace, reviewWorkspace);
+      try {
       await this.runOne(ref, {
         channelId,
         threadTs,
@@ -387,7 +524,14 @@ export class ReviewCoordinator {
         reviewWorkspace,
         review,
         token,
+        authorizedHeads: args.offeredRefs
+          ? new Map(args.offeredRefs.map((r) => [`${r.owner}/${r.repo}#${r.number}`, r.headSha]))
+          : undefined,
+        forceRerun: args.forced,
       }, "approve");
+      } finally {
+        try { fs.rmSync(reviewWorkspace, { recursive: true, force: true }); } catch { /* best-effort */ }
+      }
     }
   }
 
@@ -405,7 +549,7 @@ export class ReviewCoordinator {
     threadTs: string;
     userId: string;
   }): Promise<void> {
-    if (!resolveReviewConfig(this.opts.config.review).enabled) return;
+    if (!resolveReviewConfig(this.currentConfig().review).enabled) return;
     const rootText = await this.fetchMessageText(args.channelId, args.threadTs);
     // An approve thread (`:a:`) is drained the same way as a `:cr:` review and its
     // interruption notice tells the user to reply `retry` — so retry must re-run
@@ -428,8 +572,170 @@ export class ReviewCoordinator {
       actorUserId: args.userId,
       text: rootText,
     };
+    if (approve && !resolveReviewConfig(this.currentConfig().review).approval.enabled) {
+      await this.reply(args.channelId, args.threadTs, ":lock: GitHub automatic approval 目前為安全停用狀態；請改用 `:cr:` 重跑 review。");
+    } else if (approve) await this.processApproveRequest(req);
+    else await this.processReviewRequest(req);
+  }
+
+  /** Admin-only forced re-review of an already finalized same-SHA claim. */
+  async rerunInThread(args: { channelId: string; threadTs: string; userId: string }): Promise<void> {
+    const config = this.currentConfig();
+    if (!resolveReviewConfig(config.review).enabled) return;
+    if (!isAdmin(config, args.userId)) {
+      await this.reply(args.channelId, args.threadTs, ":no_entry: `rerun` 會略過同 commit 的完成紀錄，只允許 PMK admin 執行。");
+      return;
+    }
+    const rootText = await this.fetchMessageText(args.channelId, args.threadTs);
+    const approve = rootText ? isApproveRequest(rootText) : false;
+    const review = rootText ? isReviewRequest(rootText) : false;
+    if (!rootText || (!approve && !review)) {
+      await this.reply(args.channelId, args.threadTs, ":information_source: 這個 thread 沒有可重跑的 PR review。");
+      return;
+    }
+    const req = { channelId: args.channelId, threadTs: args.threadTs, actorUserId: args.userId, text: rootText, forced: true };
     if (approve) await this.processApproveRequest(req);
     else await this.processReviewRequest(req);
+  }
+
+  /**
+   * `approve` posted in a `:cr:` review thread → explicit authorization to run
+   * the approve path for the same PR. This keeps `:cr:` review-only while giving
+   * users a clear one-step confirmation when the review result is approvable.
+   */
+  async confirmApproveInThread(args: {
+    channelId: string;
+    threadTs: string;
+    userId: string;
+  }): Promise<void> {
+    const config = this.currentConfig();
+    const review = resolveReviewConfig(config.review);
+    if (!review.enabled) return;
+    if (!AUTOMATIC_APPROVAL_RELEASE_READY || !review.approval.enabled) {
+      await this.reply(args.channelId, args.threadTs, ":lock: GitHub automatic approval 目前為安全停用狀態；這個 review 不會執行 approve。");
+      return;
+    }
+    if (!isAdmin(config, args.userId)) {
+      await this.reply(args.channelId, args.threadTs, ":no_entry: approve 授權只接受 PMK admin；請 admin 在此 thread 回覆 `approve`。");
+      return;
+    }
+    const pending = listPendingApprovalReconciliations(args.channelId, args.threadTs);
+    if (pending.length > 0) {
+      const token = resolveReviewGhToken(config.review) ?? resolveGithubToken(config.github);
+      const actor = review.expectedGhUser ?? await this.opts.gateway.getAuthUser({ token });
+      if (!actor) {
+        await this.reply(args.channelId, args.threadTs, ":warning: pending approve 無法確認 GitHub identity，未自動重送。");
+        return;
+      }
+      for (const item of pending) {
+        const matches = await Promise.all(item.refs.map((ref) => this.opts.gateway.hasPullRequestApproval({
+          slug: `${ref.owner}/${ref.repo}`, pr: ref.number, commitId: ref.headSha,
+          artifactSha256: ref.artifactSha256, actor, token,
+        })));
+        if (matches.every((v) => v === true)) {
+          resolveApprovalReconciliation(item, "consumed");
+          await this.reply(args.channelId, args.threadTs, ":information_source: 已由 GitHub review ledger 確認先前 approve 成功，不會重送。");
+          return;
+        }
+        // A negative list result is not proof that a timed-out POST will never
+        // become visible. Keep pending until an operator explicitly resolves it.
+        if (matches.every((v) => v === false)) {
+          await this.reply(args.channelId, args.threadTs, ":warning: GitHub 尚未找到先前 approve，但為避免 eventual-consistency 重複送出，維持 pending reconcile，需由 operator 處理。");
+          return;
+        }
+        await this.reply(args.channelId, args.threadTs, ":warning: pending approve 對帳結果不完整，維持 pending reconcile，不會自動重送。");
+        return;
+      }
+    }
+    const reservation = reserveApprovalOffer(args.channelId, args.threadTs);
+    if (!reservation?.refs.length) {
+      await this.reply(
+        args.channelId,
+        args.threadTs,
+        ":information_source: 這個 thread 沒有有效、未使用的 approve offer。請先完成 `:cr: <PR 連結>` review；offer 使用一次或逾時後需重新 review。",
+      );
+      return;
+    }
+    await this.publishApprovalReservation(reservation, args.userId);
+  }
+
+  private async publishApprovalReservation(reservation: ApprovalReservation, actorUserId: string): Promise<void> {
+    const { gateway } = this.opts;
+    let mutationStarted = false;
+    try {
+      if (reservation.refs.length !== 1)
+        throw new Error("multi-PR approval must be confirmed in separate review threads");
+      for (const ref of reservation.refs) {
+        const live = this.currentConfig();
+        const review = resolveReviewConfig(live.review);
+        const slug = `${ref.owner}/${ref.repo}`;
+        if (!AUTOMATIC_APPROVAL_RELEASE_READY || !review.enabled || !review.approval.enabled || !isAdmin(live, actorUserId) || live.blocklist.includes(actorUserId))
+          throw new Error("approval policy or admin authorization was revoked");
+        if (review.repoAllowlist && !review.repoAllowlist.includes(slug))
+          throw new Error("repository is no longer allowlisted");
+        const token = resolveReviewGhToken(live.review) ?? resolveGithubToken(live.github);
+        const policyRevision = JSON.stringify({
+          admins: [...live.admins].sort(), blocklist: [...live.blocklist].sort(), review,
+          actorUserId, slug, token,
+        });
+        const authUser = await gateway.getAuthUser({ token });
+        if (!authUser || (review.expectedGhUser && authUser !== review.expectedGhUser))
+          throw new Error("GitHub identity is not approval-ready");
+        const before = await gateway.getPrHead({ slug, pr: ref.number, token });
+        if (!before || before.sha !== ref.headSha || before.baseRef !== ref.baseRef ||
+            (ref.contextVersion && before.updatedAt !== ref.contextVersion))
+          throw new Error("PR head, base, or review context changed after review");
+        if (!await gateway.approvalProtectionReady({ slug, branch: ref.baseRef, token }))
+          throw new Error("repository protection is not approval-ready");
+        const finalLive = this.currentConfig();
+        const finalReview = resolveReviewConfig(finalLive.review);
+        const finalToken = resolveReviewGhToken(finalLive.review) ?? resolveGithubToken(finalLive.github);
+        const finalRevision = JSON.stringify({
+          admins: [...finalLive.admins].sort(), blocklist: [...finalLive.blocklist].sort(), review: finalReview,
+          actorUserId, slug, token: finalToken,
+        });
+        if (finalRevision !== policyRevision || finalToken !== token)
+          throw new Error("approval policy changed during preflight");
+        const finalActor = await gateway.getAuthUser({ token: finalToken });
+        const finalHead = await gateway.getPrHead({ slug, pr: ref.number, token: finalToken });
+        if (finalActor !== authUser || !finalHead || finalHead.sha !== ref.headSha || finalHead.baseRef !== ref.baseRef ||
+            (ref.contextVersion && finalHead.updatedAt !== ref.contextVersion))
+          throw new Error("approval identity or PR changed during final preflight");
+        const postFence = this.currentConfig();
+        const postFenceReview = resolveReviewConfig(postFence.review);
+        const postFenceToken = resolveReviewGhToken(postFence.review) ?? resolveGithubToken(postFence.github);
+        const postFenceRevision = JSON.stringify({
+          admins: [...postFence.admins].sort(), blocklist: [...postFence.blocklist].sort(), review: postFenceReview,
+          actorUserId, slug, token: postFenceToken,
+        });
+        if (postFenceRevision !== policyRevision || postFenceToken !== token)
+          throw new Error("approval policy changed immediately before publication");
+        mutationStarted = true;
+        const posted = await gateway.createPullRequestApproval({
+          slug,
+          pr: ref.number,
+          commitId: ref.headSha,
+          token,
+          body: `PMK approval for MRA artifact ${ref.artifactSha256}`,
+        });
+        const after = await gateway.getPrHead({ slug, pr: ref.number, token });
+        if (!after || after.sha !== ref.headSha)
+          throw new Error(`approval ${posted.reviewId} became stale during publication`);
+        await this.reply(reservation.channelId, reservation.threadTs,
+          `:white_check_mark: 已真實 approve ${slug}#${ref.number}（commit \`${ref.headSha.slice(0, 7)}\`，GitHub review #${posted.reviewId}）。`);
+      }
+      consumeApprovalReservation(reservation);
+    } catch (err) {
+      if (mutationStarted) {
+        markApprovalPendingReconcile(reservation);
+        await this.reply(reservation.channelId, reservation.threadTs,
+          `:warning: approve 結果無法確定，已進入 pending reconcile，不會自動重送：${(err as Error).message}`);
+      } else {
+        releaseApprovalReservation(reservation);
+        await this.reply(reservation.channelId, reservation.threadTs,
+          `:no_entry: approve preflight 未通過，授權尚未消耗：${(err as Error).message}`);
+      }
+    }
   }
 
   /** Shared core: parse PR refs from the text, then review each (fail-soft). */
@@ -438,9 +744,11 @@ export class ReviewCoordinator {
     threadTs: string;
     actorUserId: string;
     text: string;
+    forced?: boolean;
   }): Promise<void> {
     const { channelId, threadTs, actorUserId, text } = args;
-    const { config, gateway, onLog } = this.opts;
+    const { gateway, onLog } = this.opts;
+    const config = this.currentConfig();
     const review = resolveReviewConfig(config.review);
     if (!review.enabled) return;
 
@@ -458,6 +766,10 @@ export class ReviewCoordinator {
       actor: actorUserId,
       channelId,
       prCount: refs.length,
+      intent: "review",
+      providerMode: review.providerMode,
+      strategy: effectiveMraReviewStrategy(review.strategy, review.providerMode, false),
+      forced: args.forced,
     });
 
     // Multi-PR summary ack only — a single PR's own progress bar (runOne) is its
@@ -471,23 +783,29 @@ export class ReviewCoordinator {
       );
     }
 
-    const reviewWorkspace = reviewWorkspaceDir(); // ~/.pmk/review-workspace
-    gateway.ensureReviewWorkspaceMeta(workspace, reviewWorkspace);
+    const reviewWorkspaceRoot = reviewWorkspaceDir(); // ~/.pmk/review-workspace
     // Pinned review token (stable identity, independent of the host's active
     // gh account) takes priority; fall back to the issue-flow github token, else
-    // undefined → host ambient gh. Used for ALL review gh calls + mra's POST.
+    // undefined → host ambient gh. Used only by PMK-owned GitHub calls.
     const token = resolveReviewGhToken(config.review) ?? resolveGithubToken(config.github);
 
     for (const ref of refs) {
-      await this.runOne(ref, {
-        channelId,
-        threadTs,
-        reactorUserId: actorUserId,
-        workspace,
-        reviewWorkspace,
-        review,
-        token,
-      }, "review");
+      const reviewWorkspace = path.join(reviewWorkspaceRoot, "runs", randomUUID());
+      gateway.ensureReviewWorkspaceMeta(workspace, reviewWorkspace);
+      try {
+        await this.runOne(ref, {
+          channelId,
+          threadTs,
+          reactorUserId: actorUserId,
+          workspace,
+          reviewWorkspace,
+          review,
+          token,
+          forceRerun: args.forced,
+        }, "review");
+      } finally {
+        try { fs.rmSync(reviewWorkspace, { recursive: true, force: true }); } catch { /* best-effort */ }
+      }
     }
   }
 
@@ -511,17 +829,19 @@ export class ReviewCoordinator {
       reviewWorkspace: string;
       review: ReturnType<typeof resolveReviewConfig>;
       token?: string;
+      authorizedHeads?: Map<string, string>;
+      forceRerun?: boolean;
     },
     mode: "review" | "approve",
   ): Promise<void> {
     const { gateway, onLog } = this.opts;
     const isApprove = mode === "approve";
     const verb = isApprove ? "approve" : "review";
-    // approve always runs the fast single-agent pass; :cr: honors the config
-    // strategy. The progress-bar pacing MUST match the strategy actually run,
-    // else a fast approve creeps at the slow debate cadence (and never reaches
-    // the result before jumping to done).
-    const strategy = isApprove ? "standard" : ctx.review.strategy;
+    // approve always runs the fast single-agent pass. :cr: must run the
+    // configured review strategy for the selected provider; mra is responsible
+    // for rejecting unsupported provider+strategy pairs explicitly.
+    // The progress-bar pacing MUST match the strategy actually run.
+    const strategy = effectiveMraReviewStrategy(ctx.review.strategy, ctx.review.providerMode, isApprove);
     const slugDisplay = `${ref.owner}/${ref.repo}`;
 
     let progress: ReviewProgress | undefined = undefined;
@@ -561,6 +881,11 @@ export class ReviewCoordinator {
       await skip("pr-head", `:warning: 取不到 PR #${ref.number} 的 head，略過`);
       return;
     }
+    const authorizedHead = ctx.authorizedHeads?.get(`${ref.owner}/${ref.repo}#${ref.number}`);
+    if (authorizedHead && authorizedHead !== head.sha) {
+      await skip("approval-head-changed", `:warning: PR #${ref.number} 在 approve 授權後已有新 commit；未 approve，請重新執行 :cr:。`);
+      return;
+    }
 
     // public-repo / allowlist guard (checked BEFORE claim to avoid wasted claims)
     if (ctx.review.repoAllowlist && !ctx.review.repoAllowlist.includes(slug)) {
@@ -591,17 +916,29 @@ export class ReviewCoordinator {
       repo: slugRepo,
       pr: ref.number,
       headSha: head.sha,
+      intent: isApprove ? "approve" as const : "review" as const,
+      contextVersion: head.updatedAt,
     };
-    if (!claimReview(claimRef)) {
+    const projectKey = `${slugOwner}/${slugRepo}`;
+    const actorActive = [...this.inFlight].filter((r) => r.actorUserId === ctx.reactorUserId).length;
+    if (this.inFlight.size >= ctx.review.maxConcurrent || actorActive >= ctx.review.maxConcurrentPerUser || [...this.inFlight].some((r) => r.projectKey === projectKey)) {
+      await skip("busy", `:hourglass: review 目前已達併發上限，或同一 repo 正在 review；請稍後重試。`);
+      return;
+    }
+    const claimed = ctx.forceRerun ? forceClaimReview(claimRef) : claimReview(claimRef);
+    if (!claimed) {
       // Idempotency: this exact commit was already reviewed. Don't re-review
       // (avoids duplicate posts) — but DON'T be silent: the user got the "收到"
       // ack, so tell them why no result follows. (Benign; no review.skipped
       // event so it doesn't read as a failure.)
       onLog(`review: already done ${slug}#${ref.number}@${head.sha.slice(0, 8)}`);
+      const alreadyDone = isApprove
+        ? `:information_source: ${slug}#${ref.number} 這個 commit（\`${head.sha.slice(0, 7)}\`）已經執行過 approve check，略過（同一 commit 不重複 approve）。要重新判斷請推新 commit 後再發 :a:。`
+        : `:information_source: ${slug}#${ref.number} 這個 commit（\`${head.sha.slice(0, 7)}\`）已經 review 過了，略過（同一 commit 不重複審）。要重審請推新 commit 後再發。`;
       await this.reply(
         ctx.channelId,
         ctx.threadTs,
-        `:information_source: ${slug}#${ref.number} 這個 commit（\`${head.sha.slice(0, 7)}\`）已經 review 過了，略過（同一 commit 不重複審）。要重審請推新 commit 後再發。`,
+        alreadyDone,
       );
       return;
     }
@@ -615,6 +952,8 @@ export class ReviewCoordinator {
       label: `${slug}#${ref.number}`,
       channelId: ctx.channelId,
       threadTs: ctx.threadTs,
+      actorUserId: ctx.reactorUserId,
+      projectKey,
     };
     this.inFlight.add(inflight);
 
@@ -639,7 +978,7 @@ export class ReviewCoordinator {
       // + the honest verdict cover it). One-time ~few-min cost the first time a
       // repo is reviewed (or after it goes stale).
       const mainClone = `${ctx.workspace}/${project}`;
-      if (gateway.pkbNeedsBuild(mainClone)) {
+      if (ctx.review.providerMode === "claude" && gateway.pkbNeedsBuild(mainClone)) {
         onLog(`pkb: ${project} 缺/過時 PKB — 先建(一次性,之後 review 又快又完整)`);
         const built = await gateway.runMraAnalyze(
           { project, cwd: ctx.workspace, signal: controller.signal },
@@ -689,12 +1028,12 @@ export class ReviewCoordinator {
         pr: ref.number,
         strategy,
         cwd: ctx.reviewWorkspace,
-        ghToken: ctx.token, // pin mra's POST identity (GH_TOKEN), stable vs active gh
+        providerMode: ctx.review.providerMode,
+        expectedHeadSha: head.sha,
+        baseRef: prep.baseRef,
+        baseSha: head.baseSha,
+        prContext: { title: head.title, body: head.body, updatedAt: head.updatedAt },
         signal: controller.signal, // A: shutdown aborts → SIGTERM the review child
-        // :a: is the explicit per-invocation opt-in to approve; :cr: honors the
-        // config gate. approveIfNoHigh only makes sense on the approve path.
-        allowApprove: isApprove ? true : ctx.review.allowApprove,
-        ...(isApprove ? { approveIfNoHigh: true } : {}),
       };
       const onProgress = (line: string) => {
         onLog(`mra ${verb} ${slug}#${ref.number}: ${line}`);
@@ -702,14 +1041,12 @@ export class ReviewCoordinator {
       };
       let res = await gateway.runMraReview(mraArgs, { onProgress });
       let retried = false;
-      // Retry once on a transient failure OR a REVIEW_INCOMPLETE. mra runs `claude`
-      // under set -e with 2>/dev/null: an intermittent non-zero claude exit
-      // (rate-limit / overload under concurrent load) surfaces as a bare `exited
-      // with code=1` (res.ok=false), while an empty / unparseable claude response
-      // makes mra EXIT 0 but post a neutral REVIEW_INCOMPLETE placeholder
-      // (res.ok=true, res.incomplete=true). Both are the same flaky single-pass
-      // claude and both routinely recover on a re-run, so retry either. Skip the
-      // retry if aborted (shutdown drain) — not transient, clone about to be torn down.
+      // Retry once on a transient failure OR a REVIEW_INCOMPLETE. Provider
+      // overload/rate-limit can surface as a bare `exited with code=1`
+      // (res.ok=false), while an empty / unparseable response makes mra EXIT 0
+      // but post a neutral REVIEW_INCOMPLETE placeholder. Both routinely recover
+      // on a re-run. Skip the retry if aborted (shutdown drain) — not transient,
+      // clone about to be torn down.
       if ((!res.ok || res.incomplete) && !controller.signal.aborted) {
         const why = res.ok
           ? "回報 REVIEW_INCOMPLETE"
@@ -747,8 +1084,54 @@ export class ReviewCoordinator {
         return;
       }
 
+      if (res.protocolVersion === "1.0") {
+        const live = this.currentConfig();
+        const liveReview = resolveReviewConfig(live.review);
+        if (!liveReview.enabled || live.blocklist.includes(ctx.reactorUserId)) {
+          await skip("policy-revoked", ":no_entry: review policy 在分析期間已撤銷，未貼 GitHub review。");
+          return;
+        }
+        if (liveReview.repoAllowlist && !liveReview.repoAllowlist.includes(slug)) {
+          await skip("policy-revoked", ":no_entry: repository 已不在 review allowlist，未貼 GitHub review。");
+          return;
+        }
+        const liveToken = resolveReviewGhToken(live.review) ?? resolveGithubToken(live.github);
+        const liveActor = await gateway.getAuthUser({ token: liveToken });
+        if (!liveActor || (liveReview.expectedGhUser && liveActor !== liveReview.expectedGhUser)) {
+          await skip("gh-actor-revoked", ":no_entry: GitHub review identity 在分析期間已改變，未貼 review。");
+          return;
+        }
+        const liveHead = await gateway.getPrHead({ slug, pr: ref.number, token: liveToken });
+        if (!liveHead || liveHead.sha !== head.sha) {
+          await skip("review-head-changed", `:warning: PR #${ref.number} 在分析期間已有新 commit；未貼過期 review。`);
+          return;
+        }
+        const postedReview = await gateway.createPullRequestReview({
+          slug,
+          pr: ref.number,
+          commitId: head.sha,
+          token: liveToken,
+          event: res.status === "CHANGES_REQUESTED" ? "REQUEST_CHANGES" : "COMMENT",
+          body: `${res.summary ?? "MRA review completed"}\n\nMRA artifact: ${res.artifactSha256}`,
+          comments: res.findings ?? [],
+        });
+        res.status = postedReview.state;
+      }
+
       posted = true;
       finalizeReview(claimRef, { status: res.status });
+      if (!isApprove && ctx.review.approval.enabled && canConfirmApproveFromReview(res)) {
+        saveApprovalOffer(ctx.channelId, ctx.threadTs, {
+          owner: slugOwner,
+          repo: slugRepo,
+          number: ref.number,
+          url: ref.url,
+          headSha: head.sha,
+          baseRef: head.baseRef,
+          artifactSha256: res.artifactSha256!,
+          contextVersion: head.updatedAt,
+        });
+      }
       appendGatewayEvent({
         type: "review.posted",
         actor: ctx.reactorUserId,
@@ -756,11 +1139,17 @@ export class ReviewCoordinator {
         pr: ref.number,
         status: res.status ?? "COMMENT",
         commentCount: res.commentCount ?? 0,
+        blockerCount: res.blockerCount,
+        intent: mode,
+        providerMode: ctx.review.providerMode,
+        strategy,
+        headSha: head.sha,
+        forced: ctx.forceRerun,
         durationMs: Date.now() - t0,
       });
       const resultText = isApprove
         ? approveResultText(slug, ref, res)
-        : reviewResultText(slug, ref, res);
+        : reviewResultText(slug, ref, res, ctx.review.approval.enabled);
       if (progress) await progress.finish(resultText);
       else await this.reply(ctx.channelId, ctx.threadTs, resultText);
     } catch (err) {

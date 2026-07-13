@@ -2326,6 +2326,41 @@ describe("Slack admin handler (#31)", () => {
     assert.match(r.text, /`wat`/);
   });
 
+  it("review provider command mutates the admin-selected mra provider", async () => {
+    const { handleAdminSlash } = await import("../src/gateway/slack/admin");
+    const r = await handleAdminSlash({
+      actor: "U0OWNER",
+      tokens: ["review", "provider", "claude"],
+    });
+    assert.match(r.text, /review provider set to `claude`/);
+    const reload = loadGatewayConfig();
+    assert.equal(reload.review?.providerMode, "claude");
+  });
+
+  it("review status shows the effective provider default", async () => {
+    const { handleAdminSlash } = await import("../src/gateway/slack/admin");
+    const r = await handleAdminSlash({
+      actor: "U0OWNER",
+      tokens: ["review", "status"],
+    });
+    assert.match(r.text, /review config/);
+    assert.match(r.text, /provider: `codex`/);
+    assert.match(r.text, /strategy configured `standard`/);
+    assert.match(r.text, /effective :cr: `standard`/);
+    assert.match(r.text, /:a: `standard`/);
+  });
+
+  it("review provider rejects unknown values", async () => {
+    const { handleAdminSlash } = await import("../src/gateway/slack/admin");
+    const r = await handleAdminSlash({
+      actor: "U0OWNER",
+      tokens: ["review", "provider", "bad-provider"],
+    });
+    assert.match(r.text, /usage: `\/pmk admin review provider/);
+    const reload = loadGatewayConfig();
+    assert.equal(reload.review?.providerMode, undefined);
+  });
+
   it("audience set @user pm mutates per-user override", async () => {
     const { handleAdminSlash } = await import("../src/gateway/slack/admin");
     // Seed an admin so the trust path mirrors prod (handler trusts caller).

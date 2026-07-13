@@ -92,12 +92,15 @@ npx pmk gateway atoms approve <id-prefix>     # promote a pending atom to retrie
 # After bootstrap: in Slack DM with the bot, run `/pmk admin help` for the in-Slack surface (v0.9).
 ```
 
-**Slack in-DM / @-mention review commands** (requires `review.enabled: true` in `gateway.json`):
+**Slack in-DM / @-mention review commands** (requires `review.enabled: true` in `gateway.json`; default provider is Codex):
 
-- `:cr: <PR url>` — runs a full multi-agent mra review and posts inline findings. When `review.allowApprove: true` (gateway config, default `false`) and the verdict is APPROVED, the bot posts a real GitHub approval; otherwise the AI verdict is recorded as a COMMENT.
-- `:a: <PR url>` — runs a fast single-agent review, then **approves** the PR iff no CRITICAL/HIGH issue is found (minor issues allowed); otherwise requests changes. Per-invocation it is always allowed to approve.
+- `:cr: <PR url>` — asks MRA protocol v1 for a SHA-bound analysis artifact, then PMK posts the inline GitHub review. New installs default to `codex` + `standard`; pre-provider configs retain Claude/debate until an admin migrates them. `:cr:` never submits GitHub APPROVE by itself. When automatic approval is enabled and the artifact is complete and blocker-free, it creates a one-time thread offer.
+- `:a: <PR url>` — PMK-admin only. Runs the same analysis first and asks for an explicit thread `approve` confirmation; the trigger itself never approves.
 - React with `:cr:` on a user's PR-link message to trigger a review without re-typing the URL.
-- React with `:a:` on a user's PR-link message to trigger the fast-approve path.
+- A PMK admin may react with `:a:` on a user's PR-link message to start review plus approval intent.
+- Slack admins can switch the backend live with `/pmk admin review provider codex|claude|fallback|dual`. Automatic approval has a separate default-off kill switch: `/pmk admin review approval enable|disable`.
+- Provider switching applies to review. Only Codex protocol-v1 artifacts are sanitized approval evidence; Claude/fallback/dual runs stay review-only and never create an approve offer.
+- GitHub APPROVE publication currently has a release veto: admins cannot enable it until cross-process policy locking is shipped. `:cr:` and `:a:` analysis remain available and never approve on their own.
 
 The CLI delegates code-intelligence work to [**multi-repo-agent (mra)**](https://github.com/hanfour/multi-repo-agent) when present. The gateway specifically uses three integrated mechanisms:
 

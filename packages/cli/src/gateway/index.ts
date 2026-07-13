@@ -21,6 +21,7 @@ import {
 import { startKeepAwake } from "./keep-awake";
 import { installUnhandledRejectionGuard } from "./crash-guard";
 import { recoverReviewClaims } from "./review-claim";
+import { sweepApprovalOffers } from "./review-approval";
 import { sweepStaleAudioTemp } from "./audio/temp";
 import { sweepStaleAudioClaims } from "./audio/claim";
 import { sweepStaleAtomMarkers } from "./audio/atom-marker";
@@ -105,6 +106,8 @@ export async function runGateway(opts: GatewayRunOptions = {}): Promise<void> {
   if (recoveredClaims > 0) {
     log(`recovered ${recoveredClaims} orphaned review claim(s) from a prior run`);
   }
+  const sweptOffers = sweepApprovalOffers();
+  if (sweptOffers > 0) log(`swept ${sweptOffers} expired review approval offer(s)`);
 
   const sweptTempDirs = sweepStaleAudioTemp();
   if (sweptTempDirs > 0) {

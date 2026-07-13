@@ -378,18 +378,22 @@ retained for follow-ups); linked Google/Box files and Office formats aren't supp
 
 Post a GitHub PR link with a trigger, or react on someone else's PR-link message:
 
-- **`:cr: <PR url>`** (or a `:cr:` reaction) — runs a full multi-agent mra review
-  and posts inline findings. The AI verdict is recorded as a **COMMENT** by default;
-  it becomes a real GitHub **approval** only when `review.allowApprove: true` is set
-  in `gateway.json` **and** the verdict is APPROVED.
-- **`:a: <PR url>`** (or a `:a:` reaction) — runs a fast single-agent review, then
-  **approves** the PR iff no CRITICAL/HIGH issue is found (minor issues allowed),
-  else requests changes. `:a:` is the explicit per-invocation opt-in to approve, so
-  it does not require `allowApprove` — but it still honors the same repo guards.
+- **`:cr: <PR url>`** (or a `:cr:` reaction) — runs an mra review and posts inline
+  findings. PMK prefers MRA protocol v1: MRA creates an analysis-only artifact,
+  while PMK owns the GitHub review write. New installs default to **Codex** plus
+  `standard`; legacy pre-provider configs retain Claude/debate. `:cr:` never
+  submits GitHub **APPROVE** by itself. When approval is enabled and a complete
+  artifact has no HIGH/CRITICAL blocker, PMK stores a one-time offer in the
+  Slack thread; a PMK admin can reply `approve` for that exact SHA and context.
+  Only Codex protocol-v1 artifacts are approval-eligible. Claude, fallback, and
+  dual remain selectable for review but do not create approve offers.
+- **`:a: <PR url>`** (or a `:a:` reaction) — admin-only review plus approval
+  intent. It still requires a separate thread `approve` confirmation.
 
 A live progress bar edits itself in place while the review runs; if the gateway is
 restarted mid-review it posts an interruption notice — reply `retry` in that thread
-to re-run (works for both `:cr:` and `:a:`).
+to retry an interrupted run. A PMK admin can reply `rerun` / `重跑` to intentionally
+re-review an already completed same-SHA claim; prior claim history is retained.
 
 The `review` config block (all optional, safe-by-default):
 
@@ -397,18 +401,32 @@ The `review` config block (all optional, safe-by-default):
 {
   "review": {
     "enabled": false,          // master switch for :cr: / :a:
-    "allowApprove": false,     // let a :cr: APPROVED verdict post a real GitHub approval
+    "approval": { "enabled": false }, // separate automatic-approval kill switch
     "allowPublicRepos": false, // default-deny: only private repos are reviewed
     "repoAllowlist": [],       // optional owner/repo allowlist (empty = all private repos)
     "expectedGhUser": "",      // abort if the posting gh identity isn't this user
-    "strategy": "debate",      // debate | personas | standard
+    "providerMode": "codex",   // codex | claude | fallback | dual
+    "strategy": "standard",    // new-install default; debate/personas are Claude-only
     "maxPrsPerTrigger": 3,
+    "maxConcurrent": 2,
+    "maxConcurrentPerUser": 1,
     "ghToken": ""              // pinned review token (falls back to github.token)
   }
 }
 ```
 
-Only workspace members who are **not** blocklisted can trigger a review or approve;
+Admins can switch the provider from Slack DM without restarting the gateway:
+`/pmk admin review provider codex`, `/pmk admin review provider claude`,
+`/pmk admin review provider fallback`, or `/pmk admin review provider dual`.
+Use `/pmk admin review status` to confirm the effective setting.
+GitHub APPROVE publication currently has a release veto, so
+`/pmk admin review approval enable` refuses to enable it. `:cr:` and `:a:`
+analysis remain available. The veto can be removed only after cross-process
+policy locking ships; repository readiness will still require protocol v1,
+expected identity, allowlist, stale-review dismissal, and latest-push approval.
+
+Workspace members who are **not** blocklisted can trigger `:cr:` review. GitHub
+approve (`:a:` reaction/message or thread `approve`) and forced rerun are PMK-admin only;
 the bot posts under its pinned gh identity (`expectedGhUser` guards against posting
 as the wrong account). Private-repo default-deny and the allowlist are checked
 **before** any work starts.

@@ -21,11 +21,11 @@ export function phaseFromLine(line: string): Phase | undefined {
   if (line.includes("posting inline review")) return "posting";
   // Analyze markers. `loaded existing PR discussion` is CONDITIONAL (only when the
   // PR already has discussion), so a fresh PR would never reach analyze on that
-  // line alone. `running Claude` (single-pass, review.sh:461) is UNCONDITIONAL on
+  // line alone. `running <provider>` (single-pass, review.sh) is UNCONDITIONAL on
   // stdout; the debate round markers are on stderr (usually invisible here) but
   // matched too, in case stderr is ever merged into the progress stream.
   if (
-    line.includes("running Claude") ||
+    /running (Claude|claude|Codex|codex|fallback|dual)\b/.test(line) ||
     line.includes("loaded existing PR discussion") ||
     line.includes("independent analysis") ||
     line.includes("mailbox voting") ||
