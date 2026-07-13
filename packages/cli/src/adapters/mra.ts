@@ -16,7 +16,8 @@
  */
 
 import { execFileSync, spawn } from "node:child_process";
-import { existsSync, readFileSync, readdirSync, statSync, type Dirent } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync, type Dirent } from "node:fs";
+import { createHash, randomUUID } from "node:crypto";
 import * as os from "node:os";
 import * as path from "node:path";
 
@@ -43,6 +44,74 @@ const WORKSPACE_MARKER_FALLBACKS = [
   ".mra-config",
   "mra-workspace.json",
 ];
+
+const reviewProviderCapability = new Map<string, boolean>();
+
+export interface MraIntegrationCapabilities {
+  protocolVersion: "1.0";
+  capabilities: {
+    analysisOnly: true;
+    shaBinding: true;
+    sanitizedContext: true;
+    blockerUnion: true;
+    resultArtifact: true;
+  };
+  providers: ["codex"];
+}
+
+const integrationCapabilityCache = new Map<string, { expiresAt: number; value?: MraIntegrationCapabilities }>();
+
+function integrationCacheKey(binary: string): string {
+  try {
+    const real = realpathSync(binary);
+    const st = statSync(real);
+    return `${real}:${st.ino}:${st.size}:${st.mtimeMs}`;
+  } catch {
+    return binary;
+  }
+}
+
+export function mraIntegrationCapabilities(binary: string, fresh = false): MraIntegrationCapabilities | undefined {
+  const key = integrationCacheKey(binary);
+  const cached = integrationCapabilityCache.get(key);
+  if (!fresh && cached && cached.expiresAt > Date.now()) return cached.value;
+  let value: MraIntegrationCapabilities | undefined;
+  try {
+    const raw = execFileSync(binary, ["integration", "describe", "--json"], {
+      encoding: "utf8",
+      timeout: 5_000,
+      stdio: ["ignore", "pipe", "pipe"],
+      env: strippedChildEnv(),
+    });
+    const parsed = JSON.parse(raw) as Partial<MraIntegrationCapabilities>;
+    const c = parsed.capabilities;
+    if (parsed.protocolVersion === "1.0" && c?.analysisOnly === true && c.shaBinding === true &&
+        c.sanitizedContext === true && c.blockerUnion === true && c.resultArtifact === true &&
+        Array.isArray(parsed.providers) && parsed.providers.length === 1 && parsed.providers[0] === "codex") {
+      value = parsed as MraIntegrationCapabilities;
+    }
+  } catch { /* legacy or unavailable */ }
+  integrationCapabilityCache.set(key, { expiresAt: Date.now() + 60_000, value });
+  return value;
+}
+
+export function mraSupportsReviewProvider(binary: string): boolean {
+  const cached = reviewProviderCapability.get(binary);
+  if (cached !== undefined) return cached;
+  let supported = false;
+  try {
+    const help = execFileSync(binary, ["--help"], {
+      encoding: "utf8",
+      timeout: 5_000,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    supported = /--provider\b/.test(help);
+  } catch {
+    supported = false;
+  }
+  reviewProviderCapability.set(binary, supported);
+  return supported;
+}
 
 export interface MraDoctorReport {
   ok: boolean;
@@ -535,6 +604,12 @@ export interface MraReviewResult {
   ok: boolean;
   status?: string;
   commentCount?: number;
+  blockerCount?: number;
+  protocolVersion?: "1.0";
+  artifactSha256?: string;
+  analyzedHeadSha?: string;
+  summary?: string;
+  findings?: Array<{ path: string; line: number; body: string; severity?: string }>;
   /** True when mra posted a neutral REVIEW_INCOMPLETE placeholder (see parseReviewStdout). */
   incomplete?: boolean;
   stdout: string;
@@ -543,19 +618,25 @@ export interface MraReviewResult {
 }
 
 export type ReviewStrategy = "debate" | "personas" | "standard";
+export type ReviewProviderMode = "codex" | "claude" | "fallback" | "dual";
 
 /**
  * Build the argv for `mra review <project> --pr <pr>`. For strategy
  * "debate" appends `--strategy debate`; for "standard" appends
  * `--strategy standard`; for "personas" the flag is omitted and the
  * env var `MRA_REVIEW_PERSONAS=true` is used instead (see {@link reviewEnv}).
+ * Provider policy is always explicit. If the configured provider is unsupported
+ * by the installed mra, the review should fail visibly rather than silently
+ * running a different provider.
  */
 export function buildReviewArgv(
   project: string,
   pr: number,
   strategy: ReviewStrategy,
+  providerMode?: ReviewProviderMode,
 ): string[] {
   const base = ["review", project, "--pr", String(pr)];
+  if (providerMode) base.push("--provider", providerMode);
   if (strategy === "debate") return [...base, "--strategy", "debate"];
   if (strategy === "standard") return [...base, "--strategy", "standard"];
   return base; // personas → env flag only
@@ -587,10 +668,12 @@ export function buildReviewArgv(
 export function parseReviewStdout(stdout: string): {
   status?: string;
   commentCount?: number;
+  blockerCount?: number;
   incomplete: boolean;
 } {
   const status = [...stdout.matchAll(/status:\s*([A-Z_]+)/g)].at(-1)?.[1];
   const cc = [...stdout.matchAll(/\((\d+)\s+comments?\)/g)].at(-1)?.[1];
+  const blockers = [...stdout.matchAll(/blockers:\s*(\d+)/g)].at(-1)?.[1];
   // REVIEW_INCOMPLETE: mra's single-pass claude emitted no completion sentinel /
   // an empty / unparseable response, so mra EXITS 0 but posts a neutral placeholder
   // review whose GitHub event is COMMENT (review.sh:516 "posting REVIEW_INCOMPLETE";
@@ -602,34 +685,36 @@ export function parseReviewStdout(stdout: string): {
   return {
     status,
     commentCount: cc !== undefined ? Number(cc) : undefined,
+    ...(blockers !== undefined ? { blockerCount: Number(blockers) } : {}),
     incomplete,
   };
 }
 
-/** Clone process.env, strip secrets, pin the review token, set personas flag,
+/** Clone process.env, strip secrets, set the personas flag,
  * and cap the round-1 review agents' turns (see body). */
 export function reviewEnv(
   strategy: ReviewStrategy,
-  ghToken?: string,
-  opts: { allowApprove?: boolean; approveIfNoHigh?: boolean } = {},
+  opts: {
+    providerMode?: ReviewProviderMode;
+    expectedHeadSha?: string;
+  } = {},
 ): NodeJS.ProcessEnv {
   const env = strippedChildEnv();
-  // Privilege flags are derived SOLELY from `opts`/`strategy` below — never
-  // inherited. They are not secret-shaped (so the strip above leaves them), yet
-  // a stray parent-env MRA_REVIEW_ALLOW_APPROVE would silently turn an ordinary
-  // :cr: review (allowApprove: false) into a real GitHub approve. Delete them
-  // first so only the explicit intent from this call survives.
+  // Privilege flags are never inherited. They are not secret-shaped, so the
+  // general denylist does not remove them; delete them explicitly to preserve
+  // the analysis-only integration boundary.
   delete env.MRA_REVIEW_ALLOW_APPROVE;
   delete env.MRA_REVIEW_APPROVE_IF_NO_HIGH;
   delete env.MRA_REVIEW_PERSONAS;
-  // Pin the GitHub token for mra's `gh` POST. Set AFTER the strip so it is the
-  // ONLY github token in the review env; `GH_TOKEN` takes priority over the
-  // host's active gh account, so the posting identity is stable regardless of
-  // which account is active. Unset → mra falls back to ambient gh.
-  if (ghToken) env.GH_TOKEN = ghToken;
+  delete env.MRA_REVIEW_PROVIDER;
+  delete env.MRA_REVIEW_ADMIN_OVERRIDE;
+  delete env.MRA_REVIEW_EXPECTED_HEAD_SHA;
   if (strategy === "personas") env.MRA_REVIEW_PERSONAS = "true";
-  if (opts.allowApprove) env.MRA_REVIEW_ALLOW_APPROVE = "1";
-  if (opts.approveIfNoHigh) env.MRA_REVIEW_APPROVE_IF_NO_HIGH = "1";
+  if (opts.providerMode) {
+    env.MRA_REVIEW_PROVIDER = opts.providerMode;
+    env.MRA_REVIEW_ADMIN_OVERRIDE = "1";
+  }
+  if (opts.expectedHeadSha) env.MRA_REVIEW_EXPECTED_HEAD_SHA = opts.expectedHeadSha;
   // Cap the debate round-1 agents' turns generously. --max-turns is a CAP, not a
   // target: a PKB-backed review finishes well under it (the agent stops at its
   // verdict sentinel), so the headroom costs nothing on fast reviews and rescues
@@ -789,7 +874,7 @@ function spawnMraCommand(
 /**
  * Run `mra review <project> --pr <pr>` as a write-protected subprocess.
  * Secrets are stripped from the child env (see {@link REVIEW_SECRET_ENV_DENYLIST}).
- * No retry — a review either posts or it doesn't (unlike the flaky `mra ask`).
+ * No retry here; the coordinator owns retry policy.
  * Default timeout is 600s (reviews are substantially slower than asks).
  */
 export async function runMraReview(
@@ -800,12 +885,13 @@ export async function runMraReview(
     strategy: ReviewStrategy;
     cwd: string;
     timeoutMs?: number;
-    /** Pinned GitHub token for mra's POST (GH_TOKEN). Undefined → ambient gh. */
-    ghToken?: string;
     /** Abort to SIGTERM the review child (gateway shutdown / drain). */
     signal?: AbortSignal;
-    allowApprove?: boolean;
-    approveIfNoHigh?: boolean;
+    providerMode?: ReviewProviderMode;
+    expectedHeadSha?: string;
+    baseRef?: string;
+    baseSha?: string;
+    prContext?: { title?: string; body?: string; updatedAt?: string };
   },
   opts: { onProgress?: (line: string) => void } = {},
 ): Promise<MraReviewResult> {
@@ -813,19 +899,127 @@ export async function runMraReview(
   if (!binary) {
     return { ok: false, stdout: "", stderr: "", reason: "`mra` binary not found on PATH" };
   }
+  const protocol = args.providerMode === "codex" || args.providerMode === undefined
+    ? mraIntegrationCapabilities(binary)
+    : undefined;
+  if (protocol) {
+    const checkout = path.join(args.workspace, args.project);
+    const expectedHead = args.expectedHeadSha ?? "";
+    if (!/^[0-9a-f]{40}$/i.test(expectedHead)) {
+      return { ok: false, stdout: "", stderr: "", reason: "protocol review requires expectedHeadSha" };
+    }
+    let baseSha = args.baseSha ?? "";
+    if (!/^[0-9a-f]{40}$/i.test(baseSha)) {
+      const baseRef = args.baseRef ?? "main";
+      for (const candidate of [baseRef, `origin/${baseRef}`]) {
+        try {
+          baseSha = execFileSync("git", ["-C", checkout, "merge-base", expectedHead, candidate], {
+            encoding: "utf8", timeout: 10_000, stdio: ["ignore", "pipe", "pipe"],
+          }).trim();
+          if (/^[0-9a-f]{40}$/i.test(baseSha)) break;
+        } catch { /* try remote-tracking ref */ }
+      }
+      if (!/^[0-9a-f]{40}$/i.test(baseSha))
+        return { ok: false, stdout: "", stderr: "", reason: "cannot resolve protocol review base SHA" };
+    }
+    const runDir = mkdtempSync(path.join(os.tmpdir(), "pmk-mra-review-"));
+    const requestPath = path.join(runDir, "request.json");
+    const resultPath = path.join(runDir, "result.json");
+    const eventsPath = path.join(runDir, "events.jsonl");
+    const requestId = randomUUID();
+    const requestJson = JSON.stringify({
+      schema: "io.mra.integration.review-request/v1",
+      protocolVersion: "1.0",
+      requestId,
+      subject: { checkout, project: args.project, pullRequest: args.pr, baseSha, headSha: expectedHead },
+      review: { provider: args.providerMode ?? "codex", strategy: "standard" },
+      context: { pr: args.prContext ?? {} },
+    });
+    const requestSha256 = createHash("sha256").update(requestJson).digest("hex");
+    writeFileSync(requestPath, requestJson, { mode: 0o600 });
+    const env = strippedChildEnv();
+    const timeoutMs = args.timeoutMs ?? 1_200_000;
+    try {
+      const raw = await spawnMraCommand(binary, ["integration", "review", "--request", requestPath, "--result", resultPath, "--events", eventsPath], args.cwd, env, timeoutMs, opts.onProgress, args.signal);
+      if (!existsSync(resultPath)) return { ...raw, ok: false, reason: raw.reason ?? "mra protocol result artifact missing" };
+      const artifact = JSON.parse(readFileSync(resultPath, "utf8")) as {
+        schema?: string; protocolVersion?: string; requestId?: string; requestSha256?: string; artifactSha256?: string;
+        subject?: { headSha?: string; baseSha?: string }; producer?: { product?: string };
+        context?: { mode?: string; nativeRepositoryInstructions?: boolean };
+        providers?: Array<{ provider?: string; status?: string }>;
+        analysis?: { status?: string; verdict?: string };
+        findings?: unknown[]; blockerLedger?: unknown[]; errors?: unknown[];
+      };
+      const { artifactSha256, ...unsignedArtifact } = artifact;
+      const computedArtifactSha256 = createHash("sha256").update(JSON.stringify(unsignedArtifact)).digest("hex");
+      const findings = artifact.findings ?? [];
+      const findingIsValid = (f: unknown): f is { path: string; line: number; body: string; severity: "CRITICAL" | "HIGH" | "MEDIUM" | "LOW" } => {
+        if (!f || typeof f !== "object") return false;
+        const v = f as Record<string, unknown>;
+        return typeof v.path === "string" && v.path.length > 0 && Number.isInteger(v.line) &&
+          typeof v.body === "string" && v.body.length > 0 && ["CRITICAL", "HIGH", "MEDIUM", "LOW"].includes(String(v.severity));
+      };
+      const validFindings = Array.isArray(findings) && findings.every(findingIsValid);
+      const derivedBlockers = validFindings ? findings.filter((f) => f.severity === "CRITICAL" || f.severity === "HIGH") : [];
+      const ledgerMatches = Array.isArray(artifact.blockerLedger) && JSON.stringify(artifact.blockerLedger) === JSON.stringify(derivedBlockers);
+      const verdictMatches = artifact.analysis?.status === "complete" &&
+        ((artifact.analysis.verdict === "pass" && derivedBlockers.length === 0) ||
+         (artifact.analysis.verdict === "block" && derivedBlockers.length > 0));
+      const valid = artifact.schema === "io.mra.integration.review-result/v1" && artifact.protocolVersion === "1.0" &&
+        artifact.requestId === requestId && artifact.subject?.headSha === expectedHead && artifact.subject?.baseSha === baseSha &&
+        artifact.requestSha256 === requestSha256 && artifactSha256 === computedArtifactSha256 &&
+        artifact.producer?.product === "multi-repo-agent" && artifact.context?.mode === "sanitized-untrusted" &&
+        artifact.context.nativeRepositoryInstructions === false && artifact.providers?.length === 1 &&
+        artifact.providers[0]?.provider === "codex" && artifact.providers[0]?.status === "complete" &&
+        Array.isArray(artifact.errors) && artifact.errors.length === 0 && validFindings && ledgerMatches && verdictMatches;
+      if (!valid) return { ...raw, ok: false, reason: "invalid or mismatched mra protocol artifact" };
+      const blockers = derivedBlockers;
+      const complete = artifact.analysis?.status === "complete";
+      const status = artifact.analysis?.verdict === "pass" ? "COMMENT"
+        : artifact.analysis?.verdict === "block" ? "CHANGES_REQUESTED" : "COMMENT";
+      return {
+        ...raw,
+        ok: raw.ok && complete,
+        status,
+        commentCount: findings.length,
+        blockerCount: blockers.length,
+        incomplete: !complete,
+        protocolVersion: "1.0",
+        artifactSha256: artifact.artifactSha256,
+        analyzedHeadSha: expectedHead,
+        summary: typeof (artifact as { summary?: unknown }).summary === "string" ? (artifact as { summary: string }).summary : undefined,
+        findings: findings.map((f) => ({ path: f.path, line: f.line, body: f.body, severity: f.severity })),
+        reason: raw.ok && complete ? undefined : raw.reason ?? "mra protocol analysis incomplete",
+      };
+    } finally {
+      rmSync(runDir, { recursive: true, force: true });
+    }
+  }
+  if (args.providerMode && !mraSupportsReviewProvider(binary)) {
+    return {
+      ok: false,
+      stdout: "",
+      stderr: "",
+      reason: "installed `mra` does not support `review --provider`; upgrade multi-repo-agent before using PMK review provider selection",
+    };
+  }
   // 20 min: the debate pipeline runs sequential multi-agent stages (round 1 →
   // mailbox voting → synthesis); on a large PR (many files / >5 findings) that
   // legitimately exceeds 10 min even with a PKB, so 600s timed out mid-pipeline.
   const timeoutMs = args.timeoutMs ?? 1_200_000;
-  const argv = buildReviewArgv(args.project, args.pr, args.strategy);
-  const env = reviewEnv(args.strategy, args.ghToken, {
-    allowApprove: args.allowApprove,
-    approveIfNoHigh: args.approveIfNoHigh,
+  const argv = buildReviewArgv(args.project, args.pr, args.strategy, args.providerMode);
+  const env = reviewEnv(args.strategy, {
+    providerMode: args.providerMode,
+    expectedHeadSha: args.expectedHeadSha,
   });
 
   const raw = await spawnMraCommand(binary, argv, args.cwd, env, timeoutMs, opts.onProgress, args.signal);
-  const parsed = raw.ok ? parseReviewStdout(raw.stdout) : {};
-  return { ...raw, ...parsed };
+  const parsed: Partial<ReturnType<typeof parseReviewStdout>> = raw.ok ? parseReviewStdout(raw.stdout) : {};
+  // Legacy MRA is review-only. Human stdout can describe a posted comment but
+  // never establishes approval eligibility.
+  const incomplete = parsed.incomplete === true || !parsed.status;
+  return { ...raw, ...parsed, ok: raw.ok && !incomplete, incomplete, blockerCount: undefined, protocolVersion: undefined,
+    reason: raw.ok && incomplete ? "legacy mra did not emit a complete structured verdict" : raw.reason };
 }
 
 /**

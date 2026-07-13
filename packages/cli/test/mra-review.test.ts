@@ -4,7 +4,7 @@ import * as os from "node:os";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { execFileSync } from "node:child_process";
-import { resolveProjectByRemote, parseReviewStdout, buildReviewArgv, reviewEnv, strippedChildEnv } from "../src/adapters/mra";
+import { resolveProjectByRemote, parseReviewStdout, buildReviewArgv, reviewEnv, strippedChildEnv, mraSupportsReviewProvider } from "../src/adapters/mra";
 
 let ws: string;
 function mkRepo(dir: string, originUrl: string) {
@@ -37,10 +37,30 @@ describe("review argv + stdout parse", () => {
     assert.deepEqual(buildReviewArgv("superdsp-ui", 547, "standard"),
       ["review", "superdsp-ui", "--pr", "547", "--strategy", "standard"]);
   });
+  it("buildReviewArgv passes the default codex provider explicitly", () => {
+    assert.deepEqual(buildReviewArgv("onepixel", 12, "standard", "codex"),
+      ["review", "onepixel", "--pr", "12", "--provider", "codex", "--strategy", "standard"]);
+  });
+  it("buildReviewArgv passes a non-default admin-selected provider", () => {
+    assert.deepEqual(buildReviewArgv("onepixel", 12, "standard", "claude"),
+      ["review", "onepixel", "--pr", "12", "--provider", "claude", "--strategy", "standard"]);
+  });
   it("parseReviewStdout pulls status + comment count", () => {
     // EXACT sample lines from Task 0 spike — replace with real captured output:
     const out = "reviewing onepixel ...\nposting inline review to onead/OnePixel#12 (3 comments)...\nstatus: CHANGES_REQUESTED | comments: 3\n";
     assert.deepEqual(parseReviewStdout(out), { status: "CHANGES_REQUESTED", commentCount: 3, incomplete: false });
+  });
+  it("parseReviewStdout pulls blocker count from the authoritative summary", () => {
+    const out = "posting inline review to onead/OnePixel#12 (2 comments)...\nstatus: CHANGES_REQUESTED | comments: 2 | blockers: 0\n";
+    assert.deepEqual(parseReviewStdout(out), { status: "CHANGES_REQUESTED", commentCount: 2, blockerCount: 0, incomplete: false });
+  });
+  it("detects whether the installed mra supports explicit review providers", () => {
+    const current = path.join(ws, "mra-current");
+    const old = path.join(ws, "mra-old");
+    fs.writeFileSync(current, "#!/bin/sh\necho 'review --provider codex|claude'\n", { mode: 0o755 });
+    fs.writeFileSync(old, "#!/bin/sh\necho 'review --pr N'\n", { mode: 0o755 });
+    assert.equal(mraSupportsReviewProvider(current), true);
+    assert.equal(mraSupportsReviewProvider(old), false);
   });
   it("parseReviewStdout takes the LAST status/count (mra's authoritative line), not PR content echoed earlier", () => {
     // A malicious/decoy PR diff echoed in progress output contains a fake status
@@ -107,30 +127,41 @@ describe("reviewEnv", () => {
       else process.env.MRA_REVIEW_AGENT_MAX_TURNS = prev;
     }
   });
-  it("strips secrets, pins GH_TOKEN, sets the personas flag", () => {
+  it("strips secrets and GitHub credentials, sets the personas flag", () => {
     const prev = process.env.ANTHROPIC_API_KEY;
+    const prevGh = process.env.GH_TOKEN;
     process.env.ANTHROPIC_API_KEY = "sk-test";
     try {
-      const env = reviewEnv("personas", "ghtok");
+      process.env.GH_TOKEN = "ghtok";
+      const env = reviewEnv("personas");
       assert.equal(env.ANTHROPIC_API_KEY, undefined);
       assert.equal(env.MRA_REVIEW_PERSONAS, "true");
-      assert.equal(env.GH_TOKEN, "ghtok");
+      assert.equal(env.GH_TOKEN, undefined);
     } finally {
       if (prev === undefined) delete process.env.ANTHROPIC_API_KEY;
       else process.env.ANTHROPIC_API_KEY = prev;
+      if (prevGh === undefined) delete process.env.GH_TOKEN;
+      else process.env.GH_TOKEN = prevGh;
     }
   });
-  it("sets MRA_REVIEW_ALLOW_APPROVE=1 when allowApprove is true", () => {
-    assert.equal(reviewEnv("debate", undefined, { allowApprove: true }).MRA_REVIEW_ALLOW_APPROVE, "1");
-  });
-  it("does not set MRA_REVIEW_ALLOW_APPROVE when allowApprove is absent", () => {
+  it("never sets MRA_REVIEW_ALLOW_APPROVE", () => {
     assert.equal(reviewEnv("debate").MRA_REVIEW_ALLOW_APPROVE, undefined);
   });
-  it("does not set MRA_REVIEW_APPROVE_IF_NO_HIGH when approveIfNoHigh is absent", () => {
+  it("never sets MRA_REVIEW_APPROVE_IF_NO_HIGH", () => {
     assert.equal(reviewEnv("debate").MRA_REVIEW_APPROVE_IF_NO_HIGH, undefined);
   });
-  it("sets MRA_REVIEW_APPROVE_IF_NO_HIGH=1 when approveIfNoHigh is true", () => {
-    assert.equal(reviewEnv("standard", undefined, { approveIfNoHigh: true }).MRA_REVIEW_APPROVE_IF_NO_HIGH, "1");
+  it("passes the exact PR head SHA to mra", () => {
+    assert.equal(reviewEnv("standard", { expectedHeadSha: "abc123" }).MRA_REVIEW_EXPECTED_HEAD_SHA, "abc123");
+  });
+  it("sets provider override env for the default codex provider", () => {
+    const env = reviewEnv("standard", { providerMode: "codex" });
+    assert.equal(env.MRA_REVIEW_PROVIDER, "codex");
+    assert.equal(env.MRA_REVIEW_ADMIN_OVERRIDE, "1");
+  });
+  it("sets MRA_REVIEW_PROVIDER with admin override for non-default providers", () => {
+    const env = reviewEnv("standard", { providerMode: "claude" });
+    assert.equal(env.MRA_REVIEW_PROVIDER, "claude");
+    assert.equal(env.MRA_REVIEW_ADMIN_OVERRIDE, "1");
   });
 
   // H2: the approve-privilege flags are set ONLY from opts, never inherited from
@@ -164,6 +195,22 @@ describe("reviewEnv", () => {
     } finally {
       if (prev === undefined) delete process.env.MRA_REVIEW_PERSONAS;
       else process.env.MRA_REVIEW_PERSONAS = prev;
+    }
+  });
+  it("does NOT inherit MRA_REVIEW_PROVIDER from the parent env when providerMode is absent", () => {
+    const prevProvider = process.env.MRA_REVIEW_PROVIDER;
+    const prevAdmin = process.env.MRA_REVIEW_ADMIN_OVERRIDE;
+    process.env.MRA_REVIEW_PROVIDER = "claude";
+    process.env.MRA_REVIEW_ADMIN_OVERRIDE = "1";
+    try {
+      const env = reviewEnv("standard");
+      assert.equal(env.MRA_REVIEW_PROVIDER, undefined);
+      assert.equal(env.MRA_REVIEW_ADMIN_OVERRIDE, undefined);
+    } finally {
+      if (prevProvider === undefined) delete process.env.MRA_REVIEW_PROVIDER;
+      else process.env.MRA_REVIEW_PROVIDER = prevProvider;
+      if (prevAdmin === undefined) delete process.env.MRA_REVIEW_ADMIN_OVERRIDE;
+      else process.env.MRA_REVIEW_ADMIN_OVERRIDE = prevAdmin;
     }
   });
 

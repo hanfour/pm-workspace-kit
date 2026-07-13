@@ -1,6 +1,6 @@
 import type { DoctorCheck, DoctorCheckResult } from "../doctor";
 import { resolveReviewConfig } from "../config";
-import { findMraBinary } from "../../adapters/mra";
+import { findMraBinary, mraIntegrationCapabilities, mraSupportsReviewProvider } from "../../adapters/mra";
 import { findGhBinary } from "../../adapters/github";
 
 /**
@@ -22,10 +22,14 @@ export const reviewDoctorCheck: DoctorCheck = async (
     };
   }
 
-  const mraPresent = !!findMraBinary();
+  const mraBinary = findMraBinary();
+  const mraPresent = !!mraBinary;
   const ghPresent = !!findGhBinary();
+  const protocol = mraBinary ? mraIntegrationCapabilities(mraBinary, true) : undefined;
   const problems: string[] = [];
   if (!mraPresent) problems.push("mra not on PATH");
+  else if (!protocol && !mraSupportsReviewProvider(mraBinary)) problems.push("mra is too old (review --provider unsupported)");
+  if (review.approval.enabled && !protocol) problems.push("automatic approval requires MRA integration protocol v1");
   if (!ghPresent) problems.push("gh not on PATH");
 
   const warnings: string[] = [];
@@ -34,8 +38,9 @@ export const reviewDoctorCheck: DoctorCheck = async (
       "review.expectedGhUser unset — actor verification skipped at review time",
     );
   }
+  if (!protocol) warnings.push("legacy MRA bridge is review-only; structured completion and approval are unavailable");
 
-  const detail = `mra=${mraPresent ? "found" : "missing"}; gh=${ghPresent ? "found" : "missing"}; strategy=${review.strategy}`;
+  const detail = `mra=${mraPresent ? "found" : "missing"}; protocol=${protocol ? "v1" : "legacy/unavailable"}; gh=${ghPresent ? "found" : "missing"}; provider=${review.providerMode}; strategy=${review.strategy}; approval=${review.approval.enabled ? "enabled" : "disabled"}`;
   const severity = problems.length ? "fail" : warnings.length ? "warn" : "pass";
   const message = problems.length
     ? `${detail} — ${problems.join("; ")}`

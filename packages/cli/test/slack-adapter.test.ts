@@ -1097,12 +1097,27 @@ describe("SlackAdapter integration: :cr: reaction routes to ReviewCoordinator", 
     // .collab/repos.json so resolveProjectByRemote returns undefined → ReviewCoordinator
     // posts the "不在 mra workspace，略過" skip note. This proves the gate let :cr:
     // through without requiring a real mra binary or GitHub token.
-    const mraWorkspace = h?.home ?? "/tmp"; // will be set below
     h = buildHarness({
       config: {
         review: { enabled: true },
         mraWorkspace: "/tmp/no-such-workspace-cr-test",
       },
+    });
+    saveGatewayConfig({
+      version: 1,
+      admins: [],
+      blocklist: [],
+      audience: { default: "tech", users: {}, channels: {} },
+      escalation: { default: [], repos: {} },
+      slack: {
+        appToken: "xapp-test",
+        botToken: "xoxb-test",
+        botUserId: "UBOTID",
+        workspaceName: "test-workspace",
+      },
+      github: { token: "ghp-test-token" },
+      review: { enabled: true },
+      mraWorkspace: "/tmp/no-such-workspace-cr-test",
     });
 
     // conversations.history should return a message containing a GitHub PR link

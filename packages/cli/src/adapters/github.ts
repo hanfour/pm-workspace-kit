@@ -8,7 +8,7 @@
  * are never put into a thrown message, a Slack reply, or a host log line.
  */
 import { execFile, execFileSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { promisify } from "node:util";
@@ -169,7 +169,130 @@ export function buildGhArgs_getAuthUser(): string[] {
 
 /** Pure argv builder for `gh api repos/<slug>/pulls/<N> --jq ...` (exported for unit tests). */
 export function buildGhArgs_getPrHead(slug: string, pr: number): string[] {
-  return ["api", `repos/${slug}/pulls/${pr}`, "--jq", "{sha:.head.sha,base:.base.ref}"];
+  return ["api", `repos/${slug}/pulls/${pr}`, "--jq", "{sha:.head.sha,base:.base.ref,baseSha:.base.sha,title:.title,body:.body,updatedAt:.updated_at}"];
+}
+
+export function buildGhArgs_getApprovalProtection(slug: string, branch: string): string[] {
+  return ["api", `repos/${slug}/branches/${branch}/protection`, "--jq", "{dismissStale:.required_pull_request_reviews.dismiss_stale_reviews,requireLastPush:.required_pull_request_reviews.require_last_push_approval}"];
+}
+
+export function buildGhArgs_createPullRequestApproval(args: {
+  slug: string; pr: number; commitId: string; body: string;
+}): string[] {
+  return [
+    "api", "--method", "POST", `repos/${args.slug}/pulls/${args.pr}/reviews`,
+    "-f", "event=APPROVE", "-f", `commit_id=${args.commitId}`, "-f", `body=${args.body}`,
+  ];
+}
+
+export function buildGhArgs_hasPullRequestApproval(args: { slug: string; pr: number; commitId: string; artifactSha256: string; actor: string }): string[] {
+  return ["api", "--paginate", `repos/${args.slug}/pulls/${args.pr}/reviews`, "--jq",
+    `.[] | select(.state == \"APPROVED\" and .commit_id == \"${args.commitId}\" and .user.login == \"${args.actor}\" and (.body // \"\" | contains(\"${args.artifactSha256}\"))) | .id`];
+}
+
+export async function hasPullRequestApproval(
+  args: { slug: string; pr: number; commitId: string; artifactSha256: string; actor: string; token?: string },
+  deps: GithubDeps = {},
+): Promise<boolean | undefined> {
+  const exec = deps.exec ?? defaultExec;
+  const gh = (deps.findBinary ?? findGhBinary)();
+  if (!gh || !/^[0-9a-f]{40}$/i.test(args.commitId) || !/^[0-9a-f]{64}$/i.test(args.artifactSha256) || !/^[A-Za-z0-9-]+$/.test(args.actor)) return undefined;
+  try {
+    const env = args.token ? { ...process.env, GH_TOKEN: args.token } : process.env;
+    const { stdout } = await exec(gh, buildGhArgs_hasPullRequestApproval(args), { env, timeoutMs: 15_000 });
+    return stdout.trim().length > 0;
+  } catch {
+    return undefined;
+  }
+}
+
+export async function approvalProtectionReady(
+  args: { slug: string; branch: string; token?: string },
+  deps: GithubDeps = {},
+): Promise<boolean> {
+  const exec = deps.exec ?? defaultExec;
+  const gh = (deps.findBinary ?? findGhBinary)();
+  if (!gh) return false;
+  try {
+    const env = args.token ? { ...process.env, GH_TOKEN: args.token } : process.env;
+    const { stdout } = await exec(gh, buildGhArgs_getApprovalProtection(args.slug, args.branch), { env, timeoutMs: 15_000 });
+    const protection = JSON.parse(stdout) as { dismissStale?: boolean; requireLastPush?: boolean };
+    // Require both controls. This is stronger than either setting alone and
+    // avoids treating a client-side head GET as a compare-and-set operation.
+    return protection.dismissStale === true && protection.requireLastPush === true;
+  } catch {
+    return false;
+  }
+}
+
+export interface PullRequestApprovalResult {
+  reviewId: number;
+  state: string;
+  commitId: string;
+  actor?: string;
+  htmlUrl?: string;
+}
+
+export interface PullRequestReviewFinding {
+  path: string;
+  line: number;
+  body: string;
+  severity?: string;
+}
+
+export async function createPullRequestReview(
+  args: {
+    slug: string; pr: number; commitId: string; body: string;
+    event: "COMMENT" | "REQUEST_CHANGES"; comments: PullRequestReviewFinding[]; token?: string;
+  },
+  deps: GithubDeps = {},
+): Promise<PullRequestApprovalResult> {
+  const exec = deps.exec ?? defaultExec;
+  const gh = (deps.findBinary ?? findGhBinary)();
+  if (!gh) throw new Error("gh is unavailable");
+  const dir = mkdtempSync(path.join(os.tmpdir(), "pmk-gh-review-"));
+  const input = path.join(dir, "review.json");
+  writeFileSync(input, JSON.stringify({
+    commit_id: args.commitId,
+    event: args.event,
+    body: args.body,
+    comments: args.comments.map((c) => ({ path: c.path, line: c.line, side: "RIGHT", body: c.severity ? `[${c.severity}] ${c.body}` : c.body })),
+  }), { mode: 0o600 });
+  try {
+    const env = args.token ? { ...process.env, GH_TOKEN: args.token } : process.env;
+    const { stdout } = await exec(gh, ["api", "--method", "POST", `repos/${args.slug}/pulls/${args.pr}/reviews`, "--input", input], { env, timeoutMs: 30_000 });
+    const review = JSON.parse(stdout) as { id?: number; state?: string; commit_id?: string; user?: { login?: string }; html_url?: string };
+    if (!review.id || !review.state || review.commit_id !== args.commitId)
+      throw new Error("GitHub returned an invalid review response");
+    return { reviewId: review.id, state: review.state, commitId: review.commit_id, actor: review.user?.login, htmlUrl: review.html_url };
+  } catch (err) {
+    const code = (err as { code?: number }).code ?? "?";
+    throw new Error(`GitHub review post failed (${code})`);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+export async function createPullRequestApproval(
+  args: { slug: string; pr: number; commitId: string; body: string; token?: string },
+  deps: GithubDeps = {},
+): Promise<PullRequestApprovalResult> {
+  const exec = deps.exec ?? defaultExec;
+  const gh = (deps.findBinary ?? findGhBinary)();
+  if (!gh) throw new Error("gh is unavailable");
+  try {
+    const env = args.token ? { ...process.env, GH_TOKEN: args.token } : process.env;
+    const { stdout } = await exec(gh, buildGhArgs_createPullRequestApproval(args), { env, timeoutMs: 30_000 });
+    const review = JSON.parse(stdout) as {
+      id?: number; state?: string; commit_id?: string; user?: { login?: string }; html_url?: string;
+    };
+    if (!review.id || review.state?.toUpperCase() !== "APPROVED" || review.commit_id !== args.commitId)
+      throw new Error("GitHub returned an invalid approval response");
+    return { reviewId: review.id, state: review.state, commitId: review.commit_id, actor: review.user?.login, htmlUrl: review.html_url };
+  } catch (err) {
+    const code = (err as { code?: number }).code ?? "?";
+    throw new Error(`GitHub approval result is unknown (${code})`);
+  }
 }
 
 /**
@@ -201,7 +324,7 @@ export async function getAuthUser(
 export async function getPrHead(
   args: { slug: string; pr: number; token?: string },
   deps: GithubDeps = {},
-): Promise<{ sha: string; baseRef: string } | undefined> {
+): Promise<{ sha: string; baseRef: string; baseSha?: string; title?: string; body?: string; updatedAt?: string } | undefined> {
   const exec = deps.exec ?? defaultExec;
   const findBinary = deps.findBinary ?? findGhBinary;
   const gh = findBinary();
@@ -212,9 +335,9 @@ export async function getPrHead(
       env,
       timeoutMs: 15_000,
     });
-    const obj = JSON.parse(stdout) as { sha?: string; base?: string };
+    const obj = JSON.parse(stdout) as { sha?: string; base?: string; baseSha?: string; title?: string; body?: string; updatedAt?: string };
     if (!obj.sha || !obj.base) return undefined;
-    return { sha: obj.sha, baseRef: obj.base };
+    return { sha: obj.sha, baseRef: obj.base, baseSha: obj.baseSha, title: obj.title, body: obj.body, updatedAt: obj.updatedAt };
   } catch {
     return undefined;
   }

@@ -105,17 +105,24 @@ export interface ResolvedAudioConfig {
 
 export interface ReviewConfig {
   enabled: boolean;
+  approval: { enabled: boolean };
   allowPublicRepos: boolean;
   repoAllowlist?: string[];          // e.g. ["onead/OnePixel"]; undefined = any private repo in workspace
   maxPrsPerTrigger: number;
+  maxConcurrent: number;
+  maxConcurrentPerUser: number;
   strategy: "debate" | "personas" | "standard";
-  expectedGhUser?: string;           // gate: gh api user must equal this before posting
-  /** Allow an AI APPROVED verdict to post as a real GitHub APPROVE (sets
-   * MRA_REVIEW_ALLOW_APPROVE=1). Default false → verdict downgraded to COMMENT. */
-  allowApprove: boolean;
   /**
-   * Pinned GitHub token for ALL review GitHub interactions (PR head, repo
-   * visibility, actor-verify) AND mra's review POST. Literal or {env}/{cmd}
+   * Provider policy passed through to mra review. Defaults to codex so the
+   * Slack gateway does not consume Claude quota unless an admin opts in.
+   * "fallback" means mra tries primary then secondary; "dual" runs both and
+   * merges their findings when the installed mra supports it.
+   */
+  providerMode: "codex" | "claude" | "fallback" | "dual";
+  expectedGhUser?: string;           // gate: gh api user must equal this before posting
+  /**
+   * Pinned GitHub token for PMK-owned review interactions (PR head, repo
+   * visibility, actor verification, review publication, approval). Literal or {env}/{cmd}
    * secret reference. When set, the review uses THIS token's identity —
    * stable, independent of the host's active `gh` account. Recommended:
    * `{ "cmd": "gh auth token --user <work-account>" }` (no raw token on disk,
@@ -327,10 +334,18 @@ function normaliseRawConfig(raw: unknown): RawGatewayConfig {
         }
       : undefined;
   // `:cr:` review config. Carried through as a Partial<ReviewConfig>;
-  // `resolveReviewConfig` applies defaults / clamps / strategy guard at use
+  // `resolveReviewConfig` applies defaults / clamps / enum normalization at use
   // time. Only the known, well-typed fields survive (unknown keys dropped).
   const rawReview = (r as { review?: unknown }).review;
   const review = normaliseReviewConfig(rawReview);
+  // Existing configs predate provider selection and therefore had effective
+  // Claude/debate behavior. Preserve that on load; only genuinely new configs
+  // (no review block) receive the Codex/standard fresh-install default.
+  if (review && rawReview && typeof rawReview === "object" &&
+      !("providerMode" in (rawReview as Record<string, unknown>))) {
+    review.providerMode = "claude";
+    if (!("strategy" in (rawReview as Record<string, unknown>))) review.strategy = "debate";
+  }
   return {
     version: GATEWAY_CONFIG_VERSION,
     admins: asStringArray(r.admins),
@@ -358,17 +373,25 @@ function normaliseReviewConfig(raw: unknown): Partial<ReviewConfig> | undefined 
   const o = raw as Record<string, unknown>;
   const out: Partial<ReviewConfig> = {};
   if (typeof o.enabled === "boolean") out.enabled = o.enabled;
+  if (o.approval && typeof o.approval === "object") {
+    const approval = o.approval as Record<string, unknown>;
+    if (typeof approval.enabled === "boolean")
+      out.approval = { enabled: approval.enabled };
+  }
   if (typeof o.allowPublicRepos === "boolean")
     out.allowPublicRepos = o.allowPublicRepos;
   if (Array.isArray(o.repoAllowlist))
     out.repoAllowlist = asStringArray(o.repoAllowlist);
   if (typeof o.maxPrsPerTrigger === "number")
     out.maxPrsPerTrigger = o.maxPrsPerTrigger;
+  if (typeof o.maxConcurrent === "number") out.maxConcurrent = o.maxConcurrent;
+  if (typeof o.maxConcurrentPerUser === "number") out.maxConcurrentPerUser = o.maxConcurrentPerUser;
   if (o.strategy === "debate" || o.strategy === "personas" || o.strategy === "standard")
     out.strategy = o.strategy;
+  if (o.providerMode === "codex" || o.providerMode === "claude" || o.providerMode === "fallback" || o.providerMode === "dual")
+    out.providerMode = o.providerMode;
   if (typeof o.expectedGhUser === "string")
     out.expectedGhUser = o.expectedGhUser;
-  if (typeof o.allowApprove === "boolean") out.allowApprove = o.allowApprove;
   const ghToken = validateSecretSource(o.ghToken, "review.ghToken");
   if (ghToken !== undefined) out.ghToken = ghToken;
   return out;
@@ -461,25 +484,31 @@ export function resolveGithubToken(
 
 /**
  * Resolve the review config with safe defaults. Clamps `maxPrsPerTrigger`
- * to >=1 and normalizes `strategy` to "debate" unless explicitly "personas".
+ * to >=1, defaults providerMode to "codex", and normalizes `strategy` to
+ * "debate" unless explicitly "personas" or "standard".
  */
 export function resolveReviewConfig(raw?: Partial<ReviewConfig>): ReviewConfig {
   return {
     enabled: raw?.enabled ?? false,
+    approval: { enabled: raw?.approval?.enabled ?? false },
     allowPublicRepos: raw?.allowPublicRepos ?? false,
     repoAllowlist: raw?.repoAllowlist,
     maxPrsPerTrigger: Math.max(1, raw?.maxPrsPerTrigger ?? 5),
+    maxConcurrent: Math.max(1, raw?.maxConcurrent ?? 2),
+    maxConcurrentPerUser: Math.max(1, raw?.maxConcurrentPerUser ?? 1),
     strategy: raw?.strategy === "personas" ? "personas"
-      : raw?.strategy === "standard" ? "standard" : "debate",
+      : raw?.strategy === "debate" ? "debate" : "standard",
+    providerMode: raw?.providerMode === "claude" ? "claude"
+      : raw?.providerMode === "fallback" ? "fallback"
+      : raw?.providerMode === "dual" ? "dual" : "codex",
     expectedGhUser: raw?.expectedGhUser,
-    allowApprove: raw?.allowApprove ?? false,
     ghToken: raw?.ghToken,
   };
 }
 
 /**
  * Resolve the pinned review GitHub token (literal or {env}/{cmd}). When set,
- * every review GitHub call AND mra's review POST uses this token — a stable
+ * every PMK-owned review GitHub call uses this token — a stable
  * identity independent of the host's active `gh` account. Returns undefined
  * when unset (→ host ambient gh, the default). Resolved lazily at review time.
  */
