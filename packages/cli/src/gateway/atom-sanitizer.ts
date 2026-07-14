@@ -24,3 +24,21 @@ export function scanForInjection(text: string): { flagged: boolean; reasons: str
   }
   return { flagged: reasons.length > 0, reasons };
 }
+
+/**
+ * Scan every injectable field of an atom, not just the body. The title /
+ * `question` field enters the same retrieval + injection path as the answer,
+ * so a directive planted there is just as dangerous — earlier versions only
+ * scanned the body. Same policy as scanForInjection: flag + report, never block.
+ */
+export function scanAtomFields(fields: {
+  question?: string;
+  answer?: string;
+}): { flagged: boolean; reasons: string[] } {
+  const reasons: string[] = [];
+  for (const text of [fields.question, fields.answer]) {
+    if (!text) continue;
+    reasons.push(...scanForInjection(text).reasons);
+  }
+  return { flagged: reasons.length > 0, reasons };
+}

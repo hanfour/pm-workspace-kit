@@ -40,7 +40,7 @@ import {
 } from "../knowledge";
 import { pickGatewayPrompt } from "@pmk/shared";
 import type { LlmProvider } from "../../llm";
-import { scanForInjection } from "../atom-sanitizer";
+import { scanAtomFields } from "../atom-sanitizer";
 import { parseEscalate, stripEscalateBlock } from "../escalate";
 import { stripMraAskBlock } from "../mra-ask";
 import { stripCaseUpdateBlock } from "../../case";
@@ -250,7 +250,8 @@ export class EscalationCoordinator {
       // Heuristic injection scan — same defence applied to audio atoms.
       // Immutably flag the atom when suspicious phrases are detected; the
       // human approval gate is the backstop, but this surfaces the risk.
-      const scan = scanForInjection(atom.answer);
+      // Scan the question/title too, not just the body — both are injected.
+      const scan = scanAtomFields({ question: atom.question, answer: atom.answer });
       const atomToSave = scan.flagged ? { ...atom, flagged: true } : atom;
       if (scan.flagged) onLog(`escalation atom flagged for injection: ${scan.reasons.join("; ")}`);
       // First save: atom in pending without approval anchor.
