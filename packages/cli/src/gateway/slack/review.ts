@@ -64,6 +64,30 @@ import {
   ensureReviewWorkspaceMeta as ensureReviewWorkspaceMetaImpl,
   pkbNeedsBuild as pkbNeedsBuildImpl,
 } from "../review-workspace";
+// Pure request classifiers + result-text formatters live in sibling modules.
+// Imported for internal use, and re-exported so slack/index.ts and the review
+// tests keep importing them from "./review" unchanged.
+import { isReviewRequest, isApproveRequest } from "./review-requests";
+export {
+  isReviewRequest,
+  isApproveRequest,
+  isApproveConfirmationRequest,
+  isRetryRequest,
+  isRerunRequest,
+} from "./review-requests";
+import {
+  canConfirmApproveFromReview,
+  reviewResultText,
+  approveResultText,
+  describeMraFailure,
+} from "./review-messages";
+export {
+  type ReviewOutcome,
+  canConfirmApproveFromReview,
+  reviewResultText,
+  approveResultText,
+  describeMraFailure,
+} from "./review-messages";
 
 export interface ReviewGateway {
   resolveProjectByRemote: typeof resolveProjectByRemoteImpl;
@@ -101,160 +125,8 @@ export const realReviewGateway: ReviewGateway = {
   pkbNeedsBuild: pkbNeedsBuildImpl,
 };
 
-/**
- * True when a message is an inline `:cr:` review request: it contains the
- * `:cr:` token AND at least one GitHub PR link. Requiring BOTH avoids
- * false-firing review on a stray PR link in ordinary chat. (option B-lite gate)
- */
-export function isReviewRequest(text: string): boolean {
-  return text.includes(":cr:") && parsePrRefs(text).length > 0;
-}
-
-/**
- * True when a message is an inline `:a:` approve request: it contains the `:a:`
- * token AND at least one GitHub PR link. `:a:` runs a fast single-agent review
- * then approves iff no high-severity issue is found.
- */
-export function isApproveRequest(text: string): boolean {
-  return text.includes(":a:") && parsePrRefs(text).length > 0;
-}
-
-/**
- * Bare confirmation inside a review thread. This is intentionally narrower than
- * ordinary chat: `:cr:` may offer approval, but GitHub APPROVE only happens after
- * an explicit user confirmation.
- */
-export function isApproveConfirmationRequest(text: string): boolean {
-  const t = text
-    .trim()
-    .toLowerCase()
-    .replace(/[。.!！]+$/g, "")
-    .replace(/\s+/g, " ");
-  return [
-    "approve",
-    "approve pr",
-    "approve this",
-    "confirm approve",
-    "yes approve",
-    "確認 approve",
-    "確認approve",
-    "請 approve",
-    "可以 approve",
-    "進行 approve",
-    "核准",
-  ].includes(t);
-}
-
-/** Fields of an mra review result that shape the Slack result line. */
-export interface ReviewOutcome {
-  status?: string;
-  commentCount?: number;
-  blockerCount?: number;
-  /** mra posted a neutral REVIEW_INCOMPLETE placeholder — the review never evaluated the PR. */
-  incomplete?: boolean;
-  protocolVersion?: "1.0";
-  artifactSha256?: string;
-  analyzedHeadSha?: string;
-}
-
-export function canConfirmApproveFromReview(res: ReviewOutcome): boolean {
-  if (res.incomplete === true) return false;
-  return res.protocolVersion === "1.0" && typeof res.artifactSha256 === "string" &&
-    typeof res.analyzedHeadSha === "string" && res.blockerCount === 0 &&
-    (res.status === "COMMENT" || res.status === "COMMENTED");
-}
-
-/** Result line for a plain `:cr:` review. It never claims GitHub approval. */
-export function reviewResultText(slug: string, ref: PrRef, res: ReviewOutcome, approvalEnabled = true): string {
-  if (res.incomplete)
-    return `:warning: ${slug}#${ref.number} review 未完成（mra 回報 REVIEW_INCOMPLETE，未真正評估此 PR — 可能 max-turns 截斷或 provider 呼叫失敗）；已貼中性佔位，claim 已釋放，請重試 :cr:：${ref.url}`;
-  const status = res.status ?? "COMMENT";
-  const count = res.commentCount ?? 0;
-  if (approvalEnabled && canConfirmApproveFromReview(res)) {
-    return `:mag: 已完成 ${slug}#${ref.number} review（GitHub action: ${status}；${count} 則）。這個結果沒有 HIGH/CRITICAL blocker，可進一步 approve，但 :cr: 不會主動 approve；請由 PMK admin 在此 channel thread @PMK 回覆 \`approve\` 授權（DM 可直接回覆）：${ref.url}`;
-  }
-  return `:mag: 已完成 ${slug}#${ref.number} review（GitHub action: ${status}；${count} 則；未執行 GitHub approve）：${ref.url}`;
-}
-
-/**
- * Result line for a `:a:` approve. Incomplete first (a REVIEW_INCOMPLETE run posts a
- * neutral placeholder whose GitHub event reads COMMENT — without this branch it would
- * fall through to the misleading "請至 PR 確認是否已 approve"). Then three-way on the
- * mra status: the batch-fallback path (review.sh) posts individual comments and prints
- * NO `status:` line, so `status` is undefined there — we must NOT claim "發現重大問題 /
- * 未 approve" then, because GitHub may in fact have recorded an APPROVE. Point the user
- * to the PR instead of asserting a verdict we can't read.
- */
-export function approveResultText(slug: string, ref: PrRef, res: ReviewOutcome): string {
-  const cc = res.commentCount ?? 0;
-  if (res.incomplete)
-    return `:warning: 未 approve ${slug}#${ref.number} — review 未完成（mra 回報 REVIEW_INCOMPLETE，可能 max-turns 截斷或 provider 呼叫失敗），未做任何 approve；請重試 :a: 或手動 review：${ref.url}`;
-  if (res.status === "APPROVED")
-    return `:white_check_mark: 已 approve ${slug}#${ref.number}（無重大問題；${cc} 則 minor 建議）：${ref.url}`;
-  if (res.status === "CHANGES_REQUESTED")
-    return `:no_entry: 未 approve ${slug}#${ref.number} — 發現重大問題，已請求修改（${cc} 則）：${ref.url}`;
-  return `:information_source: 已完成 ${slug}#${ref.number} review（GitHub 未回報 approve 狀態，${cc} 則；請至 PR 確認是否已 approve）：${ref.url}`;
-}
-
 /** Backoff before a single transient-failure retry of the mra review call. */
 const MRA_RETRY_BACKOFF_MS = 4000;
-
-/** Last non-empty line of `s`, with ANSI colour escapes stripped and trimmed. */
-function lastNonEmptyLine(s?: string): string | undefined {
-  if (!s) return undefined;
-  const lines = s
-    .split("\n")
-    .map((l) => l.replace(/\[[0-9;]*m/g, "").trim())
-    .filter(Boolean);
-  return lines[lines.length - 1];
-}
-
-/**
- * Turn an mra failure into something actionable. Older mra review paths ran
- * providers under `set -euo pipefail` with `2>/dev/null`, so a non-zero provider
- * exit can become a silent `mra exited with code=1` with no stderr — `detail`
- * then falls back to the last stdout phase so the Slack message says WHERE it
- * died; `logDump` records the full picture for the operator's gateway log.
- */
-export function describeMraFailure(res: {
-  reason?: string;
-  stderr?: string;
-  stdout?: string;
-}): { detail: string; logDump: string } {
-  const errTail = lastNonEmptyLine(res.stderr);
-  const outTail = lastNonEmptyLine(res.stdout);
-  const detail = errTail
-    ? errTail.slice(0, 200)
-    : outTail
-      ? `最後階段：${outTail.slice(0, 140)}`
-      : "";
-  const logDump = [
-    `reason=${res.reason ?? "unknown"}`,
-    errTail
-      ? `stderr=${errTail}`
-      : "stderr=(empty — mra likely swallowed the provider error via 2>/dev/null)",
-    outTail ? `stdout(last)=${outTail}` : "",
-  ]
-    .filter(Boolean)
-    .join(" | ");
-  return { detail, logDump };
-}
-
-/**
- * True when a message is a bare retry command (`retry` / `重試` / `重跑`), used
- * inside a review-result thread to re-run that thread's PR review. The bot
- * @-mention is stripped upstream, so we match the trimmed text exactly to avoid
- * intercepting ordinary chat that merely mentions "retry".
- */
-export function isRetryRequest(text: string): boolean {
-  const t = text.trim().toLowerCase();
-  return t === "retry" || t === "重試";
-}
-
-export function isRerunRequest(text: string): boolean {
-  const t = text.trim().toLowerCase();
-  return t === "rerun" || t === "重跑";
-}
 
 export interface ReviewCoordinatorOptions {
   web: WebClient;
