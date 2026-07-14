@@ -9,7 +9,7 @@
     "pmk-confluence-sync": "src/confluence-sync.js"
   },
   "scripts": {
-    "test": "echo 'tests TBD'"
+    "test": "node --test test/*.test.js"
   },
   "dependencies": {
     "gray-matter": "^4.0.3"

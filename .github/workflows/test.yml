@@ -16,14 +16,15 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Workspaces whose `test` script runs `typecheck:test` (tsc) + node --test.
-        # packages/core is intentionally excluded until it has real tests (issue #73);
-        # its test script is currently a no-op echo and would be a misleading green check.
+        # Workspaces with real test suites. packages/cli/rag/shared and
+        # apps/desktop run `typecheck:test` (tsc) + node --test on TS sources;
+        # packages/core runs plain node --test on JS (no TS toolchain by design).
         workspace:
           - packages/cli
           - packages/rag
           - packages/shared
           - apps/desktop
+          - packages/core
     steps:
       - uses: actions/checkout@v4
 
