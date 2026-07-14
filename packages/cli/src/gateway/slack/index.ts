@@ -59,13 +59,8 @@ import { ReviewCoordinator, realReviewGateway, isReviewRequest, isRetryRequest, 
 import { AudioCoordinator, isAudioMessage } from "../audio/coordinator";
 import { needsConsentNotice } from "../audio/consent";
 import { pickAudience } from "../config";
-import {
-  approveAtom,
-  findAtomByApprovalMessage,
-  rejectAtom,
-} from "../knowledge";
-import { bumpQuestioned } from "../atom-telemetry";
-import { readGatewayEvents } from "../events";
+import type { Slack } from "./slack-events";
+import { routeReactionAdded } from "./reaction-router";
 
 // v0.13: re-exported so existing test imports (`gateway.test.ts`) keep
 // working after the extractions to `./concurrency` (tranche 1) and
@@ -1064,126 +1059,16 @@ export class SlackAdapter {
   private async handleReactionAdded(
     payload: Slack.ReactionEventPayload,
   ): Promise<void> {
-    await payload.ack?.().catch(() => {});
-
-    const event = payload?.event;
-    if (!event || !this.botInfo) return;
-
-    const reaction = event.reaction;
-    const channelId = event.item?.channel;
-    const messageTs = event.item?.ts;
-    const reactorUserId = event.user;
-    if (!channelId || !messageTs || !reactorUserId) return;
-
-    // Blocklist parity with the message / @-mention / slash paths: a blocklisted
-    // user must not drive ANY reaction side-effect — :cr: review, :a: GitHub
-    // approve, 📚 atom save, or ticket. The typed paths all gate on blocklist;
-    // the reaction path previously did not, letting a banned user still trigger
-    // the most privileged action (a real PR approve) with a single emoji.
-    if (this.config.blocklist.includes(reactorUserId)) return;
-
-    // :cr: → PR review. Unlike approval/ticket reactions, this lands on a
-    // USER's message (the PR-request post), so it is handled BEFORE the
-    // bot-message guard (which only admits reactions on the bot's own messages).
-    if (reaction === "cr") {
-      await this.review.fromReaction({ channelId, messageTs, reactorUserId });
-      return;
-    }
-    if (reaction === "a") {
-      await this.review.fromApproveReaction({ channelId, messageTs, reactorUserId });
-      return;
-    }
-
-    // Remaining reactions (approval / ticket / citation-feedback) only apply
-    // to the bot's own messages (item_user is the author of the reacted-to message).
-    if (event.item_user !== this.botInfo.botUserId) return;
-
-    // 📚 on a bot audio-summary message → save it to the knowledge base.
-    if (reaction === "books") {
-      if (await this.audio.fromApproval({ channelId, messageTs, reactorUserId })) return;
-    }
-
-    const isApprove =
-      reaction === "white_check_mark" ||
-      reaction === "heavy_check_mark" ||
-      reaction === "+1";
-    const isReject = reaction === "x" || reaction === "-1";
-    // `thumbsdown` is not an approval-reject reaction but is used for
-    // citation feedback in the !found branch below.
-    const isCitationFeedback = reaction === "thumbsdown";
-    const isTicket = reaction === "ticket";
-    if (!isApprove && !isReject && !isCitationFeedback && !isTicket) return;
-
-    if (isTicket) {
-      await this.issue.fromCandidate({ channelId, anchorTs: messageTs, reactorUserId });
-      return;
-    }
-
-    const found = findAtomByApprovalMessage(channelId, messageTs);
-    if (!found) {
-      // Not an approval anchor. If this is a 👎 on a cited bot reply,
-      // mark the cited atoms questioned. `x` stays reserved for
-      // approval-reject; only -1/thumbsdown means "citation questioned".
-      if (reaction === "-1" || reaction === "thumbsdown") {
-        // A 👎 reaction always lands on a recent reply, so scanning
-        // the last 30 days is safe and avoids a full-partition scan.
-        const turn = readGatewayEvents({ sinceMs: Date.now() - 30 * 24 * 60 * 60 * 1000 })
-          .filter(
-            (e) =>
-              e.type === "turn.processed" &&
-              e.channelId === channelId &&
-              e.replyTs === messageTs &&
-              Array.isArray(e.atomIds) &&
-              e.atomIds.length > 0,
-          )
-          .at(-1);
-        if (turn && turn.type === "turn.processed" && turn.atomIds) {
-          bumpQuestioned(
-            turn.atomIds,
-            `reaction:${channelId}:${messageTs}:${reactorUserId}:${reaction}`,
-          );
-        }
-      }
-      return;
-    }
-
-    if (reactorUserId !== found.atom.source.contributorUserId) {
-      this.onLog(
-        `reaction-approval ignored: ${reactorUserId} is not the atom contributor (${found.atom.source.contributorUserId})`,
-      );
-      return;
-    }
-
-    // thumbsdown is citation-feedback only; it must never act as an
-    // approval-reject on a pending-atom anchor.
-    if (!isApprove && !isReject) return;
-
-    if (isApprove) {
-      const promoted = approveAtom(found.atom.id);
-      this.onLog(
-        `reaction-approval: ${found.atom.id} approved via :${reaction}: from ${reactorUserId}`,
-      );
-      const tags = promoted?.tags?.length ? promoted.tags.join(", ") : "—";
-      await this.web.chat
-        .postMessage({
-          channel: channelId,
-          thread_ts: messageTs,
-          text: `:books: 已生效（標籤：${tags}），下次同類問題會自動帶進來。`,
-        })
-        .catch(() => {});
-    } else {
-      const ok = rejectAtom(found.atom.id);
-      this.onLog(
-        `reaction-approval: ${found.atom.id} rejected via :${reaction}: from ${reactorUserId} (deleted=${ok})`,
-      );
-      await this.web.chat
-        .postMessage({
-          channel: channelId,
-          thread_ts: messageTs,
-          text: `:wastebasket: 已捨棄，atom 檔案已刪除。`,
-        })
-        .catch(() => {});
-    }
+    if (!this.botInfo) return;
+    return routeReactionAdded(payload, {
+      web: this.web,
+      config: this.config,
+      botInfo: this.botInfo,
+      review: this.review,
+      audio: this.audio,
+      issue: this.issue,
+      onLog: this.onLog,
+    });
   }
 
 
@@ -1239,76 +1124,4 @@ export class SlackAdapter {
   }
 
 
-}
-
-// ─────────────────────────── ambient Slack types ──────────────────────
-
-declare namespace Slack {
-  interface MessageEvent {
-    type: "message";
-    user?: string;
-    bot_id?: string;
-    text?: string;
-    channel?: string;
-    ts?: string;
-    thread_ts?: string;
-    subtype?: string;
-    files?: SlackFile[];
-  }
-  interface AppMentionEvent {
-    type: "app_mention";
-    user?: string;
-    text?: string;
-    channel?: string;
-    ts?: string;
-    thread_ts?: string;
-    files?: SlackFile[];
-  }
-  interface MessageEventPayload {
-    ack?: (response?: unknown) => Promise<void>;
-    envelope_id: string;
-    retry_num?: number;
-    retry_reason?: string;
-    event?: MessageEvent;
-  }
-  interface AppMentionEventPayload {
-    ack?: (response?: unknown) => Promise<void>;
-    envelope_id: string;
-    retry_num?: number;
-    retry_reason?: string;
-    event?: AppMentionEvent;
-  }
-  // v0.8.5 (#21) — reactions:read scope on the Slack app side.
-  interface ReactionEvent {
-    type: "reaction_added";
-    user?: string;
-    reaction?: string;
-    item_user?: string;
-    item?: { type: string; channel: string; ts: string };
-  }
-  interface ReactionEventPayload {
-    ack?: (response?: unknown) => Promise<void>;
-    envelope_id: string;
-    retry_num?: number;
-    retry_reason?: string;
-    event?: ReactionEvent;
-  }
-  // v0.9.1 (#39) — real Slack slash-command envelopes. Shape per
-  // @slack/socket-mode body.
-  interface SlashCommandBody {
-    command?: string;
-    text?: string;
-    user_id?: string;
-    channel_id?: string;
-    response_url?: string;
-    trigger_id?: string;
-    team_id?: string;
-  }
-  interface SlashCommandPayload {
-    ack?: (response?: unknown) => Promise<void>;
-    envelope_id: string;
-    retry_num?: number;
-    retry_reason?: string;
-    body?: SlashCommandBody;
-  }
 }
