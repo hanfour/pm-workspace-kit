@@ -38,7 +38,7 @@ import { claimAudio, releaseAudio, finalizeAudio } from "./claim";
 import { redactSecrets, countHighEntropyTokens } from "./redact";
 import { writeAtomMarker, readAtomMarker, acquireAtomMarker, deleteAtomMarker, restoreAtomMarker } from "./atom-marker";
 import { saveAtom, findAtomByThreadKey, generateAtomId, type KnowledgeAtom } from "../knowledge";
-import { scanForInjection } from "../atom-sanitizer";
+import { scanAtomFields } from "../atom-sanitizer";
 
 const USD_PER_MINUTE = 0.006; // whisper-1 list price ($0.006/min); for estimatedUsd only
 
@@ -536,7 +536,10 @@ export class AudioCoordinator {
     }
 
     const answer = redactSecrets(marker.summaryText);
-    const scan = scanForInjection(answer);
+    const question = redactSecrets(marker.title);
+    // Scan BOTH the title (question) and the body — the title is injected into
+    // retrieval context just like the answer, so it needs the same defence.
+    const scan = scanAtomFields({ question, answer });
     if (scan.flagged) this.opts.onLog(`audio atom flagged for injection: ${scan.reasons.join("; ")}`);
     const ent = countHighEntropyTokens(answer);
     if (ent > 0) this.opts.onLog(`audio atom: ${ent} high-entropy token(s) — possible secret in summary`);
@@ -544,7 +547,7 @@ export class AudioCoordinator {
     const firstLine = answer.split("\n").map((l) => l.trim()).find((l) => l.length > 0)?.slice(0, 200);
     const atom: KnowledgeAtom = {
       id: generateAtomId(marker.title), createdAt: now(), scope: marker.scope,
-      question: redactSecrets(marker.title), answer, summary: firstLine, tags: marker.tags,
+      question, answer, summary: firstLine, tags: marker.tags,
       source: { threadKey: marker.threadKey, contributorUserId: marker.uploaderId, permalink },
       status: "approved", flagged: scan.flagged || undefined,
     };

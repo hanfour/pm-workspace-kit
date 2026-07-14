@@ -22,6 +22,10 @@ Merged to `main`, not yet tagged.
 
 - **Flaky traceability-check** ([#80](https://github.com/hanfour/pm-workspace-kit/pull/80)) — the generated matrix's `Last generated: <date>` line was its only volatile field, so any PR touching `traceability.js` on a later day failed the CI diff purely on the date. Dropped the stamp; matrix output is now deterministic.
 
+### Security
+
+- **Atom title now injection-scanned + redaction hardening** ([#74](https://github.com/hanfour/pm-workspace-kit/issues/74)) — closes the four security follow-ups deferred at v0.29.0. The atom `title`/`question` is injected into retrieval context just like the body but was only redacted, never injection-scanned; a shared `scanAtomFields` now scans both fields on the audio (📚) and escalation save paths (same flag-not-block policy). `countHighEntropyTokens` recognises `=`-padded base64 secrets (was anchored on `\b`, which can't terminate on `=`). Phone redaction no longer over-matches 3-group numeric IDs / amounts / ticket refs (`1234 5678 9012`, `100-2000-3000`) — the domestic form now requires a trunk-prefixed (leading `0`) or parenthesised area code. Added a `glpat-` (GitLab PAT) redaction test.
+
 ### Verified
 
 - Live PMK doctor: `passed=11 warned=1 failed=0`, `protocol=v1`, `provider=codex`, `strategy=standard`, `approval=disabled`; gateway launchd running, Slack socket connected; real MRA Codex protocol smoke complete/pass (0 findings, 0 blockers).
@@ -29,7 +33,7 @@ Merged to `main`, not yet tagged.
 
 ### Tests
 
-- All workspaces: **1,096** (`cli` 988 · `core` 50 · `shared` 32 · `rag` 13 · `desktop` 13).
+- All workspaces: **1,104** (`cli` 996 · `core` 50 · `shared` 32 · `rag` 13 · `desktop` 13).
 
 ---
 
