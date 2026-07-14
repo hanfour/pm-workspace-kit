@@ -88,6 +88,11 @@ export {
   approveResultText,
   describeMraFailure,
 } from "./review-messages";
+import {
+  buildReviewMraArgs,
+  runMraReviewWithRetry,
+  postProtocolV1Review,
+} from "./review-backend";
 
 export interface ReviewGateway {
   resolveProjectByRemote: typeof resolveProjectByRemoteImpl;
@@ -124,9 +129,6 @@ export const realReviewGateway: ReviewGateway = {
   ensureReviewWorkspaceMeta: ensureReviewWorkspaceMetaImpl,
   pkbNeedsBuild: pkbNeedsBuildImpl,
 };
-
-/** Backoff before a single transient-failure retry of the mra review call. */
-const MRA_RETRY_BACKOFF_MS = 4000;
 
 export interface ReviewCoordinatorOptions {
   web: WebClient;
@@ -894,44 +896,29 @@ export class ReviewCoordinator {
       }
 
       const t0 = Date.now();
-      const mraArgs = {
-        workspace: ctx.reviewWorkspace,
+      const mraArgs = buildReviewMraArgs({
+        reviewWorkspace: ctx.reviewWorkspace,
         project,
         pr: ref.number,
         strategy,
-        cwd: ctx.reviewWorkspace,
         providerMode: ctx.review.providerMode,
-        expectedHeadSha: head.sha,
+        head,
         baseRef: prep.baseRef,
-        baseSha: head.baseSha,
-        prContext: { title: head.title, body: head.body, updatedAt: head.updatedAt },
-        signal: controller.signal, // A: shutdown aborts → SIGTERM the review child
-      };
+        signal: controller.signal,
+      });
       const onProgress = (line: string) => {
         onLog(`mra ${verb} ${slug}#${ref.number}: ${line}`);
         progress?.onLine(line);
       };
-      let res = await gateway.runMraReview(mraArgs, { onProgress });
-      let retried = false;
-      // Retry once on a transient failure OR a REVIEW_INCOMPLETE. Provider
-      // overload/rate-limit can surface as a bare `exited with code=1`
-      // (res.ok=false), while an empty / unparseable response makes mra EXIT 0
-      // but post a neutral REVIEW_INCOMPLETE placeholder. Both routinely recover
-      // on a re-run. Skip the retry if aborted (shutdown drain) — not transient,
-      // clone about to be torn down.
-      if ((!res.ok || res.incomplete) && !controller.signal.aborted) {
-        const why = res.ok
-          ? "回報 REVIEW_INCOMPLETE"
-          : `失敗 — ${describeMraFailure(res).logDump}`;
-        onLog(
-          `mra ${verb} ${slug}#${ref.number} 第一次${why}，${MRA_RETRY_BACKOFF_MS / 1000}s 後重試一次`,
-        );
-        await this.backoff(MRA_RETRY_BACKOFF_MS, controller.signal);
-        if (!controller.signal.aborted) {
-          retried = true;
-          res = await gateway.runMraReview(mraArgs, { onProgress });
-        }
-      }
+      // Invoke the backend with the transient-failure / REVIEW_INCOMPLETE retry
+      // policy; res.status may be reassigned below on the protocol-v1 path.
+      const { res, retried } = await runMraReviewWithRetry(gateway, mraArgs, {
+        onProgress,
+        onLog,
+        backoff: (ms, signal) => this.backoff(ms, signal),
+        signal: controller.signal,
+        label: `${verb} ${slug}#${ref.number}`,
+      });
       if (!res.ok) {
         const { detail, logDump } = describeMraFailure(res);
         onLog(`mra ${verb} ${slug}#${ref.number} FAILED${retried ? " (after retry)" : ""}: ${logDump}`);
@@ -957,37 +944,20 @@ export class ReviewCoordinator {
       }
 
       if (res.protocolVersion === "1.0") {
-        const live = this.currentConfig();
-        const liveReview = resolveReviewConfig(live.review);
-        if (!liveReview.enabled || live.blocklist.includes(ctx.reactorUserId)) {
-          await skip("policy-revoked", ":no_entry: review policy 在分析期間已撤銷，未貼 GitHub review。");
-          return;
-        }
-        if (liveReview.repoAllowlist && !liveReview.repoAllowlist.includes(slug)) {
-          await skip("policy-revoked", ":no_entry: repository 已不在 review allowlist，未貼 GitHub review。");
-          return;
-        }
-        const liveToken = resolveReviewGhToken(live.review) ?? resolveGithubToken(live.github);
-        const liveActor = await gateway.getAuthUser({ token: liveToken });
-        if (!liveActor || (liveReview.expectedGhUser && liveActor !== liveReview.expectedGhUser)) {
-          await skip("gh-actor-revoked", ":no_entry: GitHub review identity 在分析期間已改變，未貼 review。");
-          return;
-        }
-        const liveHead = await gateway.getPrHead({ slug, pr: ref.number, token: liveToken });
-        if (!liveHead || liveHead.sha !== head.sha) {
-          await skip("review-head-changed", `:warning: PR #${ref.number} 在分析期間已有新 commit；未貼過期 review。`);
-          return;
-        }
-        const postedReview = await gateway.createPullRequestReview({
+        // Re-validate live policy + head at post time, then POST the GitHub review.
+        const posting = await postProtocolV1Review(gateway, {
+          config: this.currentConfig(),
           slug,
-          pr: ref.number,
-          commitId: head.sha,
-          token: liveToken,
-          event: res.status === "CHANGES_REQUESTED" ? "REQUEST_CHANGES" : "COMMENT",
-          body: `${res.summary ?? "MRA review completed"}\n\nMRA artifact: ${res.artifactSha256}`,
-          comments: res.findings ?? [],
+          ref,
+          headSha: head.sha,
+          reactorUserId: ctx.reactorUserId,
+          res,
         });
-        res.status = postedReview.state;
+        if (!posting.ok) {
+          await skip(posting.reason, posting.message);
+          return;
+        }
+        res.status = posting.status;
       }
 
       posted = true;

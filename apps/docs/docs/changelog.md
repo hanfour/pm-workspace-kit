@@ -24,7 +24,10 @@ Merged to `main`, not yet tagged.
 
 ### Changed
 
-- **review.ts decomposition, phase 1** ([#76](https://github.com/hanfour/pm-workspace-kit/issues/76)) — extracted the pure `:cr:`/`:a:` request classifiers into `review-requests.ts` and the outcome types + Slack result-line formatters + `describeMraFailure` into `review-messages.ts`, re-exported from `review.ts` for back-compat (no import changes for callers). `review.ts` 1186 → 1058 lines; behaviour-preserving (996 cli tests unchanged). The deeper `runOne` codex/mra backend extraction is deferred — it sits on the live review path and warrants host live-verification.
+- **review.ts decomposition** ([#76](https://github.com/hanfour/pm-workspace-kit/issues/76)) — split the 1186-line hotspot into focused modules, re-exported from `review.ts` for back-compat (no import changes for callers), behaviour-preserving throughout:
+  - _phase 1_: pure `:cr:`/`:a:` request classifiers → `review-requests.ts`; outcome types + Slack result-line formatters + `describeMraFailure` → `review-messages.ts`.
+  - _phase 2_: the provider-facing backend seam of `runOne` → `review-backend.ts` — `buildReviewMraArgs` (pure argv), `runMraReviewWithRetry` (the transient-failure / REVIEW_INCOMPLETE retry policy), and `postProtocolV1Review` (codex protocol-v1 live-policy re-validation + GitHub post, returning a skip-or-status verdict the coordinator acts on). Now unit-testable in isolation: +13 backend tests.
+  - `review.ts` 1186 → 1028 lines. The coordinator keeps the claim lifecycle, progress bar, and Slack replies; the extracted seam still warrants host live-verification of the end-to-end `:cr:`/`:a:` path before the next release.
 
 ### Security
 
@@ -37,7 +40,7 @@ Merged to `main`, not yet tagged.
 
 ### Tests
 
-- All workspaces: **1,104** (`cli` 996 · `core` 50 · `shared` 32 · `rag` 13 · `desktop` 13).
+- All workspaces: **1,117** (`cli` 1009 · `core` 50 · `shared` 32 · `rag` 13 · `desktop` 13).
 
 ---
 
