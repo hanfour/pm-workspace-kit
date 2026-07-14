@@ -8,6 +8,84 @@ All notable changes to **pm-workspace-kit** are documented here.
 
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Each release also has a longer narrative on [GitHub Releases](https://github.com/hanfour/pm-workspace-kit/releases) with rationale, dogfood notes, and test plans.
 
+## [Unreleased] — Codex review integration & CI test harness
+
+Merged to `main`, not yet tagged.
+
+### Added
+
+- **Codex review integration** ([#70](https://github.com/hanfour/pm-workspace-kit/pull/70)) — PMK review now routes through the **MRA protocol v1** with **Codex as the default provider**. `:cr:` stays analysis/review-only; a true GitHub **APPROVE** remains gated behind a disabled-by-default approval policy. Adds admin/config surfaces for provider mode and review-approval gates, SHA-bound review artifacts, approval offers with a Slack confirmation flow, and `gateway doctor` coverage for the review provider. Depends on [multi-repo-agent#9](https://github.com/hanfour/multi-repo-agent/pull/9).
+- **CI test workflow** ([#71](https://github.com/hanfour/pm-workspace-kit/pull/71)) — `test.yml` runs `npm test` (tsc typecheck + `node --test`) on every PR and push to `main`, across a matrix of all five workspaces with real suites (`cli` / `rag` / `shared` / `desktop` / `core`); the four `cli`/`rag`/`shared`/`desktop` jobs plus `core` are branch-protection required checks. Previously ~900 tests ran only on developer discipline.
+- **`packages/core` test suite** ([#73](https://github.com/hanfour/pm-workspace-kit/pull/73)) — the two scripts CI actually executes (`traceability.js`, `confluence-sync.js`) went from **0 → 50 tests** (validation gate, graph build, label→status mapping, immutable status writes, Confluence API via mocked `fetch`), behind a behaviour-preserving `require.main` refactor.
+
+### Fixed
+
+- **Flaky traceability-check** ([#80](https://github.com/hanfour/pm-workspace-kit/pull/80)) — the generated matrix's `Last generated: <date>` line was its only volatile field, so any PR touching `traceability.js` on a later day failed the CI diff purely on the date. Dropped the stamp; matrix output is now deterministic.
+
+### Verified
+
+- Live PMK doctor: `passed=11 warned=1 failed=0`, `protocol=v1`, `provider=codex`, `strategy=standard`, `approval=disabled`; gateway launchd running, Slack socket connected; real MRA Codex protocol smoke complete/pass (0 findings, 0 blockers).
+- All five CI test jobs green on real GitHub Actions.
+
+### Tests
+
+- All workspaces: **1,096** (`cli` 988 · `core` 50 · `shared` 32 · `rag` 13 · `desktop` 13).
+
+---
+
+## [v0.30.1] — 2026-07-06 — REVIEW_INCOMPLETE detection (exit-0 flaky-claude variant)
+
+[GitHub release](https://github.com/hanfour/pm-workspace-kit/releases/tag/v0.30.1)
+
+### Why
+
+A second `:a:` on a live PR (`onead/erp#4899`) reported the misleading "GitHub 未回報 approve 狀態…請至 PR 確認是否已 approve" — but the review had never actually completed. mra's single-pass claude emitted no completion sentinel, so mra **exited 0** while posting a neutral `REVIEW_INCOMPLETE` placeholder (GitHub event = COMMENT). The gateway parsed `status=COMMENT`/exit-0 as a normal success: the transient-retry (keyed on `!res.ok`) never fired, and the verdict fell through to the ambiguous approve line. This is the same flaky single-pass claude the `code=1` retry already guards — just the exit-0 variant.
+
+### Fixed
+
+- `parseReviewStdout` flags `incomplete` (the `REVIEW_INCOMPLETE` token is the only honest signal — the status line reads COMMENT), carried on `MraReviewResult`.
+- `runOne` retries once on `incomplete` too (same backoff as the transient-failure path).
+- Still incomplete after retry → route through `skip()`: **release** the per-commit claim (finalizing would reject a same-commit re-`:a:` as "already reviewed" and make the "請重試" advice a dead end) and report honestly ("review 未完成 … 未 approve … 請重試"), never the misleading ambiguous-approve line.
+- Applies to `:cr:` too (shared `runOne`).
+
+### Tests
+
+- `@pmk/cli`: **947** tests (+5: parse flag, both result-text branches, retry-then-recover, retry-then-still-incomplete-with-claim-release), 100% pass.
+
+---
+
+## [v0.30.0] — 2026-07-06 — `:a:` approve + live Slack progress bar
+
+[GitHub release](https://github.com/hanfour/pm-workspace-kit/releases/tag/v0.30.0)
+
+### Why
+
+Ships the `:cr:`-review follow-ups: an `:a:` **approve-then-review** flow and a live Slack **progress bar** so the 30–90s review round shows movement instead of a static spinner — then a full review-fix + live-hardening pass and a security bump to zero npm-audit vulnerabilities.
+
+### Added
+
+- **`:a:` approve flow** — fast review → gated GitHub approve; parser (`isApproveRequest`), routing, retry-in-thread, honest three-way verdict reporting.
+- **Live progress bar** — pure phase/pct/render functions, a change-gated `chat.update` timer that finishes (not freezes) on failure, correct analyze/strategy pacing.
+- **`review.allowApprove` config** (default false) + `reviewEnv` wiring of `MRA_REVIEW_ALLOW_APPROVE` / `APPROVE_IF_NO_HIGH`.
+- **`standard` single-agent review strategy** alongside debate/personas.
+
+### Fixed
+
+- **Security:** `reviewEnv` unconditionally strips approve-privilege env flags; a shared `strippedChildEnv` applies broad secret-stripping (`SECRET_ENV_RE`, incl. `PMK_SLACK_*`) to **all** mra subprocesses — review, analyze, and the previously-unstripped `mra ask` free-chat path.
+- **Correctness:** approve verdict no longer inverts on mra's batch-fallback no-`status:` path; progress-bar tick/finish race fixed; analyze now fires on fresh PRs.
+- **Reliability:** retry-once + backoff on transient mra failures with real-error surfacing (`describeMraFailure`).
+
+### Verified
+
+- `npm audit` = **0 vulnerabilities** — resolved all 7 advisories (2 high, 5 moderate) via same-major overrides (form-data, http-proxy-middleware, webpack-dev-server, dompurify, gray-matter>js-yaml, undici) with a full lockfile regen, no runtime/API surface change.
+- Live: gateway restarted on the fresh build, Slack socket connected, keep-awake bound to the new pid; `mra ask` free-chat verified working under `strippedChildEnv`.
+
+### Tests
+
+- `@pmk/cli`: **942** tests, 100% pass.
+
+---
+
 ## [v0.29.0] — 2026-07-02 — audio summary → knowledge atom (📚) + KB-wide injection defense & membership-gated retrieval
 
 [GitHub release](https://github.com/hanfour/pm-workspace-kit/releases/tag/v0.29.0)
