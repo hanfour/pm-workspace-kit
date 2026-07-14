@@ -27,15 +27,10 @@
  */
 
 import {
-  AUDIENCE_KEYS,
-  type AudienceKey,
-} from "@pmk/shared";
-import {
   isAdmin,
   loadRawGatewayConfig,
   resolveReviewConfig,
   saveGatewayConfig,
-  type GatewayConfig,
   type RawGatewayConfig,
 } from "../config";
 import {
@@ -44,74 +39,27 @@ import {
   loadAtoms,
   rejectAtom,
 } from "../knowledge";
-import { AUTOMATIC_APPROVAL_RELEASE_READY, reviewStrategySummary } from "../review-policy";
-import { appendAdminLog, readAdminLog } from "../admin-log";
+import { reviewStrategySummary } from "../review-policy";
+import { readAdminLog } from "../admin-log";
 import { verdict } from "../health-verdict";
 import { lastHeartbeatAt } from "../heartbeat";
 import { readGatewayEvents, RECENT_ACTIVITY_WINDOW_MS } from "../events";
-import type { ConnState } from "../socket-health";
+import {
+  logAdmin,
+  extractUserId,
+  extractChannelId,
+  type AdminSlashArgs,
+  type AdminSlashResult,
+} from "./admin-shared";
+import { adminReview } from "./admin-review";
+import { adminAudience } from "./admin-audience";
 
-/** Live snapshot injected by the SlackAdapter via a provider closure. */
-export interface RuntimeHealthSnapshot {
-  socket?: { state: ConnState; pongTimeoutsInWindow: number; unstableMs: number };
-  watchdog?: { flaps: number; confirmedFailures: number };
-  startedAt: number;
-}
+// Re-exported for back-compat: slash-command.ts imports the type and the tests
+// import the mention parsers; all three lived here before the domain split.
+export { extractUserId, extractChannelId, type RuntimeHealthSnapshot } from "./admin-shared";
 
-export interface AdminSlashArgs {
-  /** Slack user ID of the admin running the command. */
-  actor: string;
-  /** Tokens after `admin ` — e.g. ["audience", "set", "<@U0X>", "pm"]. */
-  tokens: string[];
-  /**
-   * Provider function read at COMMAND time (not captured at construction).
-   * Injected by SlashCommandHandler when operating inside the live daemon.
-   * Absent in CLI-only contexts (e.g., `pmk gateway status`).
-   */
-  getRuntimeHealthSnapshot?: () => RuntimeHealthSnapshot;
-}
-
-export interface AdminSlashResult {
-  text: string;
-}
-
-/**
- * Slack delivers user mentions in slash-command text as `<@U0XYZ>`
- * or `<@U0XYZ|name>`. Accept both that form and a bare `U0XYZ` so
- * admins can type either. Returns undefined on garbage input.
- */
-export function extractUserId(token: string): string | undefined {
-  if (!token) return undefined;
-  const mention = /^<@([UW][A-Z0-9]+)(?:\|[^>]*)?>$/.exec(token);
-  if (mention) return mention[1];
-  if (/^[UW][A-Z0-9]{2,}$/.test(token)) return token;
-  return undefined;
-}
 
 const SLACK_USER_ID_RE = /^[UW][A-Z0-9]{2,}$/;
-
-/**
- * Slack channel IDs (#23): `C` (public), `G` (private), or `D` (DM).
- * Slack delivers channel references in slash-command text as
- * `<#C0XYZ|name>` or `<#C0XYZ>`; admins can also paste the raw ID.
- */
-export function extractChannelId(token: string): string | undefined {
-  if (!token) return undefined;
-  const mention = /^<#([CGD][A-Z0-9]+)(?:\|[^>]*)?>$/.exec(token);
-  if (mention) return mention[1];
-  if (/^[CGD][A-Z0-9]{2,}$/.test(token)) return token;
-  return undefined;
-}
-
-function logAdmin(
-  actor: string,
-  action: string,
-  ok: boolean,
-  args?: string,
-  reason?: string,
-): void {
-  appendAdminLog({ actor, origin: "slack", action, args, ok, reason });
-}
 
 /**
  * Top-level dispatch. Returns the Slack-mrkdwn reply text; caller
@@ -199,336 +147,6 @@ function adminStatus(actor: string): AdminSlashResult {
   return { text: lines.join("\n") };
 }
 
-// ────────────────── review ──────────────────
-
-const REVIEW_PROVIDER_MODES = ["codex", "claude", "fallback", "dual"] as const;
-type ReviewProviderMode = (typeof REVIEW_PROVIDER_MODES)[number];
-function isReviewProviderMode(v: string | undefined): v is ReviewProviderMode {
-  return !!v && (REVIEW_PROVIDER_MODES as readonly string[]).includes(v);
-}
-
-const REVIEW_STRATEGIES = ["standard", "debate", "personas"] as const;
-type ReviewStrategySetting = (typeof REVIEW_STRATEGIES)[number];
-function isReviewStrategySetting(v: string | undefined): v is ReviewStrategySetting {
-  return !!v && (REVIEW_STRATEGIES as readonly string[]).includes(v);
-}
-
-function reviewStatusText(cfg: RawGatewayConfig): string {
-  const review = resolveReviewConfig(cfg.review);
-  return [
-    "*review config*",
-    `• enabled: \`${review.enabled}\``,
-    `• provider: \`${review.providerMode}\``,
-    `• ${reviewStrategySummary(review.strategy, review.providerMode)}`,
-    `• automatic approval: \`${review.approval.enabled}\` (PMK admin confirmation + protected repo required)`,
-    `• concurrency: global \`${review.maxConcurrent}\` · per user \`${review.maxConcurrentPerUser}\``,
-    `• allow public repos: \`${review.allowPublicRepos}\``,
-  ].join("\n");
-}
-
-function adminReview(actor: string, tokens: string[]): AdminSlashResult {
-  const [sub, value] = tokens;
-  const cfg = loadRawGatewayConfig();
-  switch (sub) {
-    case undefined:
-    case "status":
-      logAdmin(actor, "review.status", true);
-      return { text: reviewStatusText(cfg) };
-    case "provider": {
-      if (!isReviewProviderMode(value)) {
-        logAdmin(actor, "review.provider", false, value, "invalid provider");
-        return {
-          text: ":x: usage: `/pmk admin review provider <codex|claude|fallback|dual>`",
-        };
-      }
-      cfg.review = { ...(cfg.review ?? {}), providerMode: value };
-      saveGatewayConfig(cfg);
-      logAdmin(actor, "review.provider", true, value);
-      return {
-        text: `:white_check_mark: review provider set to \`${value}\`（下一次 :cr: / :a: 立即套用）`,
-      };
-    }
-    case "enable":
-    case "disable": {
-      const enabled = sub === "enable";
-      cfg.review = { ...(cfg.review ?? {}), enabled };
-      saveGatewayConfig(cfg);
-      logAdmin(actor, `review.${sub}`, true);
-      return { text: `:white_check_mark: review ${enabled ? "enabled" : "disabled"}` };
-    }
-    case "approval": {
-      if (value !== "enable" && value !== "disable") {
-        return { text: ":x: usage: `/pmk admin review approval <enable|disable>`" };
-      }
-      const enabled = value === "enable";
-      if (enabled && !AUTOMATIC_APPROVAL_RELEASE_READY) {
-        logAdmin(actor, "review.approval.enable", false, undefined, "release veto active");
-        return { text: ":lock: automatic approval 尚未 release；`:cr:` review 可正常使用，但目前不能開啟 GitHub APPROVE。" };
-      }
-      cfg.review = { ...(cfg.review ?? {}), approval: { enabled } };
-      saveGatewayConfig(cfg);
-      logAdmin(actor, `review.approval.${value}`, true);
-      return {
-        text: enabled
-          ? ":warning: automatic approval enabled; each repo must still pass protocol, identity, head-SHA, allowlist, and branch-protection readiness checks"
-          : ":white_check_mark: automatic approval disabled; `:cr:` review remains available",
-      };
-    }
-    case "strategy": {
-      if (!isReviewStrategySetting(value)) {
-        logAdmin(actor, "review.strategy", false, value, "invalid strategy");
-        return {
-          text: ":x: usage: `/pmk admin review strategy <standard|debate|personas>`",
-        };
-      }
-      cfg.review = { ...(cfg.review ?? {}), strategy: value };
-      saveGatewayConfig(cfg);
-      logAdmin(actor, "review.strategy", true, value);
-      return {
-        text: `:white_check_mark: review strategy set to \`${value}\`（下一次 :cr: 立即套用；:a: 固定使用 \`standard\`）`,
-      };
-    }
-    default:
-      logAdmin(actor, "review", false, tokens.join(" "), "bad args");
-      return {
-        text: ":x: usage: `/pmk admin review status|enable|disable|provider|strategy|approval ...`",
-      };
-  }
-}
-
-// ────────────────── audience ──────────────────
-
-function isAudienceKey(s: string): s is AudienceKey {
-  return (AUDIENCE_KEYS as readonly string[]).includes(s);
-}
-
-function adminAudience(
-  actor: string,
-  tokens: string[],
-): AdminSlashResult {
-  const [sub, ...args] = tokens;
-  const cfg = loadRawGatewayConfig();
-  switch (sub) {
-    case "set": {
-      const [userToken, key] = args;
-      const userId = extractUserId(userToken);
-      if (!userId || !key) {
-        logAdmin(actor, "audience.set", false, undefined, "missing args");
-        return { text: ":x: usage: `/pmk admin audience set @user <tech|pm|biz|sales|exec>`" };
-      }
-      if (!isAudienceKey(key)) {
-        logAdmin(actor, "audience.set", false, `${userId} ${key}`, "invalid audience");
-        return { text: `:x: invalid audience \`${key}\` — must be tech, pm, biz, sales, or exec` };
-      }
-      cfg.audience.users[userId] = key;
-      saveGatewayConfig(cfg);
-      logAdmin(actor, "audience.set", true, `${userId} ${key}`);
-      return { text: `:white_check_mark: <@${userId}> audience set to \`${key}\`` };
-    }
-    case "unset": {
-      const userId = extractUserId(args[0]);
-      if (!userId) {
-        logAdmin(actor, "audience.unset", false, undefined, "missing args");
-        return { text: ":x: usage: `/pmk admin audience unset @user`" };
-      }
-      if (!(userId in cfg.audience.users)) {
-        logAdmin(actor, "audience.unset", true, userId, "no override");
-        return { text: `(${userId} has no override; nothing to do)` };
-      }
-      delete cfg.audience.users[userId];
-      saveGatewayConfig(cfg);
-      logAdmin(actor, "audience.unset", true, userId);
-      return { text: `:white_check_mark: <@${userId}> override removed (falls back to default \`${cfg.audience.default}\`)` };
-    }
-    case "default": {
-      const [key] = args;
-      if (!key || !isAudienceKey(key)) {
-        logAdmin(actor, "audience.default", false, key, "invalid audience");
-        return { text: ":x: usage: `/pmk admin audience default <tech|pm|biz|sales|exec>`" };
-      }
-      cfg.audience.default = key;
-      saveGatewayConfig(cfg);
-      logAdmin(actor, "audience.default", true, key);
-      return { text: `:white_check_mark: default audience set to \`${key}\`` };
-    }
-    case "set-channel": {
-      const [channelToken, key] = args;
-      const channelId = extractChannelId(channelToken);
-      if (!channelId || !key) {
-        logAdmin(actor, "audience.set-channel", false, undefined, "missing args");
-        return { text: ":x: usage: `/pmk admin audience set-channel #channel <tech|pm|biz|sales|exec>`" };
-      }
-      if (!isAudienceKey(key)) {
-        logAdmin(actor, "audience.set-channel", false, `${channelId} ${key}`, "invalid audience");
-        return { text: `:x: invalid audience \`${key}\` — must be tech, pm, biz, sales, or exec` };
-      }
-      cfg.audience.channels[channelId] = key;
-      saveGatewayConfig(cfg);
-      logAdmin(actor, "audience.set-channel", true, `${channelId} ${key}`);
-      return { text: `:white_check_mark: <#${channelId}> default audience set to \`${key}\`` };
-    }
-    case "unset-channel": {
-      const channelId = extractChannelId(args[0]);
-      if (!channelId) {
-        logAdmin(actor, "audience.unset-channel", false, undefined, "missing args");
-        return { text: ":x: usage: `/pmk admin audience unset-channel #channel`" };
-      }
-      if (!(channelId in cfg.audience.channels)) {
-        logAdmin(actor, "audience.unset-channel", true, channelId, "no override");
-        return { text: `(<#${channelId}> has no override; nothing to do)` };
-      }
-      delete cfg.audience.channels[channelId];
-      saveGatewayConfig(cfg);
-      logAdmin(actor, "audience.unset-channel", true, channelId);
-      return { text: `:white_check_mark: <#${channelId}> override removed (falls back to workspace default \`${cfg.audience.default}\`)` };
-    }
-    case "example": {
-      return adminAudienceExample(actor, args);
-    }
-    case "list":
-    case undefined: {
-      const lines: string[] = ["*audience config*"];
-      lines.push(`• default: \`${cfg.audience.default}\``);
-      const userEntries = Object.entries(cfg.audience.users);
-      if (userEntries.length === 0) {
-        lines.push("• per-user overrides: _(none)_");
-      } else {
-        lines.push("• per-user overrides:");
-        for (const [uid, aud] of userEntries) {
-          lines.push(`  - <@${uid}> → \`${aud}\``);
-        }
-      }
-      const channelEntries = Object.entries(cfg.audience.channels);
-      if (channelEntries.length === 0) {
-        lines.push("• per-channel overrides: _(none)_");
-      } else {
-        lines.push("• per-channel overrides:");
-        for (const [cid, aud] of channelEntries) {
-          lines.push(`  - <#${cid}> → \`${aud}\``);
-        }
-      }
-      const ex = cfg.audience.domainExamples;
-      const bizCount = ex?.biz?.length ?? 0;
-      const pmCount = ex?.pm?.length ?? 0;
-      lines.push(
-        `• workspace examples: biz ${bizCount} · pm ${pmCount} (see \`/pmk admin audience example list\`)`,
-      );
-      lines.push(
-        "• resolution order at turn time: per-user → per-channel → default",
-      );
-      return { text: lines.join("\n") };
-    }
-    default:
-      return { text: ":x: usage: `/pmk admin audience set|unset|set-channel|unset-channel|default|list|example`" };
-  }
-}
-
-// ────────────────── audience example (v0.15) ──────────────────
-
-const EXAMPLE_TIERS = ["biz", "pm"] as const;
-type ExampleTier = (typeof EXAMPLE_TIERS)[number];
-function isExampleTier(t: string | undefined): t is ExampleTier {
-  return !!t && (EXAMPLE_TIERS as readonly string[]).includes(t);
-}
-
-/**
- * v0.15.0: workspace-specific translation rows operators can register
- * to extend the BIZ / PM cheat-sheet without forking the shared
- * package. Mutations require a graceful gateway restart to bite (same
- * in-memory snapshot caveat as the rest of `audience`).
- *
- * Slack tokenisation:
- *   `/pmk admin audience example add biz AdFormat = 廣告版型`
- *           → tokens = ["example", "add", "biz", "AdFormat", "=", "廣告版型"]
- * The `=` separator is required so multi-word target forms (with
- * spaces) survive the whitespace split.
- */
-function adminAudienceExample(
-  actor: string,
-  args: string[],
-): AdminSlashResult {
-  const cfg = loadRawGatewayConfig();
-  if (!cfg.audience.domainExamples) cfg.audience.domainExamples = {};
-  if (!cfg.audience.domainExamples.biz) cfg.audience.domainExamples.biz = [];
-  if (!cfg.audience.domainExamples.pm) cfg.audience.domainExamples.pm = [];
-  const examples = cfg.audience.domainExamples;
-  const [sub, ...rest] = args;
-  switch (sub) {
-    case "add": {
-      const [tier, techForm, sep, ...targetParts] = rest;
-      if (
-        !isExampleTier(tier) ||
-        !techForm ||
-        sep !== "=" ||
-        targetParts.length === 0
-      ) {
-        logAdmin(actor, "audience.example.add", false, args.join(" "), "bad args");
-        return {
-          text: ":x: usage: `/pmk admin audience example add <biz|pm> <techForm> = <targetForm>`",
-        };
-      }
-      const targetForm = targetParts.join(" ").trim();
-      const list = examples[tier]!;
-      const existing = list.findIndex((e) => e.techForm === techForm);
-      const action = existing >= 0 ? "updated" : "added";
-      if (existing >= 0) list[existing] = { techForm, targetForm };
-      else list.push({ techForm, targetForm });
-      saveGatewayConfig(cfg);
-      logAdmin(actor, "audience.example.add", true, `${tier} ${techForm} = ${targetForm}`);
-      return {
-        text: `:white_check_mark: ${action} ${tier} example: \`${techForm}\` → ${targetForm}  _(restart gateway to apply)_`,
-      };
-    }
-    case "remove": {
-      const [tier, techForm] = rest;
-      if (!isExampleTier(tier) || !techForm) {
-        logAdmin(actor, "audience.example.remove", false, rest.join(" "), "bad args");
-        return {
-          text: ":x: usage: `/pmk admin audience example remove <biz|pm> <techForm>`",
-        };
-      }
-      const list = examples[tier]!;
-      const idx = list.findIndex((e) => e.techForm === techForm);
-      if (idx < 0) {
-        logAdmin(actor, "audience.example.remove", true, `${tier} ${techForm}`, "not found");
-        return { text: `(${tier} has no example for \`${techForm}\`; nothing to do)` };
-      }
-      list.splice(idx, 1);
-      saveGatewayConfig(cfg);
-      logAdmin(actor, "audience.example.remove", true, `${tier} ${techForm}`);
-      return {
-        text: `:white_check_mark: removed ${tier} example: \`${techForm}\`  _(restart gateway to apply)_`,
-      };
-    }
-    case "list":
-    case undefined: {
-      const filter = rest[0];
-      const tiers: ExampleTier[] = isExampleTier(filter)
-        ? [filter]
-        : ["biz", "pm"];
-      const lines: string[] = ["*audience examples* (workspace-specific cheat-sheet additions)"];
-      for (const tier of tiers) {
-        const rows = examples[tier] ?? [];
-        if (rows.length === 0) {
-          lines.push(`• ${tier}: _(none)_`);
-        } else {
-          lines.push(`• ${tier}:`);
-          for (const row of rows) {
-            lines.push(`  - \`${row.techForm}\` → ${row.targetForm}`);
-          }
-        }
-      }
-      lines.push(
-        "_applied at prompt-assembly time; gateway restart required for changes to take effect._",
-      );
-      return { text: lines.join("\n") };
-    }
-    default:
-      return {
-        text: ":x: usage: `/pmk admin audience example add|remove|list ...`",
-      };
-  }
-}
 
 // ────────────────── escalation ──────────────────
 
