@@ -474,4 +474,23 @@ function main() {
   process.exit(2);
 }
 
-main();
+if (require.main === module) {
+  main();
+}
+
+module.exports = {
+  resolveRoot,
+  getDocType,
+  getNested,
+  validateDoc,
+  buildGraph,
+  inferVirtualKind,
+  safeId,
+  escapeLabel,
+  mermaidLabel,
+  renderMermaid,
+  renderBacklinks,
+  renderOrphans,
+  renderFlatTable,
+  renderSummary,
+};
