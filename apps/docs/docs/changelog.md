@@ -22,6 +22,10 @@ Merged to `main`, not yet tagged.
 
 - **Flaky traceability-check** ([#80](https://github.com/hanfour/pm-workspace-kit/pull/80)) — the generated matrix's `Last generated: <date>` line was its only volatile field, so any PR touching `traceability.js` on a later day failed the CI diff purely on the date. Dropped the stamp; matrix output is now deterministic.
 
+### Changed
+
+- **review.ts decomposition, phase 1** ([#76](https://github.com/hanfour/pm-workspace-kit/issues/76)) — extracted the pure `:cr:`/`:a:` request classifiers into `review-requests.ts` and the outcome types + Slack result-line formatters + `describeMraFailure` into `review-messages.ts`, re-exported from `review.ts` for back-compat (no import changes for callers). `review.ts` 1186 → 1058 lines; behaviour-preserving (996 cli tests unchanged). The deeper `runOne` codex/mra backend extraction is deferred — it sits on the live review path and warrants host live-verification.
+
 ### Security
 
 - **Atom title now injection-scanned + redaction hardening** ([#74](https://github.com/hanfour/pm-workspace-kit/issues/74)) — closes the four security follow-ups deferred at v0.29.0. The atom `title`/`question` is injected into retrieval context just like the body but was only redacted, never injection-scanned; a shared `scanAtomFields` now scans both fields on the audio (📚) and escalation save paths (same flag-not-block policy). `countHighEntropyTokens` recognises `=`-padded base64 secrets (was anchored on `\b`, which can't terminate on `=`). Phone redaction no longer over-matches 3-group numeric IDs / amounts / ticket refs (`1234 5678 9012`, `100-2000-3000`) — the domestic form now requires a trunk-prefixed (leading `0`) or parenthesised area code. Added a `glpat-` (GitLab PAT) redaction test.
