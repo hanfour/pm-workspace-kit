@@ -28,6 +28,7 @@ Merged to `main`, not yet tagged.
   - _phase 1_: pure `:cr:`/`:a:` request classifiers → `review-requests.ts`; outcome types + Slack result-line formatters + `describeMraFailure` → `review-messages.ts`.
   - _phase 2_: the provider-facing backend seam of `runOne` → `review-backend.ts` — `buildReviewMraArgs` (pure argv), `runMraReviewWithRetry` (the transient-failure / REVIEW_INCOMPLETE retry policy), and `postProtocolV1Review` (codex protocol-v1 live-policy re-validation + GitHub post, returning a skip-or-status verdict the coordinator acts on). Now unit-testable in isolation: +13 backend tests.
   - `review.ts` 1186 → 1028 lines. The coordinator keeps the claim lifecycle, progress bar, and Slack replies; the extracted seam still warrants host live-verification of the end-to-end `:cr:`/`:a:` path before the next release.
+- **admin.ts decomposition** ([#76](https://github.com/hanfour/pm-workspace-kit/issues/76)) — the `/pmk admin` dispatcher pulled its two largest command clusters into domain modules: `admin-review.ts` (`review …` provider/strategy/approval config) and `admin-audience.ts` (`audience …` per-user/channel/default tiers + v0.15 examples), over a shared `admin-shared.ts` (request/result types, `logAdmin`, the Slack-mention parsers) that breaks the dispatcher↔handler cycle. `admin.ts` 827 → 445 lines; `handleAdminSlash` behaviour unchanged (guarded by its existing 57 test call-sites, `extractUserId`/`extractChannelId`/`RuntimeHealthSnapshot` re-exported).
 
 ### Security
 
