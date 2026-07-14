@@ -35,5 +35,15 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # Cross-workspace type declarations (@pmk/shared, @pmk/rag, @pmk/cli) come
+      # from each package's built dist/. A fresh `npm ci` has no dist, so tsc in
+      # dependent workspaces cannot resolve them. Build the library packages in
+      # dependency order before testing. (@pmk/core is plain JS — no build.)
+      - name: Build library packages
+        run: |
+          npm run build --workspace=@pmk/shared
+          npm run build --workspace=@pmk/rag
+          npm run build --workspace=@pmk/cli
+
       - name: Test (typecheck + unit)
         run: npm test --workspace=${{ matrix.workspace }}
