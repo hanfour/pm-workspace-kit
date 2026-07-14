@@ -1,0 +1,49 @@
+name: Test
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: test-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: test (${{ matrix.workspace }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Workspaces whose `test` script runs `typecheck:test` (tsc) + node --test.
+        # packages/core is intentionally excluded until it has real tests (issue #73);
+        # its test script is currently a no-op echo and would be a misleading green check.
+        workspace:
+          - packages/cli
+          - packages/rag
+          - packages/shared
+          - apps/desktop
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      # Cross-workspace type declarations (@pmk/shared, @pmk/rag, @pmk/cli) come
+      # from each package's built dist/. A fresh `npm ci` has no dist, so tsc in
+      # dependent workspaces cannot resolve them. Build the library packages in
+      # dependency order before testing. (@pmk/core is plain JS — no build.)
+      - name: Build library packages
+        run: |
+          npm run build --workspace=@pmk/shared
+          npm run build --workspace=@pmk/rag
+          npm run build --workspace=@pmk/cli
+
+      - name: Test (typecheck + unit)
+        run: npm test --workspace=${{ matrix.workspace }}
