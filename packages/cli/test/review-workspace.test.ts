@@ -17,7 +17,10 @@ beforeEach(() => {
   reviewWs = path.join(root, "review-ws");
   mainClone = path.join(mainWs, "proj");
   // bare origin with a main branch + a PR branch, exposed as refs/pull/1/head
-  execFileSync("git", ["init", "-q", "--bare", origin]);
+  // -b main pins the bare repo's HEAD to main regardless of the host's
+  // init.defaultBranch (CI runners default to master), so the later
+  // `git clone origin` checks out a local main branch and the FIN-dev push works.
+  execFileSync("git", ["init", "-q", "--bare", "-b", "main", origin]);
   const seed = path.join(root, "seed");
   execFileSync("git", ["clone", "-q", origin, seed]);
   fs.writeFileSync(path.join(seed, "a.txt"), "base\n");
