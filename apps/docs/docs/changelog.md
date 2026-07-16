@@ -21,6 +21,7 @@ Merged to `main`, not yet tagged.
 ### Fixed
 
 - **Flaky traceability-check** ([#80](https://github.com/hanfour/pm-workspace-kit/pull/80)) — the generated matrix's `Last generated: <date>` line was its only volatile field, so any PR touching `traceability.js` on a later day failed the CI diff purely on the date. Dropped the stamp; matrix output is now deterministic.
+- **Flaky atom-index staleness check** ([#89](https://github.com/hanfour/pm-workspace-kit/pull/89), closes [#83](https://github.com/hanfour/pm-workspace-kit/issues/83)) — the cache-validity check compared `builtAt >= newest atom mtime` exactly, so on coarse-mtime CI filesystems an atom written in the same tick as `builtAt` served a stale cache. Now: a 2s mtime tolerance window, plus the index records `fileCount` so the cache also invalidates on file-count changes — catching atom DELETIONS, which no surviving file's mtime can signal. The flaky test became three deterministic ones (added / edited-in-place / deleted).
 
 ### Changed
 
@@ -43,7 +44,7 @@ Merged to `main`, not yet tagged.
 
 ### Tests
 
-- All workspaces: **1,117** (`cli` 1009 · `core` 50 · `shared` 32 · `rag` 13 · `desktop` 13).
+- All workspaces: **1,119** (`cli` 1011 · `core` 50 · `shared` 32 · `rag` 13 · `desktop` 13).
 
 ---
 
