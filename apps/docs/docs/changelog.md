@@ -8,9 +8,9 @@ All notable changes to **pm-workspace-kit** are documented here.
 
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Each release also has a longer narrative on [GitHub Releases](https://github.com/hanfour/pm-workspace-kit/releases) with rationale, dogfood notes, and test plans.
 
-## [Unreleased] — Codex review integration & CI test harness
+## [v0.31.0] — 2026-07-16 — Codex review provider, CI test harness, security hardening & hotspot decomposition
 
-Merged to `main`, not yet tagged.
+[GitHub release](https://github.com/hanfour/pm-workspace-kit/releases/tag/v0.31.0)
 
 ### Added
 
@@ -41,6 +41,7 @@ Merged to `main`, not yet tagged.
 
 - Live PMK doctor: `passed=11 warned=1 failed=0`, `protocol=v1`, `provider=codex`, `strategy=standard`, `approval=disabled`; gateway launchd running, Slack socket connected; real MRA Codex protocol smoke complete/pass (0 findings, 0 blockers).
 - All five CI test jobs green on real GitHub Actions.
+- **Pre-tag live-Slack verify (2026-07-16, on the release build)**: `:cr:` end-to-end on onead/super-dsp-2.0#503 (CHANGES_REQUESTED, 2 comments, 1 blocker, 82s — exercising the decomposed review path + the mra reliability fixes); audio → summary → 📚 → **approved atom with permalink + retrieval-tuned title/tags** → next question answered from the atom (`atomsInjected: 1`, no mra-ask) — closes the #75 verification gap from v0.29.0. `:a:` correctly replies the `:lock:` release-veto notice (GitHub APPROVE stays disabled pending [#90](https://github.com/hanfour/pm-workspace-kit/issues/90)).
 
 ### Tests
 
