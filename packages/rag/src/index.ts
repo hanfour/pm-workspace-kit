@@ -23,6 +23,14 @@ export interface RagIndex {
   root: string;
   chunks: IndexedChunk[];
   idf: Record<string, number>;
+  /**
+   * Number of source files scanned at build time. Consumers that cache the
+   * index compare this against a fresh scan to invalidate on file ADDITIONS
+   * and DELETIONS — deletions never bump any surviving file's mtime, so an
+   * mtime-only check can't catch them. Optional: indexes persisted by older
+   * versions lack it (treat as stale once and rebuild).
+   */
+  fileCount?: number;
 }
 
 const DEFAULT_EXTS = [".md", ".mdx"];
