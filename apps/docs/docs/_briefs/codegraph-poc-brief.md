@@ -160,8 +160,11 @@ provider codex + strategy standard（= production 設定）。B 組經
   成立但未測；要測需改 mra（temp HOME 帶入 MCP config）。價值待
   claude-path 工作負載出現再議。
 - ✅ **優先轉向 mra 可靠性修復**（本輪最大產出）：TTL-auth race + hang
-  watchdog，兩者都是 production REVIEW_INCOMPLETE 的實錘成因，
-  應在 hanfour/multi-repo-agent 開 issue。
+  watchdog，兩者都是 production REVIEW_INCOMPLETE 的實錘成因——已開
+  [multi-repo-agent#17](https://github.com/hanfour/multi-repo-agent/issues/17)
+  （TTL-auth race）與
+  [multi-repo-agent#18](https://github.com/hanfour/multi-repo-agent/issues/18)
+  （dead-child hang watchdog）。
 - ✅ **T2 模式借鏡**照舊有效（staleness banner、measured coverage）。
 - ⏸ **T3 doc↔code bridge**：與本輪結果無關，價值獨立，另案評估。
 - codegraph 對 **Claude Code 互動開發**（host 上人機協作）仍明確有價值
