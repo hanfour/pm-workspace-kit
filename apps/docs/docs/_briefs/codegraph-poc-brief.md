@@ -77,32 +77,100 @@ blast radius。官方實測宣稱：58% fewer tool calls、22% faster、file rea
   codegraph 是工程師工具，永遠不會做 doc↔code 追溯；這是 PMK（traceability has
   teeth）的差異化機會。
 
-## 下一步：第 2 步 A/B 設計（尚未執行）
+## 第 2 步 A/B 設計（已執行，結果見下節）
 
-同一個真實 PR 跑兩次 `:cr:`（或用 `mra review` 直跑）：
+同一個真實 PR 用 `mra review` 直跑兩組：
 
 - **A 組**：現況（PKB only）
-- **B 組**：`codegraph install` 接 MCP 後
-- **量測**：agent turns、wall-clock、token、REVIEW_INCOMPLETE 是否發生、
-  findings 品質（有無因結構上下文而多抓/少漏）
-- **判準**：B 組 turns/時間顯著下降且 findings 不劣化 → 進 T1 實作
+- **B 組**：注入 codegraph 結構上下文（原計畫走 MCP，實測發現 mra 的
+  temp-HOME 隔離使 MCP 不可達，改用 `MRA_REVIEW_SUPPLIED_CONTEXT` 注入）
+- **量測**：wall-clock、token、REVIEW_INCOMPLETE 是否發生、findings 品質
+- **判準**：B 組時間顯著下降且 findings 不劣化 → 進 T1 實作
   （mra 端 PR + PMK 端 clone-copy PR）
 
-## 未決問題（做第 2 步前要驗證）
+## 第 2 步 A/B 實測結果（2026-07-16，已完成）
 
-1. **stripped env 下 MCP 可達性**：mra 用 `reviewEnv`（strippedChildEnv）跑
-   provider；MCP 設定來自 `~/.claude.json` / codex config 檔而非 env，理論上
-   不受 strip 影響——需實跑確認。
-2. **review clone 的索引策略**：clone checkout 的是 PR head，主 clone 是 main
-   → 必須 copy db + `codegraph sync`（增量 0.4s/檔，PR 級 diff 可忽略），不能
-   用 `projectPath` 指回主 clone（內容不同）。
-3. **多 repo 成本**：96MB × N repos；workspace 全索引前先挑 review 活躍的
-   2-3 個（erp、super-dsp-2.0）。
-4. **1.x API 穩定度**：CLI 旗標已見變動（`affected` 需 `--stdin`、`init` 無
-   `--yes`）；整合層要薄、可替換。
+**設計**：onead/erp PR #4890（+496/-7、17 檔、DV360 功能）、head `6ee5d625a`。
+雙獨立 clone（scratchpad，PR head checkout，不碰主 clone）、
+`MRA_REVIEW_POST_MODE=none`（零 GitHub 寫入）、`--base development`、
+provider codex + strategy standard（= production 設定）。B 組經
+`MRA_REVIEW_SUPPLIED_CONTEXT` 注入 8.8KB codegraph 結構上下文（changed files
++ 各 changed symbol 的 `impact` blast radius，機械化生成、秒級）。
+另跑 PKB-less 變體（A′/B′）測「codegraph 能否替代 PKB」假說。
+
+### 結果矩陣（皆為完成跑；重試見下方失敗記錄）
+
+| 組 | PKB | codegraph | 時間 | Verdict | Findings | Tokens |
+|---|-----|-----------|------|---------|----------|--------|
+| A | ✓ | ✗ | 84s | CR ✓完成 | 2（1H+1M） | 36,629 |
+| B | ✓ | ✓ | 102s | CR ✓完成 | 2（1H+1M） | 39,303 |
+| A′ | ✗ | ✗ | **70s** | CR ✓完成 | **3**（1H+2M） | **26,428** |
+| B′ | ✗ | ✓ | 100s | CR ✓完成 | 3（1H+2M） | 29,804 |
+
+跨四跑的真實問題聯集共 5 個（migration 缺回填、duplicate 缺 external_cost、
+`to_status` 對無走期 draft 會 `nil.to_date` crash、duplicate 保留 trash 旗標、
+未驗證 `start_date <= end_date`）；單跑各抓 2-3 個，**抓到哪幾個的 run-to-run
+變異大於任何 A/B 組間差**。
+
+### 判準結論：不達標
+
+1. **codegraph prompt 注入對 codex 單趟 review 無效益**：有 PKB 時 B 較 A
+   慢 21%、多 7% tokens、findings 數相同；無 PKB 時 B′ 較 A′ 慢 43%、
+   findings 數相同。時間未降、findings 未明顯提升 → **T1 的 prompt-injection
+   版整合（codex 路徑）不做**。
+2. **意外發現——PKB 對 codex 單趟也不見得 load-bearing**：PKB-less 的 A′
+   反而最快（70s）、最省（26.4k tokens）、findings 最多（3）。codex exec
+   單趟不做多輪探索（`max-turns` 對 codex 無效，見 model-provider.sh），
+   「探索成本」假說根本不適用於這條路徑——它適用的是 **claude 多輪
+   agent 路徑**（mra-ask、claude review provider、debate strategy），本輪未測。
+3. **REVIEW_INCOMPLETE 在完成跑中一次都沒因探索限制發生**——所有 incomplete
+   都來自 provider transport 故障（見下）。
+
+### 附帶發現：production REVIEW_INCOMPLETE 的具體機制（比 A/B 本身更有價值）
+
+7 次嘗試中 3 次失敗，全是 transport 層：
+
+1. **TTL-auth race（2 次，簽名完全相同）**：sub2api relay 串流中斷 → codex
+   `Reconnecting... 1/5→5/5` → 重連時重讀 auth.json → **已被 mra 的
+   `MRA_CODEX_AUTH_FILE_TTL_SECONDS`（預設 1 秒）刪除** → 401
+   `API_KEY_REQUIRED` → 無 sentinel → REVIEW_INCOMPLETE（exit 0）。
+   這就是 v0.30.1 修的「exit-0 flaky」的一種具體成因。
+   **修法方向（mra 端）**：TTL 調高（如涵蓋整個 review 時長）或改用
+   fd-held-open/重連時重供 auth；安全代價小。
+2. **PKB-less hang（1 次）**：codex 子進程死亡後 mra **無限等待**（>55 分鐘,
+   手動 kill；process tree 存活但 log 凍結）。PMK 的 10-min runMraReview
+   timeout 是唯一防線；**mra 端應加子進程 watchdog**。
+
+### 未決問題的實測答案
+
+1. ~~stripped env 下 MCP 可達性~~ → **答案是不可達,且與 env 無關**：mra 的
+   codex/claude review 用全新 temp HOME（只複製 auth），真實
+   `~/.codex/config.toml` / `~/.claude.json` 的 MCP 設定進不去（provider 設定
+   是 mra 解析後用 `-c` 旗標轉發的）。**MCP 版整合必須改 mra**；prompt 注入
+   版已實測無效益（codex 路徑）。
+2. ~~review clone 索引策略~~ → **copy db + `codegraph sync` 驗證可行**：
+   主 clone db → PR head 狀態 reconcile（150 檔差異）**5.5 秒**。
+3. 多 repo 成本：96MB × N — 未變。
+4. 1.x API 穩定度：未變（整合層要薄）。
+
+## 修訂後的下一步
+
+- ❌ **T1（codex review 路徑）**：終止——實測無效益。
+- ⏸ **T1（claude 多輪路徑：mra-ask / claude provider / debate）**：假說仍
+  成立但未測；要測需改 mra（temp HOME 帶入 MCP config）。價值待
+  claude-path 工作負載出現再議。
+- ✅ **優先轉向 mra 可靠性修復**（本輪最大產出）：TTL-auth race + hang
+  watchdog，兩者都是 production REVIEW_INCOMPLETE 的實錘成因，
+  應在 hanfour/multi-repo-agent 開 issue。
+- ✅ **T2 模式借鏡**照舊有效（staleness banner、measured coverage）。
+- ⏸ **T3 doc↔code bridge**：與本輪結果無關，價值獨立，另案評估。
+- codegraph 對 **Claude Code 互動開發**（host 上人機協作）仍明確有價值
+  （explore 手術刀級），與 review 自動化是兩回事。
 
 ## 現狀記錄
 
 - host 已裝 codegraph 1.4.1（npm global）、telemetry off
 - `~/OneAD/erp/.codegraph/`（96MB）保留作持久索引
-- 尚未執行 `codegraph install`（未動任何 agent 設定檔）
+- 未執行 `codegraph install`（未動任何 agent 設定檔）
+- A/B 實驗 clone 於 session scratchpad，主 clone `~/OneAD/erp` 全程未動
+- PR #4890 零寫入（POST_MODE=none 全程生效）
