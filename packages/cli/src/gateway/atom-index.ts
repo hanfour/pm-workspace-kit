@@ -57,14 +57,26 @@ function indexFileFor(scope: string | undefined): string {
 }
 
 /**
- * Latest mtime of any approved atom's .md file under the given scope
- * (or all scopes when `scope` is undefined). Used to detect whether
- * the cached index is stale.
+ * Filesystem mtime granularity slack (#83). CI filesystems (ext4/overlayfs)
+ * can truncate mtimes to whole seconds, so an atom written in the same coarse
+ * tick as `builtAt` may compare as NOT newer and the stale cache would be
+ * served. Treat anything within this window of `builtAt` as possibly-newer
+ * and rebuild — rebuilds are cheap (small corpus) and the check converges
+ * once the newest write is older than the window.
  */
-function newestAtomMtime(scope?: string): number {
+const MTIME_TOLERANCE_MS = 2000;
+
+/**
+ * Scan every atom .md file under the given scope (or all scopes when
+ * `scope` is undefined): latest mtime + file count. Both feed staleness
+ * detection — mtime catches edits/additions, the count catches deletions
+ * (removing a file never bumps any surviving file's mtime).
+ */
+function scanAtomFiles(scope?: string): { newestMtime: number; fileCount: number } {
   const root = knowledgeRoot();
-  if (!fs.existsSync(root)) return 0;
+  if (!fs.existsSync(root)) return { newestMtime: 0, fileCount: 0 };
   let newest = 0;
+  let count = 0;
   const scopes = scope
     ? [scope]
     : fs.readdirSync(root).filter((d) => {
@@ -85,12 +97,13 @@ function newestAtomMtime(scope?: string): number {
       try {
         const m = fs.statSync(path.join(dir, f)).mtimeMs;
         if (m > newest) newest = m;
+        count += 1;
       } catch {
         /* skip */
       }
     }
   }
-  return newest;
+  return { newestMtime: newest, fileCount: count };
 }
 
 /**
@@ -159,21 +172,30 @@ export function buildAtomsIndex(opts: { scope?: string } = {}): RagIndex {
     root: knowledgeRoot(),
     chunks,
     idf,
+    fileCount: scanAtomFiles(opts.scope).fileCount,
   };
   saveIndex(index, indexFileFor(opts.scope));
   return index;
 }
 
 /**
- * Load the on-disk index, rebuild if stale (any atom mtime newer
- * than index `builtAt`) or missing. Returns null when there are no
- * atoms to index — caller falls back to keyword search.
+ * Load the on-disk index, rebuild if stale or missing. Staleness (#83):
+ *   - any atom file's mtime within MTIME_TOLERANCE_MS of (or newer than)
+ *     the cached `builtAt` — tolerance absorbs coarse fs mtime granularity;
+ *   - the .md file count changed — catches deletions, which mtime can't;
+ *   - the cached index predates `fileCount` (older version) — rebuild once.
+ * Returns null when there are no atoms to index — caller falls back to
+ * keyword search.
  */
 function getOrBuildIndex(scope: string | undefined): RagIndex | null {
   const file = indexFileFor(scope);
   const cached = loadIndex(file);
-  const newestMtime = newestAtomMtime(scope);
-  if (cached && new Date(cached.builtAt).getTime() >= newestMtime) {
+  const scan = scanAtomFiles(scope);
+  if (
+    cached &&
+    cached.fileCount === scan.fileCount &&
+    new Date(cached.builtAt).getTime() - scan.newestMtime > MTIME_TOLERANCE_MS
+  ) {
     return cached;
   }
   // Stale or missing — rebuild.

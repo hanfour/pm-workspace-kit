@@ -1847,17 +1847,12 @@ describe("atom-index BM25 (#19)", () => {
     assert.equal(approvedAtomCount("erp"), 2);
   });
 
-  it("index file is rebuilt when atoms change (mtime invalidation)", () => {
+  it("index is rebuilt when an atom is ADDED after build (file-count invalidation, #83)", () => {
     seedThreeApprovedAtoms();
-    const first = buildAtomsIndex({ scope: "erp" });
-    const firstBuiltAt = new Date(first.builtAt).getTime();
-    // Add another atom AFTER the index built; mtime should now be newer
-    // than firstBuiltAt, triggering a rebuild on next searchAtomsRanked.
-    fs.utimesSync(
-      path.join(knowledgeRoot(), "erp"),
-      new Date(),
-      new Date(firstBuiltAt + 60_000), // dir mtime well after index
-    );
+    buildAtomsIndex({ scope: "erp" });
+    // Adding a file changes the scanned file count, which invalidates the
+    // cache deterministically — no mtime granularity dependence (#83: the
+    // old dir-utimes version was flaky on coarse-mtime CI filesystems).
     saveAtom({
       id: generateAtomId("late addition"),
       createdAt: Date.now(),
@@ -1873,6 +1868,49 @@ describe("atom-index BM25 (#19)", () => {
     // Late-added atom is now retrievable.
     assert.ok(hits.length >= 2);
     assert.ok(hits.some((a) => a.question.includes("Late-added")));
+  });
+
+  it("index is rebuilt when an atom is EDITED in place (mtime invalidation, count unchanged)", () => {
+    seedThreeApprovedAtoms();
+    const edited = {
+      id: generateAtomId("editable"),
+      createdAt: Date.now(),
+      scope: "erp",
+      question: "Atom about deployment cadence",
+      answer: "Old answer without the magic keyword.",
+      summary: "Deployment cadence.",
+      tags: ["deploy"],
+      source: { threadKey: "T5", contributorUserId: "U1" },
+      status: "approved" as const,
+    };
+    saveAtom(edited);
+    const first = buildAtomsIndex({ scope: "erp" });
+    const firstBuiltAt = new Date(first.builtAt).getTime();
+    // Overwrite the SAME atom (same id → same file → count unchanged) and pin
+    // its mtime explicitly past builtAt + tolerance, so only the mtime path
+    // can trigger the rebuild — deterministic on any fs granularity.
+    const file = saveAtom({ ...edited, answer: "Rewritten answer mentioning zeppelin scheduling." });
+    fs.utimesSync(file, new Date(), new Date(firstBuiltAt + 60_000));
+    const hits = searchAtomsRanked("zeppelin", { scope: "erp", limit: 5 });
+    assert.ok(hits.some((a) => a.id === edited.id), "edited content must be re-indexed");
+  });
+
+  it("index is rebuilt when an atom is DELETED (mtime can never catch this)", () => {
+    seedThreeApprovedAtoms();
+    buildAtomsIndex({ scope: "erp" });
+    // Find and delete the budget atom's file; no surviving file's mtime
+    // changes, so only the file-count check can invalidate the cache.
+    const budget = loadAtoms({ scope: "erp" }).find((a) => /budget/i.test(a.question));
+    assert.ok(budget);
+    const dir = path.join(knowledgeRoot(), "erp");
+    const victim = fs.readdirSync(dir).find((f) => f.includes(budget.id));
+    assert.ok(victim, "budget atom file must exist");
+    fs.rmSync(path.join(dir, victim));
+    const hits = searchAtomsRanked("budget allocation", { scope: "erp", limit: 5 });
+    assert.ok(
+      hits.every((a) => a.id !== budget.id),
+      "deleted atom must not be returned from a stale cache",
+    );
   });
 });
 
