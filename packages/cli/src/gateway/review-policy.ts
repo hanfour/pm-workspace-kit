@@ -8,6 +8,10 @@ import type { ProtectionExemption } from "./config";
 // against. GitHub APPROVE additionally requires the runtime gate
 // `review.approval.enabled` (admin-togglable, default false) plus the
 // per-approve preflights (identity, head-SHA, protection, revision fences).
+// The protection preflight is waivable per-repo via
+// `review.approval.protectionExemptions` — a deliberate, reasoned risk
+// acceptance for repos whose ruleset lacks dismiss-stale/require-last-push.
+// See docs/superpowers/specs/2026-07-17-approve-protection-exemption-design.md.
 export const AUTOMATIC_APPROVAL_RELEASE_READY = true;
 
 export function effectiveMraReviewStrategy(
