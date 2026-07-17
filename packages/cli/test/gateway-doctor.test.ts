@@ -686,6 +686,70 @@ describe("doctor — review readiness check", () => {
   });
 });
 
+describe("doctor — review protection exemptions", () => {
+  it("lists protection exemptions so a standing waiver stays visible", async () => {
+    const { reviewDoctorCheck } = await import("../src/gateway/doctor-checks/review");
+    const res = await reviewDoctorCheck({
+      configPath: "/nonexistent/gateway.json", // droppedExemptionCount must tolerate this
+      config: {
+        review: {
+          enabled: true,
+          approval: {
+            enabled: true,
+            protectionExemptions: [{ repo: "onead/oss-ui-v2", reason: "ruleset 8015695 pending" }],
+          },
+        },
+      },
+    } as never);
+    assert.match(res.message, /protection exemptions active/i);
+    assert.match(res.message, /onead\/oss-ui-v2/);
+    assert.match(res.message, /ruleset 8015695 pending/, "the recorded justification must be visible");
+    assert.match(res.message, /exemptions=1/);
+  });
+
+  it("reports a malformed exemption that normalisation silently dropped", async () => {
+    const { reviewDoctorCheck } = await import("../src/gateway/doctor-checks/review");
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pmk-doc-"));
+    const configPath = path.join(dir, "gateway.json");
+    // Two entries on disk; the second lacks `reason` and is dropped at load.
+    fs.writeFileSync(configPath, JSON.stringify({
+      review: {
+        approval: {
+          protectionExemptions: [
+            { repo: "onead/oss-ui-v2", reason: "kept" },
+            { repo: "onead/typo" },
+          ],
+        },
+      },
+    }));
+    try {
+      const res = await reviewDoctorCheck({
+        configPath,
+        config: {
+          review: {
+            enabled: true,
+            approval: { enabled: true, protectionExemptions: [{ repo: "onead/oss-ui-v2", reason: "kept" }] },
+          },
+        },
+      } as never);
+      assert.match(res.message, /1 protectionExemption entry dropped/);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("reports no exemptions and no drops for a config that has none", async () => {
+    const { reviewDoctorCheck } = await import("../src/gateway/doctor-checks/review");
+    const res = await reviewDoctorCheck({
+      configPath: "/nonexistent/gateway.json",
+      config: { review: { enabled: true, approval: { enabled: true } } },
+    } as never);
+    assert.match(res.message, /exemptions=0/);
+    assert.ok(!/dropped/.test(res.message));
+    assert.ok(!/protection exemptions active/i.test(res.message));
+  });
+});
+
 describe("doctor — DEFAULT_CHECKS shape", () => {
   it("exports exactly 12 checks (FR2 + secret-sources + github-token + review + audio)", () => {
     assert.equal(DEFAULT_CHECKS.length, 12);
