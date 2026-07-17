@@ -614,6 +614,16 @@ export class ReviewCoordinator {
         const after = await gateway.getPrHead({ slug, pr: ref.number, token });
         if (!after || after.sha !== ref.headSha)
           throw new Error(`approval ${posted.reviewId} became stale during publication`);
+        appendGatewayEvent({
+          type: "review.approved",
+          actor: actorUserId,
+          repo: slug,
+          pr: ref.number,
+          commit: ref.headSha,
+          reviewId: posted.reviewId,
+          protectionExempt: exemptionInEffect,
+          exemptionReason: exemptionInEffect ? exemption!.reason : undefined,
+        });
         const approvedLine = `:white_check_mark: 已真實 approve ${slug}#${ref.number}（commit \`${ref.headSha.slice(0, 7)}\`，GitHub review #${posted.reviewId}）。`;
         const riskLine = exemptionInEffect
           ? `\n:warning: 此 repo 未啟用 dismiss-stale/require-last-push：後續新 push 不會讓這個 approval 失效，可能被用來 merge 未經 review 的 commit。豁免理由：${exemption!.reason}`

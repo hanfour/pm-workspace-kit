@@ -1114,6 +1114,38 @@ describe("ReviewCoordinator.confirmApproveInThread", () => {
     assert.equal(writeError?.name, "AuthorizationLockBusyError");
     assert.equal(approved, 1, "the in-flight approve completes under the policy valid at its start");
   });
+
+  it("records every real approval in the audit log, flagging the accepted risk", async () => {
+    const { readGatewayEvents } = await import("../src/gateway/events");
+    const web = new FakeWebClient();
+    const gateway = gw({
+      approvalProtectionReady: async () => false,
+      resolveRepoSlug: async () => "onead/oss-ui-v2",
+      runMraReview: async () => eligibleReviewResult(),
+      createPullRequestApproval: async (a: { commitId: string }) =>
+        ({ reviewId: 4242, state: "APPROVED", commitId: a.commitId, actor: "expected-bot" }),
+    } as unknown as Partial<ReviewGateway>);
+    const c = coord(web, gateway, () => {}, {
+      approval: {
+        enabled: true,
+        protectionExemptions: [{ repo: "onead/oss-ui-v2", reason: "ruleset 8015695 pending" }],
+      },
+    });
+    const rootText = ":cr: https://github.com/onead/oss-ui-v2/pull/301";
+    await c.fromMessage({ channelId: "C1", threadTs: "1.1", userId: "U1", text: rootText });
+    web.conversationsHistoryResponse = { ok: true, messages: [{ text: rootText }] };
+
+    await c.confirmApproveInThread({ channelId: "C1", threadTs: "1.1", userId: "U1" });
+
+    const approvals = readGatewayEvents().filter((e) => e.type === "review.approved");
+    assert.equal(approvals.length, 1, "a real GitHub approval must never be unaudited");
+    const ev = approvals[0] as never as { actor: string; repo: string; pr: number; reviewId: number; protectionExempt: boolean };
+    assert.equal(ev.actor, "U1");
+    assert.equal(ev.repo, "onead/oss-ui-v2");
+    assert.equal(ev.pr, 301);
+    assert.equal(ev.reviewId, 4242);
+    assert.equal(ev.protectionExempt, true, "the accepted risk must be on the record");
+  });
 });
 
 describe("ReviewCoordinator.fromApproveMessage (:a: approve flow)", () => {
