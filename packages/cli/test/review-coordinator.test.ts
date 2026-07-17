@@ -908,6 +908,34 @@ describe("ReviewCoordinator.confirmApproveInThread", () => {
     assert.equal(approved, 1, "a consumed offer must never approve again");
   });
 
+  it("approves when only the PR's updatedAt moved (our own review post bumps it) — sha+base still pin (#90 live-verify bug)", async () => {
+    const web = new FakeWebClient();
+    let approved = 0;
+    let updatedAt = "2026-07-17T01:00:00Z";
+    const gateway = gw({
+      getPrHead: async () => ({ sha: "headsha", baseRef: "main", updatedAt }),
+      runMraReview: async () => eligibleReviewResult(),
+      createPullRequestApproval: async (a: { commitId: string }) => {
+        approved++;
+        return { reviewId: 99, state: "APPROVED", commitId: a.commitId, actor: "expected-bot" };
+      },
+    } as unknown as Partial<ReviewGateway>);
+    const c = coord(web, gateway);
+    const rootText = ":cr: https://github.com/onead/OnePixel/pull/12";
+    await c.fromMessage({ channelId: "C1", threadTs: "1.1", userId: "U1", text: rootText });
+    web.conversationsHistoryResponse = { ok: true, messages: [{ text: rootText }] };
+
+    // Posting the review (or any teammate comment) bumps the PR's updatedAt.
+    // The code (sha) and target (baseRef) are unchanged — approve must proceed.
+    updatedAt = "2026-07-17T01:05:00Z";
+    await c.confirmApproveInThread({ channelId: "C1", threadTs: "1.1", userId: "U1" });
+
+    assert.equal(approved, 1, "an updatedAt-only change must not invalidate the offer");
+    const allTexts = [...web.posted, ...web.updated].map((m) => m.text ?? "");
+    assert.ok(allTexts.some((t) => /已真實 approve/.test(t)));
+    assert.ok(!allTexts.some((t) => /changed after review/.test(t)));
+  });
+
   it("a config write during the approve critical section is refused, never interleaved (#90)", async () => {
     const web = new FakeWebClient();
     let approved = 0;

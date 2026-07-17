@@ -562,9 +562,13 @@ export class ReviewCoordinator {
         const authUser = await gateway.getAuthUser({ token });
         if (!authUser || (review.expectedGhUser && authUser !== review.expectedGhUser))
           throw new Error("GitHub identity is not approval-ready");
+        // Freshness pin = headSha (the exact code) + baseRef (the target).
+        // Deliberately NOT updatedAt: our own protocol-v1 review post bumps it,
+        // as does any teammate comment — comparing it invalidated every offer
+        // the moment the review was posted (found on the first live approve).
+        // contextVersion stays recorded on the offer for audit only.
         const before = await gateway.getPrHead({ slug, pr: ref.number, token });
-        if (!before || before.sha !== ref.headSha || before.baseRef !== ref.baseRef ||
-            (ref.contextVersion && before.updatedAt !== ref.contextVersion))
+        if (!before || before.sha !== ref.headSha || before.baseRef !== ref.baseRef)
           throw new Error("PR head, base, or review context changed after review");
         if (!await gateway.approvalProtectionReady({ slug, branch: ref.baseRef, token }))
           throw new Error("repository protection is not approval-ready");
@@ -579,8 +583,8 @@ export class ReviewCoordinator {
           throw new Error("approval policy changed during preflight");
         const finalActor = await gateway.getAuthUser({ token: finalToken });
         const finalHead = await gateway.getPrHead({ slug, pr: ref.number, token: finalToken });
-        if (finalActor !== authUser || !finalHead || finalHead.sha !== ref.headSha || finalHead.baseRef !== ref.baseRef ||
-            (ref.contextVersion && finalHead.updatedAt !== ref.contextVersion))
+        // Same pin as the first preflight: sha + baseRef, never updatedAt.
+        if (finalActor !== authUser || !finalHead || finalHead.sha !== ref.headSha || finalHead.baseRef !== ref.baseRef)
           throw new Error("approval identity or PR changed during final preflight");
         const postFence = this.currentConfig();
         const postFenceReview = resolveReviewConfig(postFence.review);
