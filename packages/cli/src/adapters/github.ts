@@ -176,6 +176,18 @@ export function buildGhArgs_getApprovalProtection(slug: string, branch: string):
   return ["api", `repos/${slug}/branches/${branch}/protection`, "--jq", "{dismissStale:.required_pull_request_reviews.dismiss_stale_reviews,requireLastPush:.required_pull_request_reviews.require_last_push_approval}"];
 }
 
+/**
+ * Active branch rules (Rules API). Unlike the classic protection endpoint —
+ * which is ADMIN-only and 404s for the read-only pinned review identity —
+ * this is readable by anyone with read access, so it is the primary
+ * approval-readiness probe (#90). Note: classic branch-protection settings do
+ * NOT surface here (verified empirically); only rulesets do.
+ */
+export function buildGhArgs_getBranchRules(slug: string, branch: string): string[] {
+  return ["api", `repos/${slug}/rules/branches/${branch}`, "--jq",
+    '[.[] | select(.type == "pull_request") | {dismissStale: .parameters.dismiss_stale_reviews_on_push, requireLastPush: .parameters.require_last_push_approval}]'];
+}
+
 export function buildGhArgs_createPullRequestApproval(args: {
   slug: string; pr: number; commitId: string; body: string;
 }): string[] {
@@ -213,12 +225,25 @@ export async function approvalProtectionReady(
   const exec = deps.exec ?? defaultExec;
   const gh = (deps.findBinary ?? findGhBinary)();
   if (!gh) return false;
+  const env = args.token ? { ...process.env, GH_TOKEN: args.token } : process.env;
+  // Require both controls (dismiss-stale + require-last-push). This is
+  // stronger than either setting alone and avoids treating a client-side
+  // head GET as a compare-and-set operation.
+  //
+  // Probe order (#90): the Rules API first — it is readable with plain read
+  // access, which the pinned review identity has; the classic protection
+  // endpoint is ADMIN-only and permanently 404s for that identity, so it can
+  // only ever help as a fallback when the token happens to be an admin's.
   try {
-    const env = args.token ? { ...process.env, GH_TOKEN: args.token } : process.env;
+    const { stdout } = await exec(gh, buildGhArgs_getBranchRules(args.slug, args.branch), { env, timeoutMs: 15_000 });
+    const rules = JSON.parse(stdout) as Array<{ dismissStale?: boolean; requireLastPush?: boolean }>;
+    if (rules.some((r) => r.dismissStale === true && r.requireLastPush === true)) return true;
+  } catch {
+    /* rules unreadable (very old GH / plan limits) — try classic below */
+  }
+  try {
     const { stdout } = await exec(gh, buildGhArgs_getApprovalProtection(args.slug, args.branch), { env, timeoutMs: 15_000 });
     const protection = JSON.parse(stdout) as { dismissStale?: boolean; requireLastPush?: boolean };
-    // Require both controls. This is stronger than either setting alone and
-    // avoids treating a client-side head GET as a compare-and-set operation.
     return protection.dismissStale === true && protection.requireLastPush === true;
   } catch {
     return false;

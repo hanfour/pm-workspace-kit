@@ -5,6 +5,7 @@ import {
   approvalProtectionReady,
   buildGhArgs_createPullRequestApproval,
   buildGhArgs_getApprovalProtection,
+  buildGhArgs_getBranchRules,
   buildGhArgs_getPrHead,
   buildGhArgs_hasPullRequestApproval,
   buildGhArgs_getAuthUser,
@@ -45,6 +46,63 @@ describe("github review helper argv", () => {
     });
     assert.equal(ready, true);
   });
+  it("branch-rules argv extracts pull_request rule controls", () => {
+    assert.deepEqual(buildGhArgs_getBranchRules("o/r", "main"), [
+      "api", "repos/o/r/rules/branches/main", "--jq",
+      '[.[] | select(.type == "pull_request") | {dismissStale: .parameters.dismiss_stale_reviews_on_push, requireLastPush: .parameters.require_last_push_approval}]',
+    ]);
+  });
+
+  it("approvalProtectionReady passes on a satisfying RULESET without touching the admin endpoint (#90)", async () => {
+    const endpoints: string[] = [];
+    const ready = await approvalProtectionReady({ slug: "o/r", branch: "main", token: "secret" }, {
+      findBinary: () => "gh",
+      exec: async (_file, args, opts) => {
+        endpoints.push(args[1] ?? "");
+        assert.equal(opts.env?.GH_TOKEN, "secret");
+        return { stdout: JSON.stringify([{ dismissStale: true, requireLastPush: true }]) };
+      },
+    });
+    assert.equal(ready, true);
+    assert.deepEqual(endpoints, ["repos/o/r/rules/branches/main"], "rulesets are read-accessible — must be tried first, alone");
+  });
+
+  it("approvalProtectionReady falls back to classic protection when no ruleset applies", async () => {
+    const endpoints: string[] = [];
+    const ready = await approvalProtectionReady({ slug: "o/r", branch: "main", token: "secret" }, {
+      findBinary: () => "gh",
+      exec: async (_file, args) => {
+        endpoints.push(args[1] ?? "");
+        if (args[1]?.includes("/rules/")) return { stdout: "[]" };
+        return { stdout: JSON.stringify({ dismissStale: true, requireLastPush: true }) };
+      },
+    });
+    assert.equal(ready, true);
+    assert.deepEqual(endpoints, ["repos/o/r/rules/branches/main", "repos/o/r/branches/main/protection"]);
+  });
+
+  it("approvalProtectionReady is false when rules are empty and classic protection is unreadable (read-only token)", async () => {
+    const ready = await approvalProtectionReady({ slug: "o/r", branch: "main", token: "secret" }, {
+      findBinary: () => "gh",
+      exec: async (_file, args) => {
+        if (args[1]?.includes("/rules/")) return { stdout: "[]" };
+        throw new Error("HTTP 404"); // admin-only endpoint, read-only token
+      },
+    });
+    assert.equal(ready, false);
+  });
+
+  it("approvalProtectionReady is false when the ruleset lacks one of the two controls", async () => {
+    const ready = await approvalProtectionReady({ slug: "o/r", branch: "main", token: "secret" }, {
+      findBinary: () => "gh",
+      exec: async (_file, args) => {
+        if (args[1]?.includes("/rules/")) return { stdout: JSON.stringify([{ dismissStale: true, requireLastPush: false }]) };
+        throw new Error("HTTP 404");
+      },
+    });
+    assert.equal(ready, false);
+  });
+
   it("accepts only a matching GitHub APPROVED response", async () => {
     const result = await createPullRequestApproval({ slug: "o/r", pr: 12, commitId: "abc", body: "artifact", token: "secret" }, {
       findBinary: () => "gh",
