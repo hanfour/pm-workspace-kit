@@ -107,9 +107,29 @@ export interface ResolvedAudioConfig {
   globalMonthlyMinutes?: number;
 }
 
+/**
+ * A deliberate, reasoned waiver of the branch-protection approve preflight
+ * for one repo. Exact `owner/repo` only — no wildcards, because the whole
+ * point of an exemption is a blast radius someone had to type out in full.
+ */
+export interface ProtectionExemption {
+  repo: string;
+  /** Why the waiver exists. Required; entries without one are dropped at load. */
+  reason: string;
+}
+
+export interface ApprovalConfig {
+  enabled: boolean;
+  /**
+   * Optional on the raw/partial side so `{ enabled }` alone still satisfies
+   * `Partial<ReviewConfig>`; `resolveReviewConfig` always fills it to `[]`.
+   */
+  protectionExemptions?: ProtectionExemption[];
+}
+
 export interface ReviewConfig {
   enabled: boolean;
-  approval: { enabled: boolean };
+  approval: ApprovalConfig;
   allowPublicRepos: boolean;
   repoAllowlist?: string[];          // e.g. ["onead/OnePixel"]; undefined = any private repo in workspace
   maxPrsPerTrigger: number;
@@ -367,6 +387,21 @@ function normaliseRawConfig(raw: unknown): RawGatewayConfig {
 }
 
 /**
+ * Keep only well-formed exemptions. A dropped entry fails safe: no exemption
+ * means the branch-protection preflight is enforced and the approve is
+ * refused. `doctor` reports the drop count so a typo is not silent.
+ */
+function asProtectionExemptions(raw: unknown[]): ProtectionExemption[] {
+  return raw
+    .filter((item): item is Record<string, unknown> => !!item && typeof item === "object")
+    .map((e) => ({
+      repo: typeof e.repo === "string" ? e.repo.trim() : "",
+      reason: typeof e.reason === "string" ? e.reason.trim() : "",
+    }))
+    .filter((e) => e.repo !== "" && e.reason !== "");
+}
+
+/**
  * Extract the known fields of a raw `review` config block into a typed
  * Partial<ReviewConfig>. Returns undefined when absent/not-an-object.
  * Lenient on value sanity (resolveReviewConfig clamps/guards downstream);
@@ -379,8 +414,12 @@ function normaliseReviewConfig(raw: unknown): Partial<ReviewConfig> | undefined 
   if (typeof o.enabled === "boolean") out.enabled = o.enabled;
   if (o.approval && typeof o.approval === "object") {
     const approval = o.approval as Record<string, unknown>;
-    if (typeof approval.enabled === "boolean")
-      out.approval = { enabled: approval.enabled };
+    const normalised: ApprovalConfig = {
+      enabled: typeof approval.enabled === "boolean" ? approval.enabled : false,
+    };
+    if (Array.isArray(approval.protectionExemptions))
+      normalised.protectionExemptions = asProtectionExemptions(approval.protectionExemptions);
+    out.approval = normalised;
   }
   if (typeof o.allowPublicRepos === "boolean")
     out.allowPublicRepos = o.allowPublicRepos;
@@ -494,7 +533,15 @@ export function resolveGithubToken(
 export function resolveReviewConfig(raw?: Partial<ReviewConfig>): ReviewConfig {
   return {
     enabled: raw?.enabled ?? false,
-    approval: { enabled: raw?.approval?.enabled ?? false },
+    approval: {
+      enabled: raw?.approval?.enabled ?? false,
+      // Re-sanitize even though normaliseReviewConfig already did: resolve
+      // is a public entry point callers can reach directly (as these tests
+      // do), and an unjustified waiver must never take effect regardless of
+      // which path constructed `raw`. asProtectionExemptions is idempotent,
+      // so this is a no-op for the already-clean load-from-disk path.
+      protectionExemptions: asProtectionExemptions(raw?.approval?.protectionExemptions ?? []),
+    },
     allowPublicRepos: raw?.allowPublicRepos ?? false,
     repoAllowlist: raw?.repoAllowlist,
     maxPrsPerTrigger: Math.max(1, raw?.maxPrsPerTrigger ?? 5),

@@ -1,4 +1,5 @@
 import type { ReviewProviderMode, ReviewStrategy } from "../adapters/mra";
+import type { ProtectionExemption } from "./config";
 
 // Release veto — LIFTED (#90, 2026-07-17): config writers
 // (saveGatewayConfig) and the approve POST critical section
@@ -26,4 +27,18 @@ export function reviewStrategySummary(
   const cr = effectiveMraReviewStrategy(configured, providerMode, false);
   const approve = effectiveMraReviewStrategy(configured, providerMode, true);
   return `strategy configured \`${configured}\` · effective :cr: \`${cr}\` · :a: \`${approve}\``;
+}
+
+/**
+ * The per-repo waiver of the branch-protection preflight, or undefined.
+ *
+ * Returns the entry rather than a boolean so callers get `reason` for the
+ * Slack disclosure and the audit record. Exact slug match only: a stored
+ * `onead/*` is a literal repo name that matches nothing, by design.
+ */
+export function findProtectionExemption(
+  approval: { protectionExemptions?: ProtectionExemption[] },
+  slug: string,
+): ProtectionExemption | undefined {
+  return approval.protectionExemptions?.find((e) => e.repo === slug);
 }
