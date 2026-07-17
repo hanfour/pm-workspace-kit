@@ -11,6 +11,10 @@ import {
   validateSecretSource,
   resolveSecret,
 } from "./secret-source";
+import {
+  acquireAuthorizationLockSync,
+  releaseAuthorizationLock,
+} from "./authorization-lock";
 
 /**
  * Gateway config — what the host configures once, before
@@ -615,17 +619,28 @@ export function isAdmin(cfg: GatewayConfig, userId: string): boolean {
 }
 
 export function saveGatewayConfig(cfg: RawGatewayConfig): string {
-  const file = gatewayConfigPath();
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.writeFileSync(file, JSON.stringify(cfg, null, 2), { mode: 0o600 });
-  // Tighten existing-file permissions in case the file was created with
-  // the umask default.
+  // #90: every config write serializes with the GitHub-approve POST critical
+  // section via the shared authorization lock. While an approve is in flight
+  // this throws AuthorizationLockBusyError instead of writing around it —
+  // callers surface "approve 進行中，請稍後重試" honestly. (The config ↔
+  // authorization-lock import cycle is safe: both sides only touch the other
+  // at call time, never at module init.)
+  const lock = acquireAuthorizationLockSync();
   try {
-    fs.chmodSync(file, 0o600);
-  } catch {
-    /* non-POSIX or permission issue — best-effort */
+    const file = gatewayConfigPath();
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, JSON.stringify(cfg, null, 2), { mode: 0o600 });
+    // Tighten existing-file permissions in case the file was created with
+    // the umask default.
+    try {
+      fs.chmodSync(file, 0o600);
+    } catch {
+      /* non-POSIX or permission issue — best-effort */
+    }
+    return file;
+  } finally {
+    releaseAuthorizationLock(lock);
   }
-  return file;
 }
 
 export function isGatewayConfigured(cfg: GatewayConfig): boolean {

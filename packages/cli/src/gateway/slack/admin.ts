@@ -68,6 +68,23 @@ const SLACK_USER_ID_RE = /^[UW][A-Z0-9]{2,}$/;
 export async function handleAdminSlash(
   args: AdminSlashArgs,
 ): Promise<AdminSlashResult> {
+  try {
+    return await dispatchAdminSlash(args);
+  } catch (err) {
+    // #90: config writes serialize with the approve POST critical section.
+    // While an approve is in flight the write is refused — tell the admin
+    // honestly instead of surfacing a stack trace (or worse, silently
+    // writing around the lock).
+    if ((err as Error).name === "AuthorizationLockBusyError") {
+      return { text: ":hourglass: 有一筆 GitHub approve 正在進行，設定暫時鎖定；請幾秒後重試這個指令。" };
+    }
+    throw err;
+  }
+}
+
+async function dispatchAdminSlash(
+  args: AdminSlashArgs,
+): Promise<AdminSlashResult> {
   const [head, ...rest] = args.tokens;
   switch (head) {
     case undefined:

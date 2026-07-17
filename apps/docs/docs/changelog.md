@@ -8,6 +8,13 @@ All notable changes to **pm-workspace-kit** are documented here.
 
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Each release also has a longer narrative on [GitHub Releases](https://github.com/hanfour/pm-workspace-kit/releases) with rationale, dogfood notes, and test plans.
 
+## [Unreleased]
+
+### Added
+
+- **`:a:` GitHub approve re-enabled behind the cross-process authorization lock** ([#90](https://github.com/hanfour/pm-workspace-kit/issues/90)) — implements the precondition PR #70's release veto documented: config writers (`saveGatewayConfig`) and the approve POST critical section (`publishApprovalReservation`) now share one mkdir-based cross-process lock (`gateway/authorization-lock.ts`, dead-pid + stale-hold takeover via atomic rename-to-tombstone), closing the TOCTOU where a policy revocation could land between the last revision-fence read and the GitHub mutation. Same-process writers fail fast with an honest ":hourglass: approve 進行中" reply instead of starving the event loop; foreign-process writers block briefly. `AUTOMATIC_APPROVAL_RELEASE_READY` flipped to `true` — the runtime gate is now `review.approval.enabled` (admin-togglable via `/pmk admin review approval enable`, default **false**). The three-phase revision fences stay as defense-in-depth. +9 tests (7 lock, 2 acceptance: end-to-end gated approve; write-refused-inside-critical-section), 1,020 cli tests green.
+- ⚠️ Not yet live-verified: a real end-to-end `:a:` approve on GitHub requires admin-enabling approval + a sacrificial PR — do this before the next tag.
+
 ## [v0.31.0] — 2026-07-16 — Codex review provider, CI test harness, security hardening & hotspot decomposition
 
 [GitHub release](https://github.com/hanfour/pm-workspace-kit/releases/tag/v0.31.0)

@@ -824,7 +824,16 @@ describe("ReviewCoordinator.retryInThread", () => {
 });
 
 describe("ReviewCoordinator.confirmApproveInThread", () => {
-  it("keeps an eligible protocol artifact review-only while the approval release veto is active", async () => {
+  /** Live gateway.json that revokes approval — currentConfig() prefers the file. */
+  function revokeApprovalOnDisk() {
+    saveGatewayConfig({
+      version: 1, admins: ["U1"], blocklist: [], audience: {}, escalation: {}, slack: {},
+      mraWorkspace: path.join(tmp, "ws"),
+      review: { enabled: true, approval: { enabled: false }, expectedGhUser: "expected-bot" },
+    } as never);
+  }
+
+  it("keeps an eligible protocol artifact review-only when approval was config-revoked after the offer (#90)", async () => {
     const web = new FakeWebClient();
     const calls: Array<Record<string, unknown>> = [];
     const gateway = gw({
@@ -838,17 +847,19 @@ describe("ReviewCoordinator.confirmApproveInThread", () => {
     await c.fromMessage({ channelId: "C1", threadTs: "1.1", userId: "U1", text: rootText });
     web.conversationsHistoryResponse = { ok: true, messages: [{ text: rootText }] };
 
+    // Admin revokes approval BETWEEN the offer and the confirmation.
+    revokeApprovalOnDisk();
     await c.confirmApproveInThread({ channelId: "C1", threadTs: "1.1", userId: "U1" });
 
     assert.equal(calls.length, 1, "confirmation must reuse the SHA-bound artifact");
     assert.equal(calls[0]?.["allowApprove"], undefined, ":cr: remains analysis-only");
     const allTexts = [...web.posted, ...web.updated].map((m) => m.text ?? "");
     assert.ok(allTexts.some((t) => /回覆 `approve`|授權 GitHub approve/.test(t)), ":cr: result should ask for explicit authorization");
-    assert.ok(allTexts.some((t) => /安全停用|不會執行 approve/.test(t)), "release veto must block the GitHub mutation");
+    assert.ok(allTexts.some((t) => /安全停用|不會執行 approve/.test(t)), "config-revoked approval must block the GitHub mutation");
     assert.ok(!allTexts.some((t) => /已真實 approve/.test(t)));
   });
 
-  it("does not consume the review artifact while approval is release-vetoed", async () => {
+  it("does not consume the review artifact while approval is config-revoked", async () => {
     const web = new FakeWebClient();
     let calls = 0;
     const gateway = gw({
@@ -861,13 +872,80 @@ describe("ReviewCoordinator.confirmApproveInThread", () => {
     const rootText = ":cr: https://github.com/onead/OnePixel/pull/12";
     await c.fromMessage({ channelId: "C1", threadTs: "1.1", userId: "U1", text: rootText });
     web.conversationsHistoryResponse = { ok: true, messages: [{ text: rootText }] };
+    revokeApprovalOnDisk();
     await c.confirmApproveInThread({ channelId: "C1", threadTs: "1.1", userId: "U1" });
     assert.equal(calls, 1, "first confirmation reuses the earlier artifact");
 
     await c.confirmApproveInThread({ channelId: "C1", threadTs: "1.1", userId: "U1" });
     assert.equal(calls, 1, "second confirmation for the same artifact is idempotent");
     const allTexts = [...web.posted, ...web.updated].map((m) => m.text ?? "");
-    assert.ok(allTexts.filter((t) => /安全停用|不會執行 approve/.test(t)).length >= 2, "each confirmation must report the release veto");
+    assert.ok(allTexts.filter((t) => /安全停用|不會執行 approve/.test(t)).length >= 2, "each confirmation must report the revoked policy");
+  });
+
+  it("publishes a real approval end-to-end when policy allows (#90 veto lifted)", async () => {
+    const web = new FakeWebClient();
+    let approved = 0;
+    const gateway = gw({
+      runMraReview: async () => eligibleReviewResult(),
+      createPullRequestApproval: async (a: { commitId: string }) => {
+        approved++;
+        return { reviewId: 99, state: "APPROVED", commitId: a.commitId, actor: "expected-bot" };
+      },
+    } as unknown as Partial<ReviewGateway>);
+    const c = coord(web, gateway);
+    const rootText = ":cr: https://github.com/onead/OnePixel/pull/12";
+    await c.fromMessage({ channelId: "C1", threadTs: "1.1", userId: "U1", text: rootText });
+    web.conversationsHistoryResponse = { ok: true, messages: [{ text: rootText }] };
+
+    await c.confirmApproveInThread({ channelId: "C1", threadTs: "1.1", userId: "U1" });
+
+    assert.equal(approved, 1, "the gated confirmation must publish exactly one GitHub approval");
+    const allTexts = [...web.posted, ...web.updated].map((m) => m.text ?? "");
+    assert.ok(allTexts.some((t) => /已真實 approve/.test(t)));
+
+    // The consumed offer must not be publishable twice.
+    await c.confirmApproveInThread({ channelId: "C1", threadTs: "1.1", userId: "U1" });
+    assert.equal(approved, 1, "a consumed offer must never approve again");
+  });
+
+  it("a config write during the approve critical section is refused, never interleaved (#90)", async () => {
+    const web = new FakeWebClient();
+    let approved = 0;
+    let writeError: Error | undefined;
+    const gateway = gw({
+      runMraReview: async () => eligibleReviewResult(),
+      // Slow preflight keeps the authorization lock held long enough for the
+      // concurrent write attempt below to land INSIDE the critical section.
+      getPrHead: async () => {
+        await new Promise((r) => setTimeout(r, 120));
+        return { sha: "headsha", baseRef: "main" };
+      },
+      createPullRequestApproval: async (a: { commitId: string }) => {
+        approved++;
+        return { reviewId: 99, state: "APPROVED", commitId: a.commitId, actor: "expected-bot" };
+      },
+    } as unknown as Partial<ReviewGateway>);
+    const c = coord(web, gateway);
+    const rootText = ":cr: https://github.com/onead/OnePixel/pull/12";
+    await c.fromMessage({ channelId: "C1", threadTs: "1.1", userId: "U1", text: rootText });
+    web.conversationsHistoryResponse = { ok: true, messages: [{ text: rootText }] };
+
+    const confirming = c.confirmApproveInThread({ channelId: "C1", threadTs: "1.1", userId: "U1" });
+    await new Promise((r) => setTimeout(r, 60)); // land inside the held section
+    try {
+      saveGatewayConfig({
+        version: 1, admins: ["U1"], blocklist: [], audience: {}, escalation: {}, slack: {},
+        mraWorkspace: path.join(tmp, "ws"),
+        review: { enabled: true, approval: { enabled: false }, expectedGhUser: "expected-bot" },
+      } as never);
+    } catch (err) {
+      writeError = err as Error;
+    }
+    await confirming;
+
+    assert.ok(writeError, "the write inside the critical section must be refused");
+    assert.equal(writeError?.name, "AuthorizationLockBusyError");
+    assert.equal(approved, 1, "the in-flight approve completes under the policy valid at its start");
   });
 });
 
@@ -957,19 +1035,22 @@ describe("ReviewCoordinator.fromApproveMessage (:a: approve flow)", () => {
 });
 
 describe("ReviewCoordinator exact-head approval offer", () => {
-  it("release veto takes precedence over exact-head approval preflight", async () => {
+  it("exact-head preflight rejects a stale offer without any GitHub mutation (#90 veto lifted)", async () => {
     const web = new FakeWebClient();
     let head = "head-1";
     let calls = 0;
+    let approved = 0;
     const c = coord(web, gw({
       getPrHead: async () => ({ sha: head, baseRef: "main" }),
       runMraReview: async () => { calls++; return eligibleReviewResult(head); },
+      createPullRequestApproval: async () => { approved++; return { reviewId: 99, state: "APPROVED", commitId: head, actor: "expected-bot" }; },
     } as unknown as Partial<ReviewGateway>));
     await c.fromMessage({ channelId: "C1", threadTs: "1.1", userId: "U1", text: ":cr: https://github.com/onead/OnePixel/pull/12" });
-    head = "head-2";
+    head = "head-2"; // PR moved after the review — the offer is now stale
     await c.confirmApproveInThread({ channelId: "C1", threadTs: "1.1", userId: "U1" });
     assert.equal(calls, 1, "changed head must not reach the approval model pass");
-    assert.ok(web.posted.some((p) => /安全停用|不會執行 approve/.test(p.text ?? "")));
+    assert.equal(approved, 0, "a stale offer must never produce a GitHub approval");
+    assert.ok(web.posted.some((p) => /preflight 未通過|changed after review/.test(p.text ?? "")), "the rejection must be reported honestly");
   });
 });
 
