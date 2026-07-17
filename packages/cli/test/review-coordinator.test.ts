@@ -1375,6 +1375,25 @@ describe("review/approve result text (pure)", () => {
     const t = reviewResultText("onead/OnePixel", ref, { status: "COMMENT", commentCount: 0, incomplete: true } as never);
     assert.match(t, /未完成|REVIEW_INCOMPLETE/);
   });
+  it("reviewResultText notes the exemption as a config fact, never a branch claim", () => {
+    const t = reviewResultText("onead/oss-ui-v2", ref, eligibleReviewResult() as never, true, true);
+    assert.match(t, /已列入 protection 豁免清單/);
+    assert.doesNotMatch(
+      t,
+      /未啟用 dismiss-stale/,
+      ":cr: never probes, so the offer line has no standing to describe the branch",
+    );
+  });
+  it("reviewResultText leaves the offer line untouched for a non-exempt repo", () => {
+    const t = reviewResultText("onead/OnePixel", ref, eligibleReviewResult() as never, true, false);
+    assert.doesNotMatch(t, /豁免/);
+    assert.match(t, /可進一步 approve/);
+  });
+  it("reviewResultText never mentions the exemption when approval is disabled", () => {
+    const t = reviewResultText("onead/oss-ui-v2", ref, eligibleReviewResult() as never, false, true);
+    assert.doesNotMatch(t, /豁免/, "the no-approve line must not advertise a waiver it cannot use");
+    assert.match(t, /未執行 GitHub approve/);
+  });
 });
 
 describe("describeMraFailure (pure)", () => {

@@ -1027,7 +1027,8 @@ export class ReviewCoordinator {
       });
       const resultText = isApprove
         ? approveResultText(slug, ref, res)
-        : reviewResultText(slug, ref, res, ctx.review.approval.enabled);
+        : reviewResultText(slug, ref, res, ctx.review.approval.enabled,
+            !!findProtectionExemption(ctx.review.approval, slug));
       if (progress) await progress.finish(resultText);
       else await this.reply(ctx.channelId, ctx.threadTs, resultText);
     } catch (err) {
