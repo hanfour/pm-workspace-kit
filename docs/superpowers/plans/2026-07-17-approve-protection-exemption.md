@@ -21,6 +21,7 @@
 - Slack copy is 繁體中文台灣用語; technical identifiers stay in English.
 - Commit message format: `<type>: <description>`. No attribution trailer (disabled globally).
 - Work on branch `feat/approve-protection-exemption` (already created, spec already committed as `5cb360b`).
+- **Line numbers are hints, not addresses.** Every `file.ts:NNN` in this plan was measured against the base commit `a997888` and goes stale the moment you edit above it — Task 1 Step 3 inserts ~18 lines into `config.ts` before Step 4 cites `config.ts:380-384`, and Tasks 3/4/6 each edit `review.ts` above later citations. **Locate every edit by the quoted surrounding code, not by the number.** If a cited line does not contain what the plan says it contains, you are in the right file at the wrong offset — search for the code.
 
 ---
 
