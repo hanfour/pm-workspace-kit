@@ -1,9 +1,13 @@
 import type { ReviewProviderMode, ReviewStrategy } from "../adapters/mra";
 
-// Release veto: the analysis/review integration is production-ready, but a
-// GitHub APPROVE mutation remains disabled until config writers and the POST
-// path share one cross-process authorization lock.
-export const AUTOMATIC_APPROVAL_RELEASE_READY = false;
+// Release veto — LIFTED (#90, 2026-07-17): config writers
+// (saveGatewayConfig) and the approve POST critical section
+// (publishApprovalReservation) now share the cross-process authorization
+// lock (gateway/authorization-lock.ts), closing the TOCTOU the veto guarded
+// against. GitHub APPROVE additionally requires the runtime gate
+// `review.approval.enabled` (admin-togglable, default false) plus the
+// per-approve preflights (identity, head-SHA, protection, revision fences).
+export const AUTOMATIC_APPROVAL_RELEASE_READY = true;
 
 export function effectiveMraReviewStrategy(
   configured: ReviewStrategy,

@@ -48,6 +48,7 @@ import {
 } from "../../adapters/mra";
 import { AUTOMATIC_APPROVAL_RELEASE_READY, effectiveMraReviewStrategy } from "../review-policy";
 export { effectiveMraReviewStrategy } from "../review-policy";
+import { withAuthorizationLock } from "../authorization-lock";
 import {
   resolveRepoSlug as resolveRepoSlugImpl,
   repoVisibility as repoVisibilityImpl,
@@ -539,6 +540,12 @@ export class ReviewCoordinator {
     try {
       if (reservation.refs.length !== 1)
         throw new Error("multi-PR approval must be confirmed in separate review threads");
+      // #90: the whole authorize→preflight→POST section runs under the shared
+      // authorization lock, so no config write can land between the policy
+      // reads (the revision fences below, kept as defense-in-depth) and the
+      // actual GitHub mutation. A concurrent writer either commits before the
+      // first read (fences reject) or blocks until the POST completes.
+      await withAuthorizationLock(async () => {
       for (const ref of reservation.refs) {
         const live = this.currentConfig();
         const review = resolveReviewConfig(live.review);
@@ -598,6 +605,7 @@ export class ReviewCoordinator {
         await this.reply(reservation.channelId, reservation.threadTs,
           `:white_check_mark: 已真實 approve ${slug}#${ref.number}（commit \`${ref.headSha.slice(0, 7)}\`，GitHub review #${posted.reviewId}）。`);
       }
+      });
       consumeApprovalReservation(reservation);
     } catch (err) {
       if (mutationStarted) {
