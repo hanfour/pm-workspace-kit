@@ -124,13 +124,35 @@ Touch points: type at `config.ts:112`, validation at `config.ts:380-383`, resolu
 ### 2. Exemption applies at the call site, not inside the probe
 
 `approvalProtectionReady` (`github.ts:221`) is **unchanged**. It continues to answer truthfully
-whether the branch is protected. The exemption is policy layered on top of that fact:
+whether the branch is protected. The exemption is policy layered on top of that fact.
+
+The probe runs **unconditionally** — the exemption gates the *throw*, not the *check*:
 
 ```ts
-const exempt = isProtectionExempt(review.approval, slug);
-if (!exempt && !await gateway.approvalProtectionReady({ slug, branch: ref.baseRef, token }))
+const exemption = findProtectionExemption(review.approval, slug);
+const protectionReady = await gateway.approvalProtectionReady({ slug, branch: ref.baseRef, token });
+if (!protectionReady && !exemption)
   throw new Error("repository protection is not approval-ready");
+// The exemption is only *in effect* when the branch really is unprotected.
+const exemptionInEffect = !protectionReady && !!exemption;
 ```
+
+Probing even when exempt is not optional, for two reasons:
+
+- **The disclosure would otherwise be a lie.** §3's warning asserts the branch lacks the two
+  controls. Skipping the probe means asserting a fact we never checked; once onead fixes the
+  ruleset the gateway would keep printing a false warning forever.
+- **It is the stale-exemption detector.** `protectionReady && exemption` means the exemption is
+  obsolete and can be deleted — reported in Slack at the one moment anyone cares (see §5).
+
+There is no added cost: today's code already probes on every approve, so the probe count is
+unchanged. `approvalProtectionReady` returns `false` on error and never throws, so a network
+failure degrades to "still unprotected" rather than breaking the approve.
+
+`findProtectionExemption(approval, slug): ProtectionExemption | undefined` is a pure function —
+exact slug match, no wildcards. It returns the entry rather than a boolean so callers get
+`reason` for the disclosure and audit record. (The spec's earlier `isProtectionExempt` name is
+retired: a boolean cannot carry the reason.)
 
 Two consequences worth naming:
 
@@ -145,8 +167,21 @@ Two consequences worth naming:
 
 ### 3. Disclosure
 
-Two places. The offer message (`review-messages.ts:34`) gains a note. The load-bearing one is
-the approve success message (`review.ts:610`), because that is the moment the risk goes live:
+Each message asserts only what its own code path actually knows. This distinction is
+load-bearing, not pedantry — it is the difference between a warning that stays true and one that
+rots into a lie the day onead fixes the ruleset.
+
+**Offer message** (`review-messages.ts:34`, emitted on the `:cr:` path, which never probes):
+states the *config* fact only, because that is all it has measured. No probe is added — that
+would put a network call on every review to serve a message.
+
+```
+（此 repo 已列入 protection 豁免清單，approve 時會略過 branch-protection 檢查）
+```
+
+**Approve success message** (`review.ts:610`): states the *branch* fact, gated on
+`exemptionInEffect` from §2, which is derived from a real probe. This is the load-bearing one —
+it is the moment the risk goes live:
 
 ```
 :white_check_mark: 已真實 approve onead/oss-ui-v2#301（commit `9236381`，GitHub review #12345）。
@@ -172,16 +207,51 @@ appendGatewayEvent({
 
 ### 5. Doctor
 
-`doctor-checks/review.ts` already reports approval state. Extend it to:
+`doctor-checks/review.ts` documents itself as "Presence/config only — no live gh call (kept fast
+like github-token)", and network access in doctor is injected via `DoctorRunners` precisely so
+"checks themselves stay testable without network access" (`doctor.ts:6`). An earlier draft of
+this spec had doctor probe each exempt repo live; that would have broken both constraints and
+required new runner plumbing. It is **dropped**. Doctor stays config-only:
 
 - List exempt repos with their reasons.
-- **Probe each exempt repo live.** If the branch now satisfies both controls, report that the
-  exemption is no longer needed and can be removed. This prevents an exemption from silently
-  outliving its justification — the main way a transitional risk acceptance becomes permanent.
 - **Report dropped entries** (§1). Without this, a typo in `repo` or a missing `reason` silently
   degrades to "no exemption", and the only symptom is an approve that keeps failing the probe.
+  Doctor detects drops by re-reading the raw `gateway.json` and comparing the entry count with
+  the resolved config's, since normalisation discards malformed entries without a trace.
 
-### 6. Policy comment
+**Stale-exemption detection moves to the approve path** (§2), which already probes. When
+`protectionReady && exemption`, the approve replies:
+
+```
+:information_source: onead/oss-ui-v2 的 protection 豁免已不再需要
+   （branch 現已同時啟用 dismiss-stale 與 require-last-push），可以從 config 移除。
+```
+
+This fires at the one moment anyone cares about the exemption, needs no new doctor surface, and
+costs nothing extra.
+
+### 6. Admin clobber bug (found during planning — not in the original design)
+
+`admin-review.ts:79` currently does:
+
+```ts
+cfg.review = { ...(cfg.review ?? {}), approval: { enabled } };
+```
+
+This **replaces the whole `approval` object**. Once `protectionExemptions` lives inside it, any
+`/pmk admin review approval enable|disable` silently wipes every exemption — and the only
+symptom is approve mysteriously failing the probe again, with the config file looking like
+someone deleted the exemptions by hand. It must become a merge:
+
+```ts
+cfg.review = { ...(cfg.review ?? {}), approval: { ...(cfg.review?.approval ?? {}), enabled } };
+```
+
+Two copy strings in the same file also overstate the guarantee once exemptions exist and must be
+amended: `:34` ("PMK admin confirmation + protected repo required") and `:84` ("each repo must
+still pass … branch-protection readiness checks").
+
+### 7. Policy comment
 
 `review-policy.ts:3-10` lists `protection` among the preflights justifying the lifted veto.
 Amend it to say the protection preflight is exemptible per-repo and point here. The code comment
@@ -192,16 +262,26 @@ must not overstate the guarantee.
 `github-review-helpers.test.ts` is untouched (12 tests, five of which exercise the probe
 directly). New coverage:
 
-- `isProtectionExempt`: exact slug match; non-listed repo not exempt; no wildcard behaviour
-  (`onead/*` and `onead/oss-ui-v2-fork` must not match an `onead/oss-ui-v2` entry)
+- `findProtectionExemption`: exact slug match returns the entry with its `reason`; non-listed
+  repo returns `undefined`; no wildcard behaviour (`onead/*` and `onead/oss-ui-v2-fork` must not
+  match an `onead/oss-ui-v2` entry); tolerates an absent `protectionExemptions`
 - Config validation: entry with missing/empty/whitespace `reason` dropped; entry with missing
   `repo` dropped; non-object entry dropped; a valid entry alongside an invalid one survives;
   the surrounding config still loads; default `[]`
-- Coordinator: exempt repo approves even with `approvalProtectionReady: async () => false`;
-  non-exempt repo still throws `repository protection is not approval-ready`
-- Fence: an exemption added mid-approve is rejected by the revision fence
-- Disclosure: offer and success text include the warning and reason when exempt; unchanged when not
-- Event: `review.approved` emitted with correct `protectionExempt` on both exempt and non-exempt paths
+- Coordinator: exempt repo approves when `approvalProtectionReady: async () => false`;
+  non-exempt repo still throws `repository protection is not approval-ready`; an exempt repo
+  whose probe returns `true` approves **without** the warning and reports the exemption obsolete
+- Lock: a `protectionExemptions` write landing inside the approve critical section is refused
+  (`AuthorizationLockBusyError`), so a waiver cannot be injected mid-approve. Note what this
+  does and does not prove: the **authorization lock** is the mechanism, and it is field-agnostic.
+  The three revision fences sit behind it as defence-in-depth and cannot be triggered in
+  isolation through the public API — an earlier draft of this spec claimed a "fence rejects the
+  exemption" test that is not actually writable.
+- Disclosure: offer and success text carry the warning and reason only when `exemptionInEffect`
+- Event: `review.approved` emitted with correct `protectionExempt` on exempt, non-exempt, and
+  exempt-but-protected paths
+- Admin (§6): `/pmk admin review approval enable` then `disable` preserves `protectionExemptions`
+  — the regression test for the clobber
 
 ## Out of scope
 
