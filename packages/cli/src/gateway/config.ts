@@ -390,8 +390,16 @@ function normaliseRawConfig(raw: unknown): RawGatewayConfig {
  * Keep only well-formed exemptions. A dropped entry fails safe: no exemption
  * means the branch-protection preflight is enforced and the approve is
  * refused. `doctor` reports the drop count so a typo is not silent.
+ *
+ * `raw` is `unknown`, not `unknown[]`: this is the single choke point for
+ * BOTH element- and container-level sanitising. A non-array truthy value
+ * (a bare string, a plain object, a number) must fail safe to `[]` here
+ * rather than throwing — pushing that guard onto callers means every call
+ * site has to remember it, and resolve is a public entry point whose
+ * sanitising must not depend on which path built the input.
  */
-function asProtectionExemptions(raw: unknown[]): ProtectionExemption[] {
+function asProtectionExemptions(raw: unknown): ProtectionExemption[] {
+  if (!Array.isArray(raw)) return [];
   return raw
     .filter((item): item is Record<string, unknown> => !!item && typeof item === "object")
     .map((e) => ({
@@ -538,9 +546,10 @@ export function resolveReviewConfig(raw?: Partial<ReviewConfig>): ReviewConfig {
       // Re-sanitize even though normaliseReviewConfig already did: resolve
       // is a public entry point callers can reach directly (as these tests
       // do), and an unjustified waiver must never take effect regardless of
-      // which path constructed `raw`. asProtectionExemptions is idempotent,
-      // so this is a no-op for the already-clean load-from-disk path.
-      protectionExemptions: asProtectionExemptions(raw?.approval?.protectionExemptions ?? []),
+      // which path constructed `raw`. asProtectionExemptions now guards its
+      // own container (non-array → []), so this is a no-op for the
+      // already-clean load-from-disk path and safe for any raw input.
+      protectionExemptions: asProtectionExemptions(raw?.approval?.protectionExemptions),
     },
     allowPublicRepos: raw?.allowPublicRepos ?? false,
     repoAllowlist: raw?.repoAllowlist,

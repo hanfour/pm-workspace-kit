@@ -66,6 +66,19 @@ describe("resolveReviewConfig", () => {
     assert.deepEqual(c.approval.protectionExemptions, [], "an unjustified waiver must never take effect");
   });
 
+  it("fails safe to [] when protectionExemptions itself is not an array, instead of throwing", () => {
+    for (const nonArray of ["onead/x", {}, 42]) {
+      const c = resolveReviewConfig({
+        approval: { enabled: true, protectionExemptions: nonArray as never },
+      });
+      assert.deepEqual(
+        c.approval.protectionExemptions,
+        [],
+        `container ${JSON.stringify(nonArray)} must fail safe, not throw`,
+      );
+    }
+  });
+
   it("drops malformed entries but keeps valid siblings and the surrounding config", () => {
     const c = resolveReviewConfig({
       enabled: true,
