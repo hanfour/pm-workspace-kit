@@ -748,6 +748,39 @@ describe("doctor — review protection exemptions", () => {
     assert.ok(!/dropped/.test(res.message));
     assert.ok(!/protection exemptions active/i.test(res.message));
   });
+
+  it("keeps the exemption warning visible even when the check is already failing (mra/gh off PATH — the CI case)", async () => {
+    // Force both binary probes to miss, so the check has PROBLEMS (fail) — the
+    // exact state CI runs in. The exemption line lives in `warnings`, which the
+    // old message builder dropped whenever problems existed, so it vanished in
+    // CI while passing locally. This pins that warnings render alongside problems.
+    const priorMra = process.env.PMK_SKIP_MRA_PROBE;
+    const priorGh = process.env.PMK_SKIP_GH_PROBE;
+    process.env.PMK_SKIP_MRA_PROBE = "1";
+    process.env.PMK_SKIP_GH_PROBE = "1";
+    try {
+      const { reviewDoctorCheck } = await import("../src/gateway/doctor-checks/review");
+      const res = await reviewDoctorCheck({
+        configPath: "/nonexistent/gateway.json",
+        config: {
+          review: {
+            enabled: true,
+            approval: {
+              enabled: true,
+              protectionExemptions: [{ repo: "onead/oss-ui-v2", reason: "ruleset 8015695 pending" }],
+            },
+          },
+        },
+      } as never);
+      assert.equal(res.severity, "fail", "mra+gh missing must still fail the check");
+      assert.match(res.message, /mra not on PATH/, "the problem must be reported");
+      assert.match(res.message, /protection exemptions active/i, "the standing waiver must NOT be swallowed by the problem branch");
+      assert.match(res.message, /onead\/oss-ui-v2/);
+    } finally {
+      if (priorMra === undefined) delete process.env.PMK_SKIP_MRA_PROBE; else process.env.PMK_SKIP_MRA_PROBE = priorMra;
+      if (priorGh === undefined) delete process.env.PMK_SKIP_GH_PROBE; else process.env.PMK_SKIP_GH_PROBE = priorGh;
+    }
+  });
 });
 
 describe("doctor — DEFAULT_CHECKS shape", () => {

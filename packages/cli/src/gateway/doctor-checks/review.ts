@@ -75,11 +75,14 @@ export const reviewDoctorCheck: DoctorCheck = async (
 
   const detail = `mra=${mraPresent ? "found" : "missing"}; protocol=${protocol ? "v1" : "legacy/unavailable"}; gh=${ghPresent ? "found" : "missing"}; provider=${review.providerMode}; strategy=${review.strategy}; approval=${review.approval.enabled ? "enabled" : "disabled"}; exemptions=${exemptions.length}`;
   const severity = problems.length ? "fail" : warnings.length ? "warn" : "pass";
-  const message = problems.length
-    ? `${detail} — ${problems.join("; ")}`
-    : warnings.length
-      ? `${detail}; ${warnings.join("; ")}`
-      : detail;
+  // Problems and warnings both render. A standing protection exemption (or a
+  // dropped entry) is a warning, and it must stay visible even when the check
+  // is already failing for another reason — e.g. mra/gh off PATH in CI —
+  // rather than being swallowed by the problems branch.
+  const message =
+    detail +
+    (problems.length ? ` — ${problems.join("; ")}` : "") +
+    (warnings.length ? `; ${warnings.join("; ")}` : "");
 
   return { name: "review", severity, message };
 };
