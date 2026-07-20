@@ -8,6 +8,27 @@ All notable changes to **pm-workspace-kit** are documented here.
 
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Each release also has a longer narrative on [GitHub Releases](https://github.com/hanfour/pm-workspace-kit/releases) with rationale, dogfood notes, and test plans.
 
+## [v0.33.0] — 2026-07-20 — Per-repo approve protection exemption: `:a:` usable on real OneAD repos
+
+[GitHub release](https://github.com/hanfour/pm-workspace-kit/releases/tag/v0.33.0)
+
+### Added
+
+- **Per-repo branch-protection exemption for `:a:` approve** ([#92](https://github.com/hanfour/pm-workspace-kit/pull/92)) — `:a:` shipped in v0.32.0 but could not run on the repo it was built for. `onead/oss-ui-v2` gates merge on one approval (`required_approving_review_count: 1`) yet its ruleset leaves `dismiss_stale_reviews_on_push` + `require_last_push_approval` both **false**, and the pinned review identity has push-not-admin so cannot change the ruleset — so the approve preflight (`approvalProtectionReady`) refused every approve. New config `review.approval.protectionExemptions: [{repo, reason}]` waives that one preflight per-repo, with a **mandatory reason** (malformed entries drop individually and fail safe — no exemption means the probe stays enforced and the approve is refused). Exact `owner/repo` match only, no wildcards. **Design invariant: the probe still runs on every approve — the exemption gates the `throw`, not the check** — so the Slack disclosure asserts only what was actually measured, an obsolete exemption self-reports ("豁免已不再需要"), and the exemption is covered by the existing three revision fences for free (the whole `review` object is serialised into the policy revision).
+- **`review.approved` audit event** — `publishApprovalReservation` previously emitted **zero** gateway events, so a real GitHub APPROVE left no trace outside the Slack thread. The new event carries `actor`/`repo`/`pr`/`commit`/`reviewId`/`protectionExempt` (+`exemptionReason`), putting the accepted risk on a durable, readable record. Emitted only after the post-POST staleness check, so a stale/failed approve records nothing.
+- **`gateway doctor` surfaces exemptions** — lists each standing waiver with its reason and reports how many malformed entries were silently dropped at load. Config-only (no live gh call), honouring the check's fast-probe contract.
+
+### Fixed
+
+- **Admin approval toggle no longer wipes exemptions** — `/pmk admin review approval enable|disable` replaced the whole `approval` object, which would have silently deleted `protectionExemptions` on every toggle. Now merges.
+- **Doctor exemption warning stays visible when the check is already failing** — the review check dropped **all** warnings whenever a problem existed (e.g. mra/gh off PATH in CI), so a standing waiver of a safety check vanished from doctor exactly when it mattered. Problems and warnings now both render. Caught by CI (the two doctor tests passed locally with mra/gh present but failed in CI); a hermetic regression test now forces the both-problems-and-warnings case via `PMK_SKIP_MRA_PROBE`/`PMK_SKIP_GH_PROBE`.
+
+### Verified
+
+- 1,048 cli tests green; each task mutation-verified; whole-branch review clean.
+- **Live negative-verify (2026-07-20, real gateway)**: with `review.approval.enabled` on and the `onead/oss-ui-v2` exemption configured, a real `:a:`→thread-`approve` on a **non-exempt, unprotected** repo (`onead/super-dsp-2.0#567`) was correctly **refused** at the preflight (`repository protection is not approval-ready`, authorization not consumed, zero `review.approved` events, no APPROVED review on GitHub) — proving the exemption is scoped and never leaks across repos.
+- **Positive live-verify deferred**: a successful exemption-driven approve on a real `onead/oss-ui-v2` PR is high-confidence-already (the real-APPROVE POST was live-verified for #90 on a sandbox; the oss-ui-v2 probe returning false is API-confirmed; the exemption-lets-through path is unit-tested) but has not been run end-to-end on the live repo, since that would cast a real merge-gating approval on a colleague's PR — it will land on the next genuine oss-ui-v2 approval.
+
 ## [v0.32.0] — 2026-07-17 — `:a:` GitHub approve unlocked: cross-process authorization lock, live-verified
 
 [GitHub release](https://github.com/hanfour/pm-workspace-kit/releases/tag/v0.32.0)
