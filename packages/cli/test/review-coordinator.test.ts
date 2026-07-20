@@ -20,6 +20,7 @@ function gw(over: Partial<ReviewGateway> = {}): ReviewGateway {
     repoVisibility: async () => "private",
     getAuthUser: async () => "expected-bot",
     approvalProtectionReady: async () => true,
+    reviewGateStatus: async () => true,
     createPullRequestApproval: async (a: { commitId: string }) => ({ reviewId: 99, state: "APPROVED", commitId: a.commitId, actor: "expected-bot" }),
     createPullRequestReview: async (a: { commitId: string; event: string }) => ({ reviewId: 98, state: a.event === "REQUEST_CHANGES" ? "CHANGES_REQUESTED" : "COMMENTED", commitId: a.commitId, actor: "expected-bot" }),
     ensureReviewWorkspaceMeta: () => {},

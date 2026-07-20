@@ -55,6 +55,7 @@ import {
   getAuthUser as getAuthUserImpl,
   getPrHead as getPrHeadImpl,
   approvalProtectionReady as approvalProtectionReadyImpl,
+  reviewGateStatus as reviewGateStatusImpl,
   createPullRequestApproval as createPullRequestApprovalImpl,
   hasPullRequestApproval as hasPullRequestApprovalImpl,
   createPullRequestReview as createPullRequestReviewImpl,
@@ -104,6 +105,7 @@ export interface ReviewGateway {
   getAuthUser: typeof getAuthUserImpl;
   getPrHead: typeof getPrHeadImpl;
   approvalProtectionReady: typeof approvalProtectionReadyImpl;
+  reviewGateStatus: typeof reviewGateStatusImpl;
   createPullRequestApproval: typeof createPullRequestApprovalImpl;
   hasPullRequestApproval: typeof hasPullRequestApprovalImpl;
   createPullRequestReview: typeof createPullRequestReviewImpl;
@@ -122,6 +124,7 @@ export const realReviewGateway: ReviewGateway = {
   getAuthUser: getAuthUserImpl,
   getPrHead: getPrHeadImpl,
   approvalProtectionReady: approvalProtectionReadyImpl,
+  reviewGateStatus: reviewGateStatusImpl,
   createPullRequestApproval: createPullRequestApprovalImpl,
   hasPullRequestApproval: hasPullRequestApprovalImpl,
   createPullRequestReview: createPullRequestReviewImpl,

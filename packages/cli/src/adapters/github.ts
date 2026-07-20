@@ -250,6 +250,43 @@ export async function approvalProtectionReady(
   }
 }
 
+/**
+ * Argv: read every active pull_request rule's required_approving_review_count
+ * from the Rules API (same endpoint as buildGhArgs_getBranchRules, readable by
+ * the read-only pinned identity). An empty array = no pull_request rule = no gate.
+ */
+export function buildGhArgs_getReviewGate(slug: string, branch: string): string[] {
+  return ["api", `repos/${slug}/rules/branches/${branch}`, "--jq",
+    '[.[] | select(.type == "pull_request") | .parameters.required_approving_review_count]'];
+}
+
+/**
+ * Three-state review-gate probe for the ungated auto-allow path.
+ *   true      → gated (some ruleset requires >=1 approving review)
+ *   false     → ungated (no pull_request rule, or count 0/absent)
+ *   undefined → unknown (no gh, or the Rules API is unreadable)
+ * The undefined state is load-bearing: the caller allows ONLY on a literal
+ * false, and fails closed on undefined. Classic (admin-only) branch protection
+ * does not surface here — the org is rulesets-only, so an empty result is a
+ * genuine "no gate" (see the design doc's accepted-risk section).
+ */
+export async function reviewGateStatus(
+  args: { slug: string; branch: string; token?: string },
+  deps: GithubDeps = {},
+): Promise<boolean | undefined> {
+  const exec = deps.exec ?? defaultExec;
+  const gh = (deps.findBinary ?? findGhBinary)();
+  if (!gh) return undefined;
+  const env = args.token ? { ...process.env, GH_TOKEN: args.token } : process.env;
+  try {
+    const { stdout } = await exec(gh, buildGhArgs_getReviewGate(args.slug, args.branch), { env, timeoutMs: 15_000 });
+    const counts = JSON.parse(stdout) as Array<number | null>;
+    return counts.some((c) => typeof c === "number" && c >= 1);
+  } catch {
+    return undefined;
+  }
+}
+
 export interface PullRequestApprovalResult {
   reviewId: number;
   state: string;

@@ -7,10 +7,12 @@ import {
   buildGhArgs_getApprovalProtection,
   buildGhArgs_getBranchRules,
   buildGhArgs_getPrHead,
+  buildGhArgs_getReviewGate,
   buildGhArgs_hasPullRequestApproval,
   buildGhArgs_getAuthUser,
   createPullRequestApproval,
   createPullRequestReview,
+  reviewGateStatus,
 } from "../src/adapters/github";
 
 describe("github review helper argv", () => {
@@ -130,5 +132,40 @@ describe("github review helper argv", () => {
     });
     assert.deepEqual(argv.slice(0, 4), ["api", "--method", "POST", "repos/o/r/pulls/12/reviews"]);
     assert.equal(result.state, "CHANGES_REQUESTED");
+  });
+});
+
+describe("reviewGateStatus (three-state review-gate probe)", () => {
+  const okExec = (stdout: string) => async () => ({ stdout, stderr: "" });
+  const deps = (stdout: string) => ({ exec: okExec(stdout), findBinary: () => "/usr/bin/gh" });
+
+  it("gated: a pull_request rule requiring >=1 review → true", async () => {
+    assert.equal(await reviewGateStatus({ slug: "o/r", branch: "main" }, deps("[1]") as never), true);
+    assert.equal(await reviewGateStatus({ slug: "o/r", branch: "main" }, deps("[3]") as never), true);
+  });
+
+  it("ungated: empty ruleset → false", async () => {
+    assert.equal(await reviewGateStatus({ slug: "o/r", branch: "main" }, deps("[]") as never), false);
+  });
+
+  it("ungated: a rule with count 0 or absent (null) → false", async () => {
+    assert.equal(await reviewGateStatus({ slug: "o/r", branch: "main" }, deps("[0]") as never), false);
+    assert.equal(await reviewGateStatus({ slug: "o/r", branch: "main" }, deps("[null]") as never), false);
+  });
+
+  it("unknown: an exec that throws → undefined (caller must fail closed)", async () => {
+    const throwing = { exec: async () => { throw new Error("404"); }, findBinary: () => "/usr/bin/gh" };
+    assert.equal(await reviewGateStatus({ slug: "o/r", branch: "main" }, throwing as never), undefined);
+  });
+
+  it("unknown: no gh binary → undefined", async () => {
+    assert.equal(await reviewGateStatus({ slug: "o/r", branch: "main" }, { findBinary: () => undefined } as never), undefined);
+  });
+
+  it("buildGhArgs_getReviewGate targets the Rules API and extracts the review count", () => {
+    const args = buildGhArgs_getReviewGate("o/r", "main");
+    assert.deepEqual(args.slice(0, 2), ["api", "repos/o/r/rules/branches/main"]);
+    assert.ok(args.join(" ").includes("required_approving_review_count"));
+    assert.ok(args.join(" ").includes("pull_request"));
   });
 });
