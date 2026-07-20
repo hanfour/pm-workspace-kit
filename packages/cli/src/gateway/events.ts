@@ -231,9 +231,8 @@ export interface ReviewPostedEvent {
  * A real GitHub APPROVE published by the gateway. Distinct from
  * `review.posted` (which covers COMMENT/REQUEST_CHANGES review bodies):
  * this is the mutation that can unblock a merge, so it is audited on its
- * own. `protectionExempt` records whether the approve rode a per-repo
- * waiver of the branch-protection preflight — i.e. whether GitHub will
- * dismiss it when new commits land.
+ * own. `approvalBasis` records how the branch-protection preflight was
+ * satisfied for this approve.
  */
 export interface ReviewApprovedEvent {
   type: "review.approved";
@@ -242,8 +241,9 @@ export interface ReviewApprovedEvent {
   pr: number;
   commit: string;    // the exact head SHA that was approved
   reviewId: number;
-  protectionExempt: boolean;
-  /** The waiver's recorded justification, when one was in effect. */
+  /** How the branch-protection preflight was satisfied for this approve. */
+  approvalBasis: "protected" | "exempt" | "ungated";
+  /** The waiver's recorded justification, when the basis is "exempt". */
   exemptionReason?: string;
 }
 
