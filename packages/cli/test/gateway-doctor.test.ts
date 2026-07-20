@@ -792,6 +792,7 @@ describe("doctor — allowWhenNoReviewGate", () => {
     } as never);
     assert.match(res.message, /allowWhenNoReviewGate=on/);
     assert.match(res.message, /no required-review gate/i);
+    assert.ok(!/allowWhenNoReviewGate=off/.test(res.message), "detail must not report the flag off when it is on");
   });
 
   it("shows the flag off by default", async () => {
