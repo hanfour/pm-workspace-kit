@@ -8,6 +8,24 @@ All notable changes to **pm-workspace-kit** are documented here.
 
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Each release also has a longer narrative on [GitHub Releases](https://github.com/hanfour/pm-workspace-kit/releases) with rationale, dogfood notes, and test plans.
 
+## [v0.34.0] — 2026-07-20 — Auto-allow approve on repos with no required-review gate
+
+[GitHub release](https://github.com/hanfour/pm-workspace-kit/releases/tag/v0.34.0)
+
+### Added
+
+- **`review.approval.allowWhenNoReviewGate` flag** ([#93](https://github.com/hanfour/pm-workspace-kit/pull/93)) — opt-in (default **false**). v0.33.0's per-repo exemption covers *gated-but-underprotected* repos (`oss-ui-v2`); this flag covers the many repos across the org that have **no required-review gate at all** (empty rulesets), where a reviewer still performs an approve as a sign-off. With the flag on, the bot approves — without a per-repo exemption — on any repo whose ruleset **positively shows no required-review gate**. The branch-protection preflight exists to stop a stale/unreviewed approval merging *through a required-review gate*; with no gate there is nothing to protect (the repo already permits unreviewed merges). Gated-but-underprotected repos still require a deliberate per-repo exemption — that path is unchanged.
+- **Three-state gate probe `reviewGateStatus`** — reads `required_approving_review_count` from the Rules API: `true`=gated (≥1), `false`=ungated (no rule / count 0), `undefined`=unreadable. The auto-allow fires **only on a literal `false`**; an unreadable ruleset **fails closed** (approve refused). `approvalProtectionReady` is untouched. The preflight gains exactly one branch and makes at most one extra API call, only on the ungated-candidate path.
+- **`approvalBasis` audit enum** — `review.approved` replaces `protectionExempt: boolean` with `approvalBasis: "protected" | "exempt" | "ungated"`; one variable drives both the audit record and the Slack disclosure, so they cannot diverge. An ungated approve shows "此 repo 的 ruleset 未要求任何核准，approve 僅為 review 簽核紀錄，不影響 merge 條件" — not the stale-approval warning. `gateway doctor` reports the flag and its org-level risk note (config-only).
+
+### Risk accepted
+
+On an ungated repo the approve gates nothing, so a stale-approval-enables-merge harm is impossible (unreviewed merges are already possible there). The only residual risk is the **classic-protection blind spot**: the Rules-API probe cannot read admin-only classic branch protection, so a repo gating reviews via classic protection would read as ungated. **Confirmed non-existent for onead** (rulesets-only); the flag is an explicit org-level opt-in, default off, and unreadable rulesets fail closed. Design: `docs/superpowers/specs/2026-07-20-approve-ungated-repos-design.md`.
+
+### Verified
+
+- 1,063 cli tests green; each task mutation-verified; whole-branch review (opus) confirmed 5 security invariants (fail-closed on unreadable, flag gates everything, exemption/protection paths untouched, disclosure⇔audit consistency, blind-spot honestly surfaced).
+
 ## [v0.33.0] — 2026-07-20 — Per-repo approve protection exemption: `:a:` usable on real OneAD repos
 
 [GitHub release](https://github.com/hanfour/pm-workspace-kit/releases/tag/v0.33.0)
