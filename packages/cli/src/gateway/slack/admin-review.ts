@@ -31,7 +31,8 @@ export function reviewStatusText(cfg: RawGatewayConfig): string {
     `• enabled: \`${review.enabled}\``,
     `• provider: \`${review.providerMode}\``,
     `• ${reviewStrategySummary(review.strategy, review.providerMode)}`,
-    `• automatic approval: \`${review.approval.enabled}\` (PMK admin confirmation + protected repo required)`,
+    `• automatic approval: \`${review.approval.enabled}\` (PMK admin confirmation required; branch protection required unless the repo is exempt)`,
+    `• protection exemptions: ${review.approval.protectionExemptions?.length ? review.approval.protectionExemptions.map((e) => `\`${e.repo}\``).join(", ") : "`none`"}`,
     `• concurrency: global \`${review.maxConcurrent}\` · per user \`${review.maxConcurrentPerUser}\``,
     `• allow public repos: \`${review.allowPublicRepos}\``,
   ].join("\n");
@@ -76,12 +77,17 @@ export function adminReview(actor: string, tokens: string[]): AdminSlashResult {
         logAdmin(actor, "review.approval.enable", false, undefined, "release veto active");
         return { text: ":lock: automatic approval 尚未 release；`:cr:` review 可正常使用，但目前不能開啟 GitHub APPROVE。" };
       }
-      cfg.review = { ...(cfg.review ?? {}), approval: { enabled } };
+      // Merge, never replace: `approval` also holds protectionExemptions, and
+      // a bare `{ enabled }` would silently wipe them on every toggle.
+      cfg.review = {
+        ...(cfg.review ?? {}),
+        approval: { ...(cfg.review?.approval ?? {}), enabled },
+      };
       saveGatewayConfig(cfg);
       logAdmin(actor, `review.approval.${value}`, true);
       return {
         text: enabled
-          ? ":warning: automatic approval enabled; each repo must still pass protocol, identity, head-SHA, allowlist, and branch-protection readiness checks"
+          ? ":warning: automatic approval enabled; each repo must still pass protocol, identity, head-SHA, and allowlist checks, plus branch-protection readiness unless it is listed in `review.approval.protectionExemptions`"
           : ":white_check_mark: automatic approval disabled; `:cr:` review remains available",
       };
     }

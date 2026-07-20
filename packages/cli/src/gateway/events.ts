@@ -227,6 +227,26 @@ export interface ReviewPostedEvent {
   durationMs: number;
 }
 
+/**
+ * A real GitHub APPROVE published by the gateway. Distinct from
+ * `review.posted` (which covers COMMENT/REQUEST_CHANGES review bodies):
+ * this is the mutation that can unblock a merge, so it is audited on its
+ * own. `protectionExempt` records whether the approve rode a per-repo
+ * waiver of the branch-protection preflight — i.e. whether GitHub will
+ * dismiss it when new commits land.
+ */
+export interface ReviewApprovedEvent {
+  type: "review.approved";
+  actor: string;
+  repo: string;      // owner/repo slug
+  pr: number;
+  commit: string;    // the exact head SHA that was approved
+  reviewId: number;
+  protectionExempt: boolean;
+  /** The waiver's recorded justification, when one was in effect. */
+  exemptionReason?: string;
+}
+
 export interface ReviewSkippedEvent {
   type: "review.skipped";
   actor: string;
@@ -286,6 +306,7 @@ export type GatewayEvent =
   | GithubIssueFailedEvent
   | ReviewTriggeredEvent
   | ReviewPostedEvent
+  | ReviewApprovedEvent
   | ReviewSkippedEvent
   | AudioTranscribedEvent
   | AudioSummarizedEvent
@@ -309,6 +330,7 @@ const VALID_TYPES: ReadonlySet<string> = new Set([
   "github.issue.failed",
   "review.triggered",
   "review.posted",
+  "review.approved",
   "review.skipped",
   "audio.transcribed",
   "audio.summarized",

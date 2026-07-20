@@ -46,7 +46,7 @@ import {
   runMraReview as runMraReviewImpl,
   runMraAnalyze as runMraAnalyzeImpl,
 } from "../../adapters/mra";
-import { AUTOMATIC_APPROVAL_RELEASE_READY, effectiveMraReviewStrategy } from "../review-policy";
+import { AUTOMATIC_APPROVAL_RELEASE_READY, effectiveMraReviewStrategy, findProtectionExemption } from "../review-policy";
 export { effectiveMraReviewStrategy } from "../review-policy";
 import { withAuthorizationLock } from "../authorization-lock";
 import {
@@ -570,8 +570,16 @@ export class ReviewCoordinator {
         const before = await gateway.getPrHead({ slug, pr: ref.number, token });
         if (!before || before.sha !== ref.headSha || before.baseRef !== ref.baseRef)
           throw new Error("PR head, base, or review context changed after review");
-        if (!await gateway.approvalProtectionReady({ slug, branch: ref.baseRef, token }))
+        // The probe still runs on every approve; the exemption gates the THROW,
+        // not the check. Keeping the measurement means the disclosure below
+        // asserts only what we actually observed, and an obsolete waiver
+        // announces itself. approvalProtectionReady never throws (false on
+        // error), so a network blip degrades to "still unprotected".
+        const exemption = findProtectionExemption(review.approval, slug);
+        const protectionReady = await gateway.approvalProtectionReady({ slug, branch: ref.baseRef, token });
+        if (!protectionReady && !exemption)
           throw new Error("repository protection is not approval-ready");
+        const exemptionInEffect = !protectionReady && !!exemption;
         const finalLive = this.currentConfig();
         const finalReview = resolveReviewConfig(finalLive.review);
         const finalToken = resolveReviewGhToken(finalLive.review) ?? resolveGithubToken(finalLive.github);
@@ -606,8 +614,24 @@ export class ReviewCoordinator {
         const after = await gateway.getPrHead({ slug, pr: ref.number, token });
         if (!after || after.sha !== ref.headSha)
           throw new Error(`approval ${posted.reviewId} became stale during publication`);
-        await this.reply(reservation.channelId, reservation.threadTs,
-          `:white_check_mark: 已真實 approve ${slug}#${ref.number}（commit \`${ref.headSha.slice(0, 7)}\`，GitHub review #${posted.reviewId}）。`);
+        appendGatewayEvent({
+          type: "review.approved",
+          actor: actorUserId,
+          repo: slug,
+          pr: ref.number,
+          commit: ref.headSha,
+          reviewId: posted.reviewId,
+          protectionExempt: exemptionInEffect,
+          exemptionReason: exemptionInEffect ? exemption!.reason : undefined,
+        });
+        const approvedLine = `:white_check_mark: 已真實 approve ${slug}#${ref.number}（commit \`${ref.headSha.slice(0, 7)}\`，GitHub review #${posted.reviewId}）。`;
+        const riskLine = exemptionInEffect
+          ? `\n:warning: 此 repo 未啟用 dismiss-stale/require-last-push：後續新 push 不會讓這個 approval 失效，可能被用來 merge 未經 review 的 commit。豁免理由：${exemption!.reason}`
+          : "";
+        const obsoleteLine = protectionReady && exemption
+          ? `\n:information_source: ${slug} 的 protection 豁免已不再需要（branch 現已同時啟用 dismiss-stale 與 require-last-push），可以從 config 移除。`
+          : "";
+        await this.reply(reservation.channelId, reservation.threadTs, `${approvedLine}${riskLine}${obsoleteLine}`);
       }
       });
       consumeApprovalReservation(reservation);
@@ -1003,7 +1027,8 @@ export class ReviewCoordinator {
       });
       const resultText = isApprove
         ? approveResultText(slug, ref, res)
-        : reviewResultText(slug, ref, res, ctx.review.approval.enabled);
+        : reviewResultText(slug, ref, res, ctx.review.approval.enabled,
+            !!findProtectionExemption(ctx.review.approval, slug));
       if (progress) await progress.finish(resultText);
       else await this.reply(ctx.channelId, ctx.threadTs, resultText);
     } catch (err) {

@@ -975,6 +975,177 @@ describe("ReviewCoordinator.confirmApproveInThread", () => {
     assert.equal(writeError?.name, "AuthorizationLockBusyError");
     assert.equal(approved, 1, "the in-flight approve completes under the policy valid at its start");
   });
+
+  it("approves an exempt repo whose branch protection is not ready", async () => {
+    const web = new FakeWebClient();
+    let approved = 0;
+    const gateway = gw({
+      approvalProtectionReady: async () => false,
+      resolveRepoSlug: async () => "onead/oss-ui-v2",
+      runMraReview: async () => eligibleReviewResult(),
+      createPullRequestApproval: async (a: { commitId: string }) => {
+        approved++;
+        return { reviewId: 99, state: "APPROVED", commitId: a.commitId, actor: "expected-bot" };
+      },
+    } as unknown as Partial<ReviewGateway>);
+    const c = coord(web, gateway, () => {}, {
+      approval: {
+        enabled: true,
+        protectionExemptions: [{ repo: "onead/oss-ui-v2", reason: "ruleset 8015695 pending" }],
+      },
+    });
+    const rootText = ":cr: https://github.com/onead/oss-ui-v2/pull/301";
+    await c.fromMessage({ channelId: "C1", threadTs: "1.1", userId: "U1", text: rootText });
+    web.conversationsHistoryResponse = { ok: true, messages: [{ text: rootText }] };
+
+    await c.confirmApproveInThread({ channelId: "C1", threadTs: "1.1", userId: "U1" });
+
+    assert.equal(approved, 1, "an exempt repo must approve despite an unready probe");
+    const allTexts = [...web.posted, ...web.updated].map((m) => m.text ?? "");
+    assert.ok(allTexts.some((t) => /已真實 approve/.test(t)));
+    assert.ok(
+      allTexts.some((t) => /不會讓這個 approval 失效/.test(t)),
+      "the accepted risk must be disclosed at the moment it goes live",
+    );
+    assert.ok(allTexts.some((t) => /ruleset 8015695 pending/.test(t)), "the reason must be surfaced");
+  });
+
+  it("still refuses a non-exempt repo whose branch protection is not ready", async () => {
+    const web = new FakeWebClient();
+    let approved = 0;
+    const gateway = gw({
+      approvalProtectionReady: async () => false,
+      runMraReview: async () => eligibleReviewResult(),
+      createPullRequestApproval: async () => { approved++; throw new Error("must not be called"); },
+    } as unknown as Partial<ReviewGateway>);
+    const c = coord(web, gateway, () => {}, {
+      approval: {
+        enabled: true,
+        protectionExemptions: [{ repo: "onead/some-other-repo", reason: "unrelated" }],
+      },
+    });
+    const rootText = ":cr: https://github.com/onead/OnePixel/pull/12";
+    await c.fromMessage({ channelId: "C1", threadTs: "1.1", userId: "U1", text: rootText });
+    web.conversationsHistoryResponse = { ok: true, messages: [{ text: rootText }] };
+
+    await c.confirmApproveInThread({ channelId: "C1", threadTs: "1.1", userId: "U1" });
+
+    assert.equal(approved, 0, "an exemption for another repo must never leak across repos");
+    const allTexts = [...web.posted, ...web.updated].map((m) => m.text ?? "");
+    assert.ok(allTexts.some((t) => /protection is not approval-ready/.test(t)));
+  });
+
+  it("reports an exempt repo's waiver as obsolete once its branch is genuinely protected", async () => {
+    const web = new FakeWebClient();
+    let approved = 0;
+    const gateway = gw({
+      approvalProtectionReady: async () => true, // onead fixed the ruleset
+      resolveRepoSlug: async () => "onead/oss-ui-v2",
+      runMraReview: async () => eligibleReviewResult(),
+      createPullRequestApproval: async (a: { commitId: string }) => {
+        approved++;
+        return { reviewId: 99, state: "APPROVED", commitId: a.commitId, actor: "expected-bot" };
+      },
+    } as unknown as Partial<ReviewGateway>);
+    const c = coord(web, gateway, () => {}, {
+      approval: {
+        enabled: true,
+        protectionExemptions: [{ repo: "onead/oss-ui-v2", reason: "ruleset 8015695 pending" }],
+      },
+    });
+    const rootText = ":cr: https://github.com/onead/oss-ui-v2/pull/301";
+    await c.fromMessage({ channelId: "C1", threadTs: "1.1", userId: "U1", text: rootText });
+    web.conversationsHistoryResponse = { ok: true, messages: [{ text: rootText }] };
+
+    await c.confirmApproveInThread({ channelId: "C1", threadTs: "1.1", userId: "U1" });
+
+    assert.equal(approved, 1);
+    const allTexts = [...web.posted, ...web.updated].map((m) => m.text ?? "");
+    assert.ok(allTexts.some((t) => /豁免已不再需要/.test(t)), "an obsolete waiver must announce itself");
+    assert.ok(
+      !allTexts.some((t) => /不會讓這個 approval 失效/.test(t)),
+      "a protected branch must never carry the unprotected warning",
+    );
+  });
+
+  it("refuses a protectionExemptions write that lands inside the approve critical section", async () => {
+    const web = new FakeWebClient();
+    let approved = 0;
+    let writeError: Error | undefined;
+    const gateway = gw({
+      approvalProtectionReady: async () => true,
+      runMraReview: async () => eligibleReviewResult(),
+      // Slow preflight holds the authorization lock long enough for the
+      // concurrent write below to land inside the critical section.
+      getPrHead: async () => {
+        await new Promise((r) => setTimeout(r, 120));
+        return { sha: "headsha", baseRef: "main" };
+      },
+      createPullRequestApproval: async (a: { commitId: string }) => {
+        approved++;
+        return { reviewId: 99, state: "APPROVED", commitId: a.commitId, actor: "expected-bot" };
+      },
+    } as unknown as Partial<ReviewGateway>);
+    const c = coord(web, gateway);
+    const rootText = ":cr: https://github.com/onead/OnePixel/pull/12";
+    await c.fromMessage({ channelId: "C1", threadTs: "1.1", userId: "U1", text: rootText });
+    web.conversationsHistoryResponse = { ok: true, messages: [{ text: rootText }] };
+
+    const confirming = c.confirmApproveInThread({ channelId: "C1", threadTs: "1.1", userId: "U1" });
+    await new Promise((r) => setTimeout(r, 60)); // land inside the held section
+    try {
+      saveGatewayConfig({
+        version: 1, admins: ["U1"], blocklist: [], audience: {}, escalation: {}, slack: {},
+        mraWorkspace: path.join(tmp, "ws"),
+        review: {
+          enabled: true, expectedGhUser: "expected-bot",
+          approval: {
+            enabled: true,
+            protectionExemptions: [{ repo: "onead/OnePixel", reason: "injected mid-approve" }],
+          },
+        },
+      } as never);
+    } catch (err) {
+      writeError = err as Error;
+    }
+    await confirming;
+
+    assert.ok(writeError, "an exemption must not be injectable mid-approve");
+    assert.equal(writeError?.name, "AuthorizationLockBusyError");
+    assert.equal(approved, 1, "the in-flight approve completes under the policy valid at its start");
+  });
+
+  it("records every real approval in the audit log, flagging the accepted risk", async () => {
+    const { readGatewayEvents } = await import("../src/gateway/events");
+    const web = new FakeWebClient();
+    const gateway = gw({
+      approvalProtectionReady: async () => false,
+      resolveRepoSlug: async () => "onead/oss-ui-v2",
+      runMraReview: async () => eligibleReviewResult(),
+      createPullRequestApproval: async (a: { commitId: string }) =>
+        ({ reviewId: 4242, state: "APPROVED", commitId: a.commitId, actor: "expected-bot" }),
+    } as unknown as Partial<ReviewGateway>);
+    const c = coord(web, gateway, () => {}, {
+      approval: {
+        enabled: true,
+        protectionExemptions: [{ repo: "onead/oss-ui-v2", reason: "ruleset 8015695 pending" }],
+      },
+    });
+    const rootText = ":cr: https://github.com/onead/oss-ui-v2/pull/301";
+    await c.fromMessage({ channelId: "C1", threadTs: "1.1", userId: "U1", text: rootText });
+    web.conversationsHistoryResponse = { ok: true, messages: [{ text: rootText }] };
+
+    await c.confirmApproveInThread({ channelId: "C1", threadTs: "1.1", userId: "U1" });
+
+    const approvals = readGatewayEvents().filter((e) => e.type === "review.approved");
+    assert.equal(approvals.length, 1, "a real GitHub approval must never be unaudited");
+    const ev = approvals[0] as never as { actor: string; repo: string; pr: number; reviewId: number; protectionExempt: boolean };
+    assert.equal(ev.actor, "U1");
+    assert.equal(ev.repo, "onead/oss-ui-v2");
+    assert.equal(ev.pr, 301);
+    assert.equal(ev.reviewId, 4242);
+    assert.equal(ev.protectionExempt, true, "the accepted risk must be on the record");
+  });
 });
 
 describe("ReviewCoordinator.fromApproveMessage (:a: approve flow)", () => {
@@ -1203,6 +1374,25 @@ describe("review/approve result text (pure)", () => {
   it("reviewResultText: REVIEW_INCOMPLETE → honest 未完成 note, not a plain '已貼 review'", () => {
     const t = reviewResultText("onead/OnePixel", ref, { status: "COMMENT", commentCount: 0, incomplete: true } as never);
     assert.match(t, /未完成|REVIEW_INCOMPLETE/);
+  });
+  it("reviewResultText notes the exemption as a config fact, never a branch claim", () => {
+    const t = reviewResultText("onead/oss-ui-v2", ref, eligibleReviewResult() as never, true, true);
+    assert.match(t, /已列入 protection 豁免清單/);
+    assert.doesNotMatch(
+      t,
+      /未啟用 dismiss-stale/,
+      ":cr: never probes, so the offer line has no standing to describe the branch",
+    );
+  });
+  it("reviewResultText leaves the offer line untouched for a non-exempt repo", () => {
+    const t = reviewResultText("onead/OnePixel", ref, eligibleReviewResult() as never, true, false);
+    assert.doesNotMatch(t, /豁免/);
+    assert.match(t, /可進一步 approve/);
+  });
+  it("reviewResultText never mentions the exemption when approval is disabled", () => {
+    const t = reviewResultText("onead/oss-ui-v2", ref, eligibleReviewResult() as never, false, true);
+    assert.doesNotMatch(t, /豁免/, "the no-approve line must not advertise a waiver it cannot use");
+    assert.match(t, /未執行 GitHub approve/);
   });
 });
 
