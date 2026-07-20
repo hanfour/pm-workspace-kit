@@ -72,8 +72,13 @@ export const reviewDoctorCheck: DoctorCheck = async (
       `${dropped} protectionExemption entr${dropped === 1 ? "y" : "ies"} dropped (each needs a non-empty repo and reason)`,
     );
   }
+  if (review.approval.allowWhenNoReviewGate) {
+    warnings.push(
+      "allowWhenNoReviewGate=on — approve is auto-allowed on repos with no required-review gate (org-level risk acceptance; classic admin-only branch protection is not readable, so this assumes rulesets-only)",
+    );
+  }
 
-  const detail = `mra=${mraPresent ? "found" : "missing"}; protocol=${protocol ? "v1" : "legacy/unavailable"}; gh=${ghPresent ? "found" : "missing"}; provider=${review.providerMode}; strategy=${review.strategy}; approval=${review.approval.enabled ? "enabled" : "disabled"}; exemptions=${exemptions.length}`;
+  const detail = `mra=${mraPresent ? "found" : "missing"}; protocol=${protocol ? "v1" : "legacy/unavailable"}; gh=${ghPresent ? "found" : "missing"}; provider=${review.providerMode}; strategy=${review.strategy}; approval=${review.approval.enabled ? "enabled" : "disabled"}; exemptions=${exemptions.length}; allowWhenNoReviewGate=${review.approval.allowWhenNoReviewGate ? "on" : "off"}`;
   const severity = problems.length ? "fail" : warnings.length ? "warn" : "pass";
   // Problems and warnings both render. A standing protection exemption (or a
   // dropped entry) is a warning, and it must stay visible even when the check

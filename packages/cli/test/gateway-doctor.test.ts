@@ -783,6 +783,27 @@ describe("doctor — review protection exemptions", () => {
   });
 });
 
+describe("doctor — allowWhenNoReviewGate", () => {
+  it("reports the flag state in detail and warns when on", async () => {
+    const { reviewDoctorCheck } = await import("../src/gateway/doctor-checks/review");
+    const res = await reviewDoctorCheck({
+      configPath: "/nonexistent/gateway.json",
+      config: { review: { enabled: true, approval: { enabled: true, allowWhenNoReviewGate: true } } },
+    } as never);
+    assert.match(res.message, /allowWhenNoReviewGate=on/);
+    assert.match(res.message, /no required-review gate/i);
+  });
+
+  it("shows the flag off by default", async () => {
+    const { reviewDoctorCheck } = await import("../src/gateway/doctor-checks/review");
+    const res = await reviewDoctorCheck({
+      configPath: "/nonexistent/gateway.json",
+      config: { review: { enabled: true, approval: { enabled: true } } },
+    } as never);
+    assert.match(res.message, /allowWhenNoReviewGate=off/);
+  });
+});
+
 describe("doctor — DEFAULT_CHECKS shape", () => {
   it("exports exactly 12 checks (FR2 + secret-sources + github-token + review + audio)", () => {
     assert.equal(DEFAULT_CHECKS.length, 12);
