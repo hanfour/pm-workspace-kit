@@ -20,6 +20,7 @@ function gw(over: Partial<ReviewGateway> = {}): ReviewGateway {
     repoVisibility: async () => "private",
     getAuthUser: async () => "expected-bot",
     approvalProtectionReady: async () => true,
+    reviewGateStatus: async () => true,
     createPullRequestApproval: async (a: { commitId: string }) => ({ reviewId: 99, state: "APPROVED", commitId: a.commitId, actor: "expected-bot" }),
     createPullRequestReview: async (a: { commitId: string; event: string }) => ({ reviewId: 98, state: a.event === "REQUEST_CHANGES" ? "CHANGES_REQUESTED" : "COMMENTED", commitId: a.commitId, actor: "expected-bot" }),
     ensureReviewWorkspaceMeta: () => {},
@@ -1139,12 +1140,121 @@ describe("ReviewCoordinator.confirmApproveInThread", () => {
 
     const approvals = readGatewayEvents().filter((e) => e.type === "review.approved");
     assert.equal(approvals.length, 1, "a real GitHub approval must never be unaudited");
-    const ev = approvals[0] as never as { actor: string; repo: string; pr: number; reviewId: number; protectionExempt: boolean };
+    const ev = approvals[0] as never as { actor: string; repo: string; pr: number; reviewId: number; approvalBasis: string };
     assert.equal(ev.actor, "U1");
     assert.equal(ev.repo, "onead/oss-ui-v2");
     assert.equal(ev.pr, 301);
     assert.equal(ev.reviewId, 4242);
-    assert.equal(ev.protectionExempt, true, "the accepted risk must be on the record");
+    assert.equal(ev.approvalBasis, "exempt", "the accepted risk must be on the record");
+  });
+
+  it("approves an ungated repo when the flag is on, with basis 'ungated' and the no-gate note", async () => {
+    const web = new FakeWebClient();
+    let approved = 0;
+    const gateway = gw({
+      approvalProtectionReady: async () => false,
+      reviewGateStatus: async () => false, // positively ungated
+      resolveRepoSlug: async () => "onead/some-ungated-repo",
+      runMraReview: async () => eligibleReviewResult(),
+      createPullRequestApproval: async (a: { commitId: string }) => {
+        approved++;
+        return { reviewId: 555, state: "APPROVED", commitId: a.commitId, actor: "expected-bot" };
+      },
+    } as unknown as Partial<ReviewGateway>);
+    const c = coord(web, gateway, () => {}, { approval: { enabled: true, allowWhenNoReviewGate: true } });
+    const rootText = ":cr: https://github.com/onead/some-ungated-repo/pull/7";
+    await c.fromMessage({ channelId: "C1", threadTs: "1.1", userId: "U1", text: rootText });
+    web.conversationsHistoryResponse = { ok: true, messages: [{ text: rootText }] };
+
+    await c.confirmApproveInThread({ channelId: "C1", threadTs: "1.1", userId: "U1" });
+
+    assert.equal(approved, 1, "an ungated repo must approve when the flag is on");
+    const allTexts = [...web.posted, ...web.updated].map((m) => m.text ?? "");
+    assert.ok(allTexts.some((t) => /已真實 approve/.test(t)));
+    assert.ok(allTexts.some((t) => /未要求任何核准/.test(t)), "the no-gate note must be shown");
+    assert.ok(!allTexts.some((t) => /不會讓這個 approval 失效/.test(t)), "an ungated repo must NOT carry the stale-approval warning");
+  });
+
+  it("refuses an ungated-candidate when the gate probe is unreadable (fail closed)", async () => {
+    const web = new FakeWebClient();
+    let approved = 0;
+    const gateway = gw({
+      approvalProtectionReady: async () => false,
+      reviewGateStatus: async () => undefined, // unreadable → must fail closed
+      runMraReview: async () => eligibleReviewResult(),
+      createPullRequestApproval: async () => { approved++; throw new Error("must not be called"); },
+    } as unknown as Partial<ReviewGateway>);
+    const c = coord(web, gateway, () => {}, { approval: { enabled: true, allowWhenNoReviewGate: true } });
+    const rootText = ":cr: https://github.com/onead/OnePixel/pull/12";
+    await c.fromMessage({ channelId: "C1", threadTs: "1.1", userId: "U1", text: rootText });
+    web.conversationsHistoryResponse = { ok: true, messages: [{ text: rootText }] };
+
+    await c.confirmApproveInThread({ channelId: "C1", threadTs: "1.1", userId: "U1" });
+
+    assert.equal(approved, 0, "an unreadable gate must never auto-allow");
+    const allTexts = [...web.posted, ...web.updated].map((m) => m.text ?? "");
+    assert.ok(allTexts.some((t) => /protection is not approval-ready/.test(t)));
+  });
+
+  it("still refuses a gated repo with the flag on (the ungated path must not fire)", async () => {
+    const web = new FakeWebClient();
+    let approved = 0;
+    const gateway = gw({
+      approvalProtectionReady: async () => false,
+      reviewGateStatus: async () => true, // gated
+      runMraReview: async () => eligibleReviewResult(),
+      createPullRequestApproval: async () => { approved++; throw new Error("must not be called"); },
+    } as unknown as Partial<ReviewGateway>);
+    const c = coord(web, gateway, () => {}, { approval: { enabled: true, allowWhenNoReviewGate: true } });
+    const rootText = ":cr: https://github.com/onead/OnePixel/pull/12";
+    await c.fromMessage({ channelId: "C1", threadTs: "1.1", userId: "U1", text: rootText });
+    web.conversationsHistoryResponse = { ok: true, messages: [{ text: rootText }] };
+
+    await c.confirmApproveInThread({ channelId: "C1", threadTs: "1.1", userId: "U1" });
+
+    assert.equal(approved, 0, "a gated repo without an exemption must still be refused");
+  });
+
+  it("does not consult the gate probe when the flag is off (v0.33.0 parity)", async () => {
+    const web = new FakeWebClient();
+    let probed = 0, approved = 0;
+    const gateway = gw({
+      approvalProtectionReady: async () => false,
+      reviewGateStatus: async () => { probed++; return false; },
+      runMraReview: async () => eligibleReviewResult(),
+      createPullRequestApproval: async () => { approved++; return { reviewId: 1, state: "APPROVED", commitId: "x", actor: "expected-bot" }; },
+    } as unknown as Partial<ReviewGateway>);
+    const c = coord(web, gateway, () => {}, { approval: { enabled: true } }); // flag defaults off
+    const rootText = ":cr: https://github.com/onead/OnePixel/pull/12";
+    await c.fromMessage({ channelId: "C1", threadTs: "1.1", userId: "U1", text: rootText });
+    web.conversationsHistoryResponse = { ok: true, messages: [{ text: rootText }] };
+
+    await c.confirmApproveInThread({ channelId: "C1", threadTs: "1.1", userId: "U1" });
+
+    assert.equal(probed, 0, "the gate probe must not run when the flag is off");
+    assert.equal(approved, 0, "an ungated repo with the flag off is refused, as in v0.33.0");
+  });
+
+  it("records approvalBasis 'ungated' in the audit log", async () => {
+    const { readGatewayEvents } = await import("../src/gateway/events");
+    const web = new FakeWebClient();
+    const gateway = gw({
+      approvalProtectionReady: async () => false,
+      reviewGateStatus: async () => false,
+      resolveRepoSlug: async () => "onead/some-ungated-repo",
+      runMraReview: async () => eligibleReviewResult(),
+      createPullRequestApproval: async (a: { commitId: string }) => ({ reviewId: 9, state: "APPROVED", commitId: a.commitId, actor: "expected-bot" }),
+    } as unknown as Partial<ReviewGateway>);
+    const c = coord(web, gateway, () => {}, { approval: { enabled: true, allowWhenNoReviewGate: true } });
+    const rootText = ":cr: https://github.com/onead/some-ungated-repo/pull/7";
+    await c.fromMessage({ channelId: "C1", threadTs: "1.1", userId: "U1", text: rootText });
+    web.conversationsHistoryResponse = { ok: true, messages: [{ text: rootText }] };
+
+    await c.confirmApproveInThread({ channelId: "C1", threadTs: "1.1", userId: "U1" });
+
+    const ev = readGatewayEvents().filter((e) => e.type === "review.approved")[0] as never as { approvalBasis: string; exemptionReason?: string };
+    assert.equal(ev.approvalBasis, "ungated");
+    assert.equal(ev.exemptionReason, undefined);
   });
 });
 

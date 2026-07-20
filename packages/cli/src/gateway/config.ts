@@ -125,6 +125,12 @@ export interface ApprovalConfig {
    * `Partial<ReviewConfig>`; `resolveReviewConfig` always fills it to `[]`.
    */
   protectionExemptions?: ProtectionExemption[];
+  /**
+   * Opt-in: allow approve without a per-repo exemption on any repo whose
+   * ruleset positively shows no required-review gate (nothing to protect).
+   * `resolveReviewConfig` always fills this to a boolean (default false).
+   */
+  allowWhenNoReviewGate?: boolean;
 }
 
 export interface ReviewConfig {
@@ -427,6 +433,8 @@ function normaliseReviewConfig(raw: unknown): Partial<ReviewConfig> | undefined 
     };
     if (Array.isArray(approval.protectionExemptions))
       normalised.protectionExemptions = asProtectionExemptions(approval.protectionExemptions);
+    if (typeof approval.allowWhenNoReviewGate === "boolean")
+      normalised.allowWhenNoReviewGate = approval.allowWhenNoReviewGate;
     out.approval = normalised;
   }
   if (typeof o.allowPublicRepos === "boolean")
@@ -550,6 +558,13 @@ export function resolveReviewConfig(raw?: Partial<ReviewConfig>): ReviewConfig {
       // own container (non-array → []), so this is a no-op for the
       // already-clean load-from-disk path and safe for any raw input.
       protectionExemptions: asProtectionExemptions(raw?.approval?.protectionExemptions),
+      // Re-sanitize with a typeof guard rather than plain `?? false`: a
+      // non-boolean (e.g. a stray string) must resolve to false, not be
+      // carried through, matching the "always fills this to a boolean"
+      // contract and the protectionExemptions re-sanitization above.
+      allowWhenNoReviewGate: typeof raw?.approval?.allowWhenNoReviewGate === "boolean"
+        ? raw.approval.allowWhenNoReviewGate
+        : false,
     },
     allowPublicRepos: raw?.allowPublicRepos ?? false,
     repoAllowlist: raw?.repoAllowlist,

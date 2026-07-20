@@ -55,6 +55,7 @@ import {
   getAuthUser as getAuthUserImpl,
   getPrHead as getPrHeadImpl,
   approvalProtectionReady as approvalProtectionReadyImpl,
+  reviewGateStatus as reviewGateStatusImpl,
   createPullRequestApproval as createPullRequestApprovalImpl,
   hasPullRequestApproval as hasPullRequestApprovalImpl,
   createPullRequestReview as createPullRequestReviewImpl,
@@ -104,6 +105,7 @@ export interface ReviewGateway {
   getAuthUser: typeof getAuthUserImpl;
   getPrHead: typeof getPrHeadImpl;
   approvalProtectionReady: typeof approvalProtectionReadyImpl;
+  reviewGateStatus: typeof reviewGateStatusImpl;
   createPullRequestApproval: typeof createPullRequestApprovalImpl;
   hasPullRequestApproval: typeof hasPullRequestApprovalImpl;
   createPullRequestReview: typeof createPullRequestReviewImpl;
@@ -122,6 +124,7 @@ export const realReviewGateway: ReviewGateway = {
   getAuthUser: getAuthUserImpl,
   getPrHead: getPrHeadImpl,
   approvalProtectionReady: approvalProtectionReadyImpl,
+  reviewGateStatus: reviewGateStatusImpl,
   createPullRequestApproval: createPullRequestApprovalImpl,
   hasPullRequestApproval: hasPullRequestApprovalImpl,
   createPullRequestReview: createPullRequestReviewImpl,
@@ -577,9 +580,19 @@ export class ReviewCoordinator {
         // error), so a network blip degrades to "still unprotected".
         const exemption = findProtectionExemption(review.approval, slug);
         const protectionReady = await gateway.approvalProtectionReady({ slug, branch: ref.baseRef, token });
-        if (!protectionReady && !exemption)
+        // Ungated auto-allow: only when the flag is on and the repo is neither
+        // protected nor exempt. The probe distinguishes ungated (false) from
+        // unreadable (undefined) — only a positive false may allow; undefined
+        // fails closed. Runs at most once, and never on the protected/exempt paths.
+        let ungatedAllow = false;
+        if (review.approval.allowWhenNoReviewGate && !protectionReady && !exemption) {
+          ungatedAllow = (await gateway.reviewGateStatus({ slug, branch: ref.baseRef, token })) === false;
+        }
+        if (!protectionReady && !exemption && !ungatedAllow)
           throw new Error("repository protection is not approval-ready");
         const exemptionInEffect = !protectionReady && !!exemption;
+        const approvalBasis: "protected" | "exempt" | "ungated" =
+          protectionReady ? "protected" : exemptionInEffect ? "exempt" : "ungated";
         const finalLive = this.currentConfig();
         const finalReview = resolveReviewConfig(finalLive.review);
         const finalToken = resolveReviewGhToken(finalLive.review) ?? resolveGithubToken(finalLive.github);
@@ -621,17 +634,20 @@ export class ReviewCoordinator {
           pr: ref.number,
           commit: ref.headSha,
           reviewId: posted.reviewId,
-          protectionExempt: exemptionInEffect,
-          exemptionReason: exemptionInEffect ? exemption!.reason : undefined,
+          approvalBasis,
+          exemptionReason: approvalBasis === "exempt" ? exemption!.reason : undefined,
         });
         const approvedLine = `:white_check_mark: 已真實 approve ${slug}#${ref.number}（commit \`${ref.headSha.slice(0, 7)}\`，GitHub review #${posted.reviewId}）。`;
-        const riskLine = exemptionInEffect
+        const riskLine = approvalBasis === "exempt"
           ? `\n:warning: 此 repo 未啟用 dismiss-stale/require-last-push：後續新 push 不會讓這個 approval 失效，可能被用來 merge 未經 review 的 commit。豁免理由：${exemption!.reason}`
+          : "";
+        const ungatedLine = approvalBasis === "ungated"
+          ? `\n:information_source: 此 repo 的 ruleset 未要求任何核准，approve 僅為 review 簽核紀錄，不影響 merge 條件。`
           : "";
         const obsoleteLine = protectionReady && exemption
           ? `\n:information_source: ${slug} 的 protection 豁免已不再需要（branch 現已同時啟用 dismiss-stale 與 require-last-push），可以從 config 移除。`
           : "";
-        await this.reply(reservation.channelId, reservation.threadTs, `${approvedLine}${riskLine}${obsoleteLine}`);
+        await this.reply(reservation.channelId, reservation.threadTs, `${approvedLine}${riskLine}${ungatedLine}${obsoleteLine}`);
       }
       });
       consumeApprovalReservation(reservation);

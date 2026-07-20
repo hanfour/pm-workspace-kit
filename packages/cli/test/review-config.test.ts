@@ -96,4 +96,14 @@ describe("resolveReviewConfig", () => {
     assert.equal(c.enabled, true, "one bad exemption must not take the config down");
     assert.equal(c.approval.enabled, true);
   });
+
+  it("defaults allowWhenNoReviewGate to false", () => {
+    assert.equal(resolveReviewConfig({}).approval.allowWhenNoReviewGate, false);
+    assert.equal(resolveReviewConfig({ approval: { enabled: true } }).approval.allowWhenNoReviewGate, false);
+  });
+
+  it("carries allowWhenNoReviewGate when set true, and ignores a non-boolean", () => {
+    assert.equal(resolveReviewConfig({ approval: { enabled: true, allowWhenNoReviewGate: true } }).approval.allowWhenNoReviewGate, true);
+    assert.equal(resolveReviewConfig({ approval: { enabled: true, allowWhenNoReviewGate: "yes" as never } }).approval.allowWhenNoReviewGate, false);
+  });
 });
