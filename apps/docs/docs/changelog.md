@@ -8,6 +8,14 @@ All notable changes to **pm-workspace-kit** are documented here.
 
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Each release also has a longer narrative on [GitHub Releases](https://github.com/hanfour/pm-workspace-kit/releases) with rationale, dogfood notes, and test plans.
 
+## [v0.34.1] — 2026-07-21 — Honest no-offer message when a review blocked
+
+[GitHub release](https://github.com/hanfour/pm-workspace-kit/releases/tag/v0.34.1)
+
+### Fixed
+
+- **`approve` with no offer now names a review blocker as the real reason.** A `:cr:`/`:a:` review that finds a HIGH/CRITICAL blocker posts `CHANGES_REQUESTED` and — by design — never creates an approve offer. Replying `approve` then hit the generic "請先完成 `:cr:` review" message, which is misleading: the review *did* run, it just blocked. When the thread's PR was most recently reviewed with blockers, the reply now says "…的 review 發現 N 個 blocker（GitHub 已標記 CHANGES_REQUESTED），因此未提供 approve。請修正後重新 `:cr:` review。" The **most recent** `review.posted` for the PR decides, so a since-fixed PR re-reviewed clean correctly falls through to the generic guidance. The review-quality gate itself is unchanged — approve is still only ever offered for a zero-blocker review, on gated and ungated repos alike. Found live on `onead/super-dsp-2.0#611` (real reviewer confusion). +3 tests, 1,066 cli tests green.
+
 ## [v0.34.0] — 2026-07-20 — Auto-allow approve on repos with no required-review gate
 
 [GitHub release](https://github.com/hanfour/pm-workspace-kit/releases/tag/v0.34.0)
