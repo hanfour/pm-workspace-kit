@@ -1256,6 +1256,57 @@ describe("ReviewCoordinator.confirmApproveInThread", () => {
     assert.equal(ev.approvalBasis, "ungated");
     assert.equal(ev.exemptionReason, undefined);
   });
+
+  it("names the review blocker when approve is replied but the review found blockers (no offer)", async () => {
+    const { appendGatewayEvent } = await import("../src/gateway/events");
+    const web = new FakeWebClient();
+    const c = coord(web, gw());
+    const rootText = ":cr: https://github.com/onead/super-dsp-2.0/pull/611";
+    web.conversationsHistoryResponse = { ok: true, messages: [{ text: rootText }] };
+    // A blocked review was posted for this PR — so no approve offer was ever created.
+    appendGatewayEvent({
+      type: "review.posted", actor: "U1", repo: "onead/super-dsp-2.0", pr: 611,
+      status: "CHANGES_REQUESTED", commentCount: 1, blockerCount: 1, durationMs: 1,
+    });
+
+    await c.confirmApproveInThread({ channelId: "C1", threadTs: "1.1", userId: "U1" });
+
+    const allTexts = [...web.posted, ...web.updated].map((m) => m.text ?? "");
+    assert.ok(allTexts.some((t) => /發現.*1.*blocker/.test(t)), "must name the blocker count as the real reason");
+    assert.ok(!allTexts.some((t) => /請先完成 `:cr:/.test(t)), "must not tell the admin to run a review they already ran");
+  });
+
+  it("keeps the generic no-offer message when no review has run for the thread's PR", async () => {
+    const web = new FakeWebClient();
+    const c = coord(web, gw());
+    const rootText = ":cr: https://github.com/onead/OnePixel/pull/99";
+    web.conversationsHistoryResponse = { ok: true, messages: [{ text: rootText }] };
+    // No review.posted event for #99 — genuinely no review ran.
+    await c.confirmApproveInThread({ channelId: "C1", threadTs: "1.1", userId: "U1" });
+
+    const allTexts = [...web.posted, ...web.updated].map((m) => m.text ?? "");
+    assert.ok(allTexts.some((t) => /請先完成 `:cr:/.test(t)), "generic guidance when there was genuinely no review");
+  });
+
+  it("keeps the generic no-offer message when the PR's most recent review was clean (offer consumed/expired)", async () => {
+    const { appendGatewayEvent } = await import("../src/gateway/events");
+    const web = new FakeWebClient();
+    const c = coord(web, gw());
+    const rootText = ":cr: https://github.com/onead/OnePixel/pull/42";
+    web.conversationsHistoryResponse = { ok: true, messages: [{ text: rootText }] };
+    // The most recent review was clean (0 blockers) — a consumed/expired offer,
+    // NOT a blocked review. Must not claim a blocker.
+    appendGatewayEvent({
+      type: "review.posted", actor: "U1", repo: "onead/OnePixel", pr: 42,
+      status: "COMMENT", commentCount: 0, blockerCount: 0, durationMs: 1,
+    });
+
+    await c.confirmApproveInThread({ channelId: "C1", threadTs: "1.1", userId: "U1" });
+
+    const allTexts = [...web.posted, ...web.updated].map((m) => m.text ?? "");
+    assert.ok(allTexts.some((t) => /請先完成 `:cr:/.test(t)), "a clean prior review must not be reported as a blocker");
+    assert.ok(!allTexts.some((t) => /blocker/.test(t)));
+  });
 });
 
 describe("ReviewCoordinator.fromApproveMessage (:a: approve flow)", () => {

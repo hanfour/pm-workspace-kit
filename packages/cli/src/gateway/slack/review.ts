@@ -27,7 +27,7 @@ import {
   reviewWorkspaceDir,
   isAdmin,
 } from "../config";
-import { appendGatewayEvent } from "../events";
+import { appendGatewayEvent, readGatewayEvents } from "../events";
 import { parsePrRefs, type PrRef } from "../pr-ref";
 import { claimReview, forceClaimReview, finalizeReview, releaseReview, type ReviewRef } from "../review-claim";
 import {
@@ -527,14 +527,40 @@ export class ReviewCoordinator {
     }
     const reservation = reserveApprovalOffer(args.channelId, args.threadTs);
     if (!reservation?.refs.length) {
-      await this.reply(
-        args.channelId,
-        args.threadTs,
-        ":information_source: 這個 thread 沒有有效、未使用的 approve offer。請先完成 `:cr: <PR 連結>` review；offer 使用一次或逾時後需重新 review。",
-      );
+      await this.reply(args.channelId, args.threadTs, await this.missingOfferMessage(args.channelId, args.threadTs));
       return;
     }
     await this.publishApprovalReservation(reservation, args.userId);
+  }
+
+  /**
+   * The reply when `approve` finds no usable offer. Usually that means no review
+   * has run — "complete a `:cr:` review first". But a review that finds blockers
+   * posts CHANGES_REQUESTED and NEVER creates an offer, so telling the admin to
+   * re-run a review they already ran is misleading. When the thread's PR was most
+   * recently reviewed with blockers, name that as the real reason instead.
+   */
+  private async missingOfferMessage(channelId: string, threadTs: string): Promise<string> {
+    const generic = ":information_source: 這個 thread 沒有有效、未使用的 approve offer。請先完成 `:cr: <PR 連結>` review；offer 使用一次或逾時後需重新 review。";
+    const rootText = await this.fetchMessageText(channelId, threadTs);
+    if (!rootText) return generic;
+    const review = resolveReviewConfig(this.currentConfig().review);
+    const refs = parsePrRefs(rootText, { cap: review.maxPrsPerTrigger });
+    if (refs.length === 0) return generic;
+    const posted = readGatewayEvents().filter((e) => e.type === "review.posted");
+    for (const ref of refs) {
+      const slug = `${ref.owner}/${ref.repo}`;
+      // The MOST RECENT review.posted for this PR decides: a since-fixed PR
+      // re-reviewed clean has a newer 0-blocker event and correctly falls through.
+      const last = [...posted].reverse().find((e) => e.repo === slug && e.pr === ref.number) as
+        | { status?: string; blockerCount?: number } | undefined;
+      if (last && ((last.blockerCount ?? 0) >= 1 || last.status === "CHANGES_REQUESTED")) {
+        const n = last.blockerCount ?? 0;
+        const count = n >= 1 ? `${n} 個 blocker` : "blocker";
+        return `:information_source: ${slug}#${ref.number} 的 review 發現 ${count}（GitHub 已標記 CHANGES_REQUESTED），因此未提供 approve。請修正後重新 \`:cr:\` review。`;
+      }
+    }
+    return generic;
   }
 
   private async publishApprovalReservation(reservation: ApprovalReservation, actorUserId: string): Promise<void> {
