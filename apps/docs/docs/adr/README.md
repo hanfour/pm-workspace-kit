@@ -22,6 +22,8 @@ The kit's own architectural + process decisions (write your own starting at 0004
 | [ADR-0005](./pmk-mra-bridge) | pmk delegates code intelligence to mra (does not absorb) | Accepted | 2026-04-27 |
 | [ADR-0006](./pmk-gateway-slack) | pmk gateway — host-machine bot for Slack/LINE, not SaaS | Accepted | 2026-04-27 |
 | [ADR-0007](./atom-approval-rubric) | Atom approval rubric — strict five-axis gate at proposal time | Accepted | 2026-06-05 |
+| [ADR-0008](./gateway-secret-references) | Gateway secret references — `{cmd}`/`{env}` instead of plaintext | Accepted | 2026-06-05 |
+| [ADR-0009](./brace-expansion-advisory) | brace-expansion advisory — accept the audit noise, do not override | Accepted | 2026-07-30 |
 
 ## How to use
 
