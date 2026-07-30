@@ -163,6 +163,22 @@ export interface MessageCappedEvent {
 }
 
 /**
+ * A model reply was withheld because it read as host-machine instructions
+ * (e.g. "edit ~/.claude/settings.json") rather than an answer to the Slack
+ * user. Records WHICH markers fired and how long the original was, never the
+ * text itself — the point is to keep host detail out of durable surfaces.
+ * A non-zero rate means requests needing host tools are reaching free-chat
+ * instead of a real handler.
+ */
+export interface MessageRedactedEvent {
+  type: "message.redacted";
+  actor: string;
+  reason: "host-guidance";
+  markers: string[];
+  originalChars: number;
+}
+
+/**
  * Per-call token accounting (v0.12.0). Emitted once per model round so
  * audits can attribute spend to the actor and reveal cache effectiveness
  * (cache reads are billed at a fraction of input tokens). The cache
@@ -301,6 +317,7 @@ export type GatewayEvent =
   | ContextExceededEvent
   | ContextForcePrunedEvent
   | MessageCappedEvent
+  | MessageRedactedEvent
   | TokenUsageEvent
   | GithubIssueCreatedEvent
   | GithubIssueFailedEvent
