@@ -775,6 +775,28 @@ describe("isApproveConfirmationRequest", () => {
       assert.equal(isApproveConfirmationRequest(t), false, `should not match: '${t}'`);
     }
   });
+  // The bot asks the admin to "@PMK 回覆 approve" in a thread whose root is a
+  // `:a:`/`:cr:` message carrying the PR link. Re-sending that link alongside
+  // the confirmation is the natural reply, and used to fall through to
+  // free-chat instead of authorizing.
+  it("matches an approve confirmation that also carries a PR link", () => {
+    for (const t of [
+      "approve\nhttps://github.com/onead/super-dsp-2.0/pull/748",
+      "approve https://github.com/o/r/pull/1",
+      "確認 approve https://github.com/o/r/pull/1",
+      "核准 https://github.com/o/r/pull/1",
+    ]) {
+      assert.equal(isApproveConfirmationRequest(t), true, `should match: '${t}'`);
+    }
+  });
+  it("still does NOT match ordinary chat that mentions approve near a PR link", () => {
+    for (const t of [
+      "please approve after deploy https://github.com/o/r/pull/1",
+      "https://github.com/o/r/pull/1 這個 PR 我已經 approve 了",
+    ]) {
+      assert.equal(isApproveConfirmationRequest(t), false, `should not match: '${t}'`);
+    }
+  });
 });
 
 describe("ReviewCoordinator.retryInThread", () => {
@@ -881,6 +903,59 @@ describe("ReviewCoordinator.confirmApproveInThread", () => {
     assert.equal(calls, 1, "second confirmation for the same artifact is idempotent");
     const allTexts = [...web.posted, ...web.updated].map((m) => m.text ?? "");
     assert.ok(allTexts.filter((t) => /安全停用|不會執行 approve/.test(t)).length >= 2, "each confirmation must report the revoked policy");
+  });
+
+  // A confirmation may carry a PR link, but the THREAD's offer selects the PR.
+  // A link naming a different PR is an intent mismatch: the admin believes they
+  // are approving what they pasted. Refuse loudly and leave the offer unused.
+  it("refuses a confirmation whose PR link names a different PR than the thread's", async () => {
+    const web = new FakeWebClient();
+    let calls = 0;
+    const gateway = gw({
+      runMraReview: async () => {
+        calls++;
+        return eligibleReviewResult();
+      },
+    } as unknown as Partial<ReviewGateway>);
+    const c = coord(web, gateway);
+    const rootText = ":cr: https://github.com/onead/OnePixel/pull/12";
+    await c.fromMessage({ channelId: "C1", threadTs: "1.1", userId: "U1", text: rootText });
+    web.conversationsHistoryResponse = { ok: true, messages: [{ text: rootText }] };
+
+    await c.confirmApproveInThread({
+      channelId: "C1", threadTs: "1.1", userId: "U1",
+      text: "approve https://github.com/onead/OnePixel/pull/999",
+    });
+
+    const allTexts = [...web.posted, ...web.updated].map((m) => m.text ?? "");
+    assert.ok(allTexts.some((t) => /不同的 PR|#999/.test(t)), "must name the mismatch");
+    assert.ok(!allTexts.some((t) => /已真實 approve/.test(t)), "must not approve anything");
+    assert.equal(calls, 1, "must not run another review");
+
+    // The offer survives: confirming again without a link still works.
+    await c.confirmApproveInThread({ channelId: "C1", threadTs: "1.1", userId: "U1" });
+    const after = [...web.posted, ...web.updated].map((m) => m.text ?? "");
+    assert.ok(!after.some((t) => /沒有有效、未使用的 approve offer/.test(t)), "mismatch must not consume the offer");
+  });
+
+  it("accepts a confirmation whose PR link matches the thread's PR", async () => {
+    const web = new FakeWebClient();
+    const gateway = gw({
+      runMraReview: async () => eligibleReviewResult(),
+    } as unknown as Partial<ReviewGateway>);
+    const c = coord(web, gateway);
+    const rootText = ":cr: https://github.com/onead/OnePixel/pull/12";
+    await c.fromMessage({ channelId: "C1", threadTs: "1.1", userId: "U1", text: rootText });
+    web.conversationsHistoryResponse = { ok: true, messages: [{ text: rootText }] };
+
+    await c.confirmApproveInThread({
+      channelId: "C1", threadTs: "1.1", userId: "U1",
+      text: "approve\nhttps://github.com/onead/OnePixel/pull/12",
+    });
+
+    const allTexts = [...web.posted, ...web.updated].map((m) => m.text ?? "");
+    assert.ok(!allTexts.some((t) => /不同的 PR/.test(t)), "matching link must not be treated as a mismatch");
+    assert.ok(!allTexts.some((t) => /沒有有效、未使用的 approve offer/.test(t)), "matching link must reach the offer");
   });
 
   it("publishes a real approval end-to-end when policy allows (#90 veto lifted)", async () => {

@@ -744,7 +744,7 @@ export class SlackAdapter {
     if (isApproveConfirmationRequest(text)) {
       if (this.review.isEnabled()) {
         await this.review
-          .confirmApproveInThread({ channelId, threadTs: replyThreadTs, userId })
+          .confirmApproveInThread({ channelId, threadTs: replyThreadTs, userId, text })
           .catch((err) =>
             this.onLog(`review: mention approve confirmation failed: ${(err as Error).message}`),
           );
@@ -926,7 +926,7 @@ export class SlackAdapter {
     if (isApproveConfirmationRequest(text)) {
       if (this.review.isEnabled()) {
         await this.review
-          .confirmApproveInThread({ channelId, threadTs, userId })
+          .confirmApproveInThread({ channelId, threadTs, userId, text })
           .catch((err) =>
             this.onLog(`review: DM approve confirmation failed: ${(err as Error).message}`),
           );

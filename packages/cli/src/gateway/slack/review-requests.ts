@@ -21,12 +21,29 @@ export function isApproveRequest(text: string): boolean {
 }
 
 /**
+ * A GitHub PR link in either bare or Slack (`<url>` / `<url|label>`) form. The
+ * confirmation matcher strips these before comparing: the bot asks the admin to
+ * reply `approve` in a thread whose root message carries the PR link, so
+ * re-sending that link alongside the word is the natural reply. Stripping the
+ * link keeps the matcher exact — it never widens what counts as a confirmation,
+ * it only ignores the URL.
+ */
+const PR_LINK_RE =
+  /<?https?:\/\/github\.com\/[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+\/pull\/\d+(?:\|[^>]*)?>?/g;
+
+/**
  * Bare confirmation inside a review thread. This is intentionally narrower than
  * ordinary chat: `:cr:` may offer approval, but GitHub APPROVE only happens after
  * an explicit user confirmation.
+ *
+ * A PR link may accompany the confirmation, but it is NOT trusted to select the
+ * PR — the thread's offer does that. The caller must reject a link that names a
+ * different PR (see `confirmApproveInThread`), so a link can never redirect an
+ * approval to somewhere the admin did not review.
  */
 export function isApproveConfirmationRequest(text: string): boolean {
   const t = text
+    .replace(PR_LINK_RE, " ")
     .trim()
     .toLowerCase()
     .replace(/[。.!！]+$/g, "")

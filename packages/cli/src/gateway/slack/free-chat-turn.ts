@@ -72,6 +72,7 @@ import {
   truncateForSlack,
 } from "../formatters";
 import { EscalationCoordinator } from "./escalation";
+import { stripHostOnlyGuidance } from "./host-guidance";
 
 /**
  * Structural shape of any session the free-chat runner can mutate —
@@ -281,6 +282,25 @@ export class FreeChatTurnRunner {
 
     let full = retryResult.full;
     let scissorsPrefix = retryResult.scissorsPrefix;
+
+    // Defence in depth: when the agent hits its own tool-permission guard it
+    // answers by telling "you" to reconfigure the host. That reader is a Slack
+    // user who owns no such file. Replace it before it reaches the channel or
+    // the persisted session — a poisoned history would repeat the advice.
+    // This is a net, not the fix: anything needing host tools should have been
+    // routed to a real handler instead of free-chat.
+    const guarded = stripHostOnlyGuidance(full);
+    if (guarded.redacted) {
+      appendGatewayEvent({
+        type: "message.redacted",
+        actor: userId,
+        reason: "host-guidance",
+        markers: guarded.matched,
+        originalChars: full.length,
+      });
+      full = guarded.text;
+      scissorsPrefix = "";
+    }
 
     // If the model asked us to delegate a deep code-search round to
     // mra, run it and feed the result back for synthesis.

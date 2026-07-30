@@ -485,6 +485,12 @@ export class ReviewCoordinator {
     channelId: string;
     threadTs: string;
     userId: string;
+    /**
+     * The confirmation text, when available. A PR link inside it never selects
+     * the PR — the thread's offer does — but a link naming a DIFFERENT PR means
+     * the admin thinks they are approving something else, so we refuse.
+     */
+    text?: string;
   }): Promise<void> {
     const config = this.currentConfig();
     const review = resolveReviewConfig(config.review);
@@ -495,6 +501,11 @@ export class ReviewCoordinator {
     }
     if (!isAdmin(config, args.userId)) {
       await this.reply(args.channelId, args.threadTs, ":no_entry: approve 授權只接受 PMK admin；請 admin 在此 thread 回覆 `approve`。");
+      return;
+    }
+    const mismatch = await this.mismatchedConfirmationPr(args);
+    if (mismatch) {
+      await this.reply(args.channelId, args.threadTs, mismatch);
       return;
     }
     const pending = listPendingApprovalReconciliations(args.channelId, args.threadTs);
@@ -531,6 +542,41 @@ export class ReviewCoordinator {
       return;
     }
     await this.publishApprovalReservation(reservation, args.userId);
+  }
+
+  /**
+   * Guards the intent behind a confirmation that carries a PR link. The thread's
+   * offer selects what gets approved, so a link naming a different PR means the
+   * admin is authorizing something other than what they believe. Returns the
+   * refusal text, or null when there is nothing to object to.
+   *
+   * Runs BEFORE the offer is reserved, so a refused confirmation leaves the
+   * offer intact and the admin can simply reply `approve` again.
+   */
+  private async mismatchedConfirmationPr(args: {
+    channelId: string;
+    threadTs: string;
+    text?: string;
+  }): Promise<string | null> {
+    if (!args.text) return null;
+    const named = parsePrRefs(args.text);
+    if (named.length === 0) return null;
+    const rootText = await this.fetchMessageText(args.channelId, args.threadTs);
+    const threadRefs = rootText ? parsePrRefs(rootText) : [];
+    // No PR in the thread root to compare against — leave the decision to the
+    // offer lookup rather than inventing a mismatch.
+    if (threadRefs.length === 0) return null;
+    const key = (r: PrRef) => `${r.owner}/${r.repo}#${r.number}`;
+    const threadKeys = new Set(threadRefs.map(key));
+    const stray = named.filter((r) => !threadKeys.has(key(r)));
+    if (stray.length === 0) return null;
+    return (
+      `:no_entry: 你附的連結指向不同的 PR（${stray.map(key).join("、")}），` +
+      `與這個 thread 正在處理的 ${[...threadKeys].join("、")} 不符。` +
+      "為避免核准到未 review 的 PR，這次授權不會執行。\n" +
+      "若要核准本 thread 的 PR，直接回覆 `approve`；" +
+      "若要核准另一個 PR，請對它執行 `:cr: <PR 連結>` 後在該 thread 授權。"
+    );
   }
 
   /**
