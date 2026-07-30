@@ -23,6 +23,7 @@ import {
   parseCaseUpdate,
   saveCase,
   stripCaseUpdateBlock,
+  withCaseLock,
 } from "../../case";
 import { approxTokensFor } from "../messaging";
 import {
@@ -264,6 +265,31 @@ export class ChannelMentionHandler {
       saveChannelMeta(meta);
       return;
     }
+
+    const activeCase = meta.activeCase;
+    await withCaseLock(activeCase, channelCasesDir(channelId), async () =>
+      this.runActiveCase(
+        { channelId, userId, text, threadTs, files },
+        { ...meta, activeCase },
+      ),
+    );
+  }
+
+  /**
+   * A case file is read-modify-write state, unlike the append-only free-chat
+   * log. The caller holds its per-case lock for this entire LLM turn.
+   */
+  private async runActiveCase(
+    args: {
+      channelId: string;
+      userId: string;
+      text: string;
+      threadTs: string;
+      files?: SlackFile[];
+    },
+    meta: { channelId: string; lastActiveAt: number; activeCase: string },
+  ): Promise<void> {
+    const { channelId, userId, text, threadTs, files } = args;
 
     // Active-case branch: attachments are not supported — post a brief note
     // and proceed with the case turn as usual. Do NOT ingest.

@@ -10,6 +10,7 @@ import {
   addQuestion,
   appendTimeline,
   applyCaseUpdate,
+  assertSafeCaseName,
   caseExists,
   CASE_VERSION,
   loadCase,
@@ -88,6 +89,7 @@ async function showCase(name: string): Promise<void> {
     println(chalk.red("usage: pmk case show <name>"));
     process.exit(1);
   }
+  assertCaseNameOrExit(name);
   const c = loadCaseOrExit(name);
   println(renderCaseMarkdown(c));
 }
@@ -97,6 +99,7 @@ async function closeCase(name: string, opts: CaseCloseOptions): Promise<void> {
     println(chalk.red('usage: pmk case close <name> [--resolution "..."]'));
     process.exit(1);
   }
+  assertCaseNameOrExit(name);
   const c = loadCaseOrExit(name);
   c.status = "closed";
   if (opts.resolution) c.resolution = opts.resolution;
@@ -128,6 +131,7 @@ async function openCase(name: string, opts: CaseOpenOptions): Promise<void> {
     println(chalk.red("usage: pmk case open <name> [--ingest mra:...]"));
     process.exit(1);
   }
+  assertCaseNameOrExit(name);
 
   let c: CaseFile;
   if (caseExists(name)) {
@@ -227,6 +231,15 @@ async function openCase(name: string, opts: CaseOpenOptions): Promise<void> {
 
   saveCase(c);
   println(chalk.green(`\nsaved → ${c.name}`));
+}
+
+function assertCaseNameOrExit(name: string): void {
+  try {
+    assertSafeCaseName(name);
+  } catch (err) {
+    println(chalk.red(`[pmk] ${(err as Error).message}`));
+    process.exit(1);
+  }
 }
 
 function buildSeedMessage(c: CaseFile): string {

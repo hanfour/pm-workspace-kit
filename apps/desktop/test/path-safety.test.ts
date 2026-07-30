@@ -86,7 +86,7 @@ describe("ensureInsideReal — symlink-aware containment", () => {
     }
   });
 
-  it("falls back to sync check for a not-yet-existing file (writeFile)", async () => {
+  it("allows a not-yet-existing file under a real workspace directory", async () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "pmk-realw-"));
     try {
       const nf = path.join(tmp, "new-file.md");
@@ -94,6 +94,22 @@ describe("ensureInsideReal — symlink-aware containment", () => {
       assert.equal(resolved, nf);
     } finally {
       fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects a new file below an in-workspace symlink to outside", async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "pmk-real-parent-"));
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), "pmk-escape-parent-"));
+    try {
+      fs.symlinkSync(outside, path.join(tmp, "linked-dir"));
+      await assert.rejects(
+        ensureInsideReal(tmp, path.join(tmp, "linked-dir", "new-file.md")),
+        /escapes workspace via symlink/,
+      );
+      assert.equal(fs.existsSync(path.join(outside, "new-file.md")), false);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+      fs.rmSync(outside, { recursive: true, force: true });
     }
   });
 

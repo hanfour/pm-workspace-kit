@@ -7,6 +7,7 @@ import {
   addEvidence,
   addHypothesis,
   addQuestion,
+  assertSafeCaseName,
   appendTimeline,
   applyCaseUpdate,
   caseExists,
@@ -22,6 +23,7 @@ import {
   saveCase,
   setHypothesisStatus,
   stripCaseUpdateBlock,
+  withCaseLock,
 } from "../src/case";
 
 const ORIG_HOME = process.env.HOME;
@@ -99,6 +101,40 @@ describe("case file lifecycle", () => {
       JSON.stringify({ ...newCase({ name: "future" }), version: 999 }),
     );
     assert.throws(() => loadCase("future"), /version 999/);
+  });
+
+  it("rejects path-traversal case names before any filesystem access", () => {
+    for (const name of ["../escaped", "nested/file", "nested\\file", "..", ""]) {
+      assert.throws(() => assertSafeCaseName(name), /unsafe case name/);
+    }
+  });
+
+  it("serializes concurrent work for the same case", async () => {
+    const order: string[] = [];
+    let releaseFirst!: () => void;
+    let markFirstStarted!: () => void;
+    const firstBlocked = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    const firstStarted = new Promise<void>((resolve) => {
+      markFirstStarted = resolve;
+    });
+
+    const first = withCaseLock("shared", undefined, async () => {
+      order.push("first-start");
+      markFirstStarted();
+      await firstBlocked;
+      order.push("first-end");
+    });
+    const second = withCaseLock("shared", undefined, async () => {
+      order.push("second");
+    });
+
+    await firstStarted;
+    assert.deepEqual(order, ["first-start"]);
+    releaseFirst();
+    await Promise.all([first, second]);
+    assert.deepEqual(order, ["first-start", "first-end", "second"]);
   });
 });
 
