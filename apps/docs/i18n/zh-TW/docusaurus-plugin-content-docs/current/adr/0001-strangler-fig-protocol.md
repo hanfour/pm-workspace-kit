@@ -21,7 +21,7 @@ sidebar_position: 2
 
 ## Decision
 
-採用四階段 **Strangler Fig** 協議（narrative 見 [概念：Strangler Fig](../concepts/strangler-fig.md)）。每個模組遷移用相同階段名、對帳門檻、rollback playbook。逐模組 override 在該模組 playbook 明確標註。
+採用四階段 **Strangler Fig** 協議（narrative 見 [概念：Strangler Fig](../concepts/strangler-fig)）。每個模組遷移用相同階段名、對帳門檻、rollback playbook。逐模組 override 在該模組 playbook 明確標註。
 
 ### 四階段
 
@@ -73,5 +73,5 @@ sidebar_position: 2
 ## References
 
 - Martin Fowler, ["StranglerFigApplication"](https://martinfowler.com/bliki/StranglerFigApplication.html)
-- [概念：Strangler Fig](../concepts/strangler-fig.md)
-- [Templates: 模組 Playbook](../templates/module-playbook-template.md)
+- [概念：Strangler Fig](../concepts/strangler-fig)
+- [Templates: 模組 Playbook](../templates/module-playbook-template)

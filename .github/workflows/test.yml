@@ -16,11 +16,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Workspaces with real test suites. packages/cli/rag/shared and
+        # Workspaces with real test suites. packages/cli/llm/rag/shared and
         # apps/desktop run `typecheck:test` (tsc) + node --test on TS sources;
         # packages/core runs plain node --test on JS (no TS toolchain by design).
         workspace:
           - packages/cli
+          - packages/llm
           - packages/rag
           - packages/shared
           - apps/desktop
@@ -44,7 +45,51 @@ jobs:
         run: |
           npm run build --workspace=@pmk/shared
           npm run build --workspace=@pmk/rag
+          npm run build --workspace=@pmk/llm
           npm run build --workspace=@pmk/cli
 
       - name: Test (typecheck + unit)
         run: npm test --workspace=${{ matrix.workspace }}
+
+  docs:
+    name: docs quality
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck and build docs
+        run: |
+          npm run typecheck --workspace=@pmk/docs
+          npm run build --workspace=@pmk/docs
+
+  desktop-build:
+    name: desktop production build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build desktop runtime dependencies
+        run: |
+          npm run build --workspace=@pmk/shared
+          npm run build --workspace=@pmk/llm
+
+      - name: Typecheck and build desktop
+        run: |
+          npm run typecheck --workspace=@pmk/desktop
+          npm run build --workspace=@pmk/desktop

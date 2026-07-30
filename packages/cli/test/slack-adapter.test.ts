@@ -635,6 +635,76 @@ describe("SlackAdapter integration: channel @-mention", () => {
     assert.ok(summaryPosts.length >= 1, "tracking summary should be posted");
   });
 
+  it("active case serializes two users so neither turn is overwritten", async () => {
+    const channelId = "C-CASE-RACE";
+    const caseName = "2026-07-30-shared-incident";
+    const dir = channelCasesDir(channelId);
+    saveCase(newCase({ name: caseName }), dir);
+    saveChannelMeta({ channelId, activeCase: caseName, lastActiveAt: Date.now() });
+
+    let releaseFirst!: () => void;
+    let firstStarted!: () => void;
+    const firstGate = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    const firstHasStarted = new Promise<void>((resolve) => {
+      firstStarted = resolve;
+    });
+    h.llm.script(
+      async () => {
+        firstStarted();
+        await firstGate;
+        return "alice answer";
+      },
+      (call) => {
+        assert.match(
+          call.messages.map((m) => m.content).join("\n"),
+          /alice answer/,
+          "the second turn must receive the first persisted answer",
+        );
+        return "bob answer";
+      },
+    );
+
+    await h.adapter.start();
+    void h.socket.emit(
+      "app_mention",
+      appMentionPayload({
+        user: "U-ALICE",
+        channel: channelId,
+        text: "<@UBOTID> alice prompt",
+        envelope_id: "env-case-race-alice",
+      }),
+    );
+    await firstHasStarted;
+    void h.socket.emit(
+      "app_mention",
+      appMentionPayload({
+        user: "U-BOB",
+        channel: channelId,
+        text: "<@UBOTID> bob prompt",
+        envelope_id: "env-case-race-bob",
+      }),
+    );
+    await new Promise((resolve) => setImmediate(resolve));
+
+    assert.equal(
+      h.llm.calls.length,
+      1,
+      "the second case turn waits for the first complete read-modify-write cycle",
+    );
+    releaseFirst();
+    await h.flush();
+
+    const persisted = loadCase(caseName, dir).messages.map((m) => m.content);
+    assert.deepEqual(persisted, [
+      "alice prompt",
+      "alice answer",
+      "bob prompt",
+      "bob answer",
+    ]);
+  });
+
   it("case path: PmkContextTooLong → force-prune → retry success → :scissors: prefix", async () => {
     const channelId = "C-LONGCASE";
     const caseName = "2026-06-05-bloated-case";

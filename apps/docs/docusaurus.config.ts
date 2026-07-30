@@ -17,8 +17,7 @@ const config: Config = {
   organizationName: "hanfour",
   projectName: "pm-workspace-kit",
 
-  onBrokenLinks: "warn",
-  onBrokenMarkdownLinks: "warn",
+  onBrokenLinks: "throw",
 
   i18n: {
     defaultLocale: "en",
@@ -33,6 +32,9 @@ const config: Config = {
   // Used by gateway/lifecycle.md (v0.7+).
   markdown: {
     mermaid: true,
+    hooks: {
+      onBrokenMarkdownLinks: "throw",
+    },
   },
 
   themes: ["@docusaurus/theme-mermaid"],
@@ -106,7 +108,10 @@ const config: Config = {
               label: "GitHub",
               href: "https://github.com/hanfour/pm-workspace-kit",
             },
-            { label: "License (MIT)", href: "/LICENSE.txt" },
+            {
+              label: "License (MIT)",
+              href: "https://github.com/hanfour/pm-workspace-kit/blob/main/LICENSE",
+            },
           ],
         },
       ],

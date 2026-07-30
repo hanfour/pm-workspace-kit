@@ -83,4 +83,4 @@ Example: `feat(billing.invoice): add partial-payment handling`
 
 - The template fires on every new PR. Keep _all_ sections; put `N/A` where not applicable.
 - `Traceability` fields are the main CI gate. If you have nothing to cite, a reviewer should ask why.
-- The `HITL impact` line is intentionally terse. Removing HITL on a financial write is a hard-blocker for merge regardless of who approved — see [Code Review Checklist](./code-review-checklist.md).
+- The `HITL impact` line is intentionally terse. Removing HITL on a financial write is a hard-blocker for merge regardless of who approved — see [Code Review Checklist](./code-review-checklist).

@@ -8,7 +8,7 @@ sidebar_position: 4
 
 ## 何時用
 
-見英文版詳細情境。簡言之：在 PM 工作流中需要此功能的階段（見 [Skills 目錄](./overview.md) pipeline 圖）。
+見英文版詳細情境。簡言之：在 PM 工作流中需要此功能的階段（見 [Skills 目錄](./overview) pipeline 圖）。
 
 ## Skill body（英文，複製到 `.claude/skills/`）
 
@@ -16,5 +16,5 @@ sidebar_position: 4
 
 ## 相關
 
-- [Skills 目錄](./overview.md) — 全部 14 skills 與 pipeline 關係
-- [DoR / DoD](../concepts/definitions-of-ready-done.md) — skills 之間的品質門檻
+- [Skills 目錄](./overview) — 全部 14 skills 與 pipeline 關係
+- [DoR / DoD](../concepts/definitions-of-ready-done) — skills 之間的品質門檻

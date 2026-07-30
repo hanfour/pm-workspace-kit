@@ -103,5 +103,5 @@ The protocol earns its keep when the migration is both long (multi-week) and sta
 ## Related
 
 - ADR-0001 (methodology) — this kit's pre-written protocol ADR, in `docs/adr/`
-- [Templates: Module Playbook](../templates/module-playbook-template.md)
-- [Guide: Handoff to Implementation](../guides/handoff-to-implementation.md)
+- [Templates: Module Playbook](../templates/module-playbook-template)
+- [Guide: Handoff to Implementation](../guides/handoff-to-implementation)

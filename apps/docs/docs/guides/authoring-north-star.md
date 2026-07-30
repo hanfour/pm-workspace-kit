@@ -31,7 +31,7 @@ If the answer is "to decide one feature", it's a PRD, not a north star. Use the 
 | 10 | ADR Index (pointer) | — | Evolves |
 | Appendix | Glossary, terminology map, worked example | All | Sprint 3 / ongoing |
 
-The kit's **[north-star outline template](../templates/adr-template.md)** is what you copy to start. (Full outline as a standalone template file is on the roadmap — for now, use this chapter list.)
+The kit's **[north-star outline template](../templates/adr-template)** is what you copy to start. (Full outline as a standalone template file is on the roadmap — for now, use this chapter list.)
 
 ## Writing order: outline first, prose second
 
@@ -81,6 +81,6 @@ When reviewing someone else's north star draft:
 
 ## Related
 
-- [Concepts: ADR Patterns](../concepts/adr-patterns.md)
-- [Concepts: Strangler Fig](../concepts/strangler-fig.md)
-- [Templates: Module Playbook](../templates/module-playbook-template.md)
+- [Concepts: ADR Patterns](../concepts/adr-patterns)
+- [Concepts: Strangler Fig](../concepts/strangler-fig)
+- [Templates: Module Playbook](../templates/module-playbook-template)

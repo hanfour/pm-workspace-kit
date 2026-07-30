@@ -95,5 +95,5 @@ kit 的模組 playbook 模板含 R/W 依賴矩陣。在 Stage 0 填好，讓它�
 ## 相關
 
 - ADR-0001 — kit 預寫協議 ADR
-- [Templates: 模組 Playbook](../templates/module-playbook-template.md)
-- [Guide: Handoff to Implementation](../guides/handoff-to-implementation.md)
+- [Templates: 模組 Playbook](../templates/module-playbook-template)
+- [Guide: Handoff to Implementation](../guides/handoff-to-implementation)

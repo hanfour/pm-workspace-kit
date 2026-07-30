@@ -51,23 +51,28 @@ export function ensureInside(root: string, target: string): string {
 
 /**
  * Like `ensureInside` but also resolves symlinks via `fs.realpath` so
- * an in-workspace symlink cannot point at a file outside the root.
- * Falls back to the synchronous check when the target doesn't exist
- * yet (writeFile creating a new file), since `realpath` would throw.
+ * an in-workspace symlink cannot point at a file outside the root. For a
+ * new file, resolve the nearest existing ancestor: a symlinked parent must
+ * be rejected before `mkdir()` / `writeFile()` follow it outside the root.
  */
 export async function ensureInsideReal(
   root: string,
   target: string,
 ): Promise<string> {
   const abs = ensureInside(root, target);
-  if (!existsSync(abs)) return abs;
-  const real = await realpath(abs);
-  const realRoot = existsSync(root) ? await realpath(root) : root;
+  const realRoot = existsSync(root) ? await realpath(root) : resolve(root);
+  let existing = abs;
+  while (!existsSync(existing)) {
+    const parent = dirname(existing);
+    if (parent === existing) break;
+    existing = parent;
+  }
+  const real = existsSync(existing) ? await realpath(existing) : existing;
   const rel = relative(realRoot, real);
   if (rel.startsWith("..") || resolve(realRoot, rel) !== real) {
     throw new Error(`path escapes workspace via symlink: ${target}`);
   }
-  return real;
+  return existsSync(abs) ? real : abs;
 }
 
 async function buildTree(

@@ -80,5 +80,5 @@ Wiki 政策死在抽屜裡。貼近文件的 checklist 會出現在每次 review
 
 ## 相關
 
-- [概念：追溯性](./traceability.md)
-- [指南：Handoff to Implementation](../guides/handoff-to-implementation.md)
+- [概念：追溯性](./traceability)
+- [指南：Handoff to Implementation](../guides/handoff-to-implementation)

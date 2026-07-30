@@ -81,11 +81,11 @@ Don't copy every checkbox into every team policy. Pick the four that fail most o
 
 ## How the kit uses these
 
-The PM skills shipped with Claude Code (see [Templates: Claude Skills](../templates/adr-template.md) — full skill catalog is on the roadmap) include the relevant checklists inline. A reviewer running `/create-prd` ends up with the DoR/DoD baked into the generated document.
+The PM skills shipped with Claude Code (see [Templates: Claude Skills](../templates/adr-template) — full skill catalog is on the roadmap) include the relevant checklists inline. A reviewer running `/create-prd` ends up with the DoR/DoD baked into the generated document.
 
 If you're not using Claude Code, paste the checklist from this page into your PR template or the doc body itself — the goal is "reviewer has to consciously sign it off", not automation.
 
 ## Related
 
-- [Concepts: Traceability](./traceability.md)
-- [Guide: Handoff to Implementation](../guides/handoff-to-implementation.md)
+- [Concepts: Traceability](./traceability)
+- [Guide: Handoff to Implementation](../guides/handoff-to-implementation)

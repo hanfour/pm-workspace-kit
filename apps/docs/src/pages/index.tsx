@@ -3,6 +3,7 @@ import useDocusaurusContext from "@docusaurus/useDocusaurusContext";
 import Layout from "@theme/Layout";
 import Translate, { translate } from "@docusaurus/Translate";
 import clsx from "clsx";
+import type { JSX } from "react";
 
 import styles from "./index.module.css";
 

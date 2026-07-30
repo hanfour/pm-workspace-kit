@@ -88,7 +88,7 @@ cp docs/templates/adr-template.md docs/adr/0001-your-decision.md
 
 ## 7. 接 Confluence 同步（選配）
 
-若團隊發佈到 Confluence，見 [Confluence 同步指南](./guides/confluence-sync.md)。
+若團隊發佈到 Confluence，見 [Confluence 同步指南](./guides/confluence-sync)。
 
 ## 8. 試用 CLI（選配）
 
@@ -117,7 +117,7 @@ npx pmk gateway init    # 一次性：貼上 Slack tokens + 設定 mra workspace
 npx pmk gateway start   # 前景跑 bridge — 讓它一直跑
 ```
 
-Gateway 是 host 自架的 Slack bridge（Socket Mode），不是 SaaS bot — token 與你的 code 都不離開你自己的機器。設計動機請見 [ADR-0006: pmk gateway](./adr/0006-pmk-gateway-slack.md)。
+Gateway 是 host 自架的 Slack bridge（Socket Mode），不是 SaaS bot — token 與你的 code 都不離開你自己的機器。設計動機請見 [ADR-0006: pmk gateway](./adr/pmk-gateway-slack)。
 
 ### v0.7 gateway 表面
 
@@ -139,10 +139,10 @@ pmk gateway atoms approve <id-prefix>       # 提前生效（不等 24h）
 pmk gateway atoms reject <id-prefix>        # 刪除
 ```
 
-完整 gateway 流程 — *PM 在 Slack 問 → bot 看 PKB → 不夠就問 mra → 仍不夠就 @ 真人 → 吸收答案 → 下一個人問同樣問題直接命中* — 見 [PRD-2026-0005](./prds/2026-04-27-pmk-gateway-prd.md) 與 v0.7 系列 [release notes](https://github.com/hanfour/pm-workspace-kit/releases)。
+完整 gateway 流程 — *PM 在 Slack 問 → bot 看 PKB → 不夠就問 mra → 仍不夠就 @ 真人 → 吸收答案 → 下一個人問同樣問題直接命中* — 見 [PRD-2026-0005](./prds/2026-04-27-pmk-gateway-prd) 與 v0.7 系列 [release notes](https://github.com/hanfour/pm-workspace-kit/releases)。
 
 ## 接下來
 
-- [概念：DoR / DoD](./concepts/definitions-of-ready-done.md)
-- [指南：撰寫北極星](./guides/authoring-north-star.md)
-- [Handoff 總覽](./handoff/overview.md)
+- [概念：DoR / DoD](./concepts/definitions-of-ready-done)
+- [指南：撰寫北極星](./guides/authoring-north-star)
+- [Handoff 總覽](./handoff/overview)

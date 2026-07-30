@@ -13,7 +13,7 @@ Publish a markdown doc (PRD / requirement card / spec) to Confluence, write the 
 
 ## Pipeline position
 
-Terminal step of the PRD pipeline. Pairs with `confluence-sync.js` (see [Confluence Sync guide](../guides/confluence-sync.md)) which pulls comments and status-label changes back into Git.
+Terminal step of the PRD pipeline. Pairs with `confluence-sync.js` (see [Confluence Sync guide](../guides/confluence-sync)) which pulls comments and status-label changes back into Git.
 
 ## Prerequisites
 
@@ -124,7 +124,7 @@ New pages default to `status-draft`. Reviewers change the label in Confluence UI
 
 ## Companion: automatic back-sync
 
-See the [Confluence Sync guide](../guides/confluence-sync.md). Once a page is published + labeled, the cron job (`scripts/confluence-sync.js`) will:
+See the [Confluence Sync guide](../guides/confluence-sync). Once a page is published + labeled, the cron job (`scripts/confluence-sync.js`) will:
 
 - Pull new comments into a `## Confluence Comments` section of the source markdown
 - Map the Confluence `status-*` label into the source's `front-matter.status`

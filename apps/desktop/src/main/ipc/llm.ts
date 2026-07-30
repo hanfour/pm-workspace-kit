@@ -1,12 +1,12 @@
 import { app, ipcMain, safeStorage } from "electron";
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
-import { loadConfig } from "@pmk/cli/config";
+import { loadConfig } from "@pmk/llm";
 import {
   NoProviderAvailableError,
   resolveProvider,
   type LlmProvider,
-} from "@pmk/cli/llm";
+} from "@pmk/llm";
 
 const KEY_FILE = "anthropic-api-key.enc";
 

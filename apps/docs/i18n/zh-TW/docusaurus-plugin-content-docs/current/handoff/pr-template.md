@@ -83,4 +83,4 @@ sidebar_position: 2
 
 - Template 在每次新 PR 觸發。保留**所有**段落；不適用就寫 `N/A`
 - `Traceability` 欄位是主要 CI gate。沒東西可引用時 reviewer 應該問為什麼
-- `HITL impact` 刻意簡短。去除金流寫的 HITL 是 hard-blocker 不管誰核准 — 見 [Code Review Checklist](./code-review-checklist.md)
+- `HITL impact` 刻意簡短。去除金流寫的 HITL 是 hard-blocker 不管誰核准 — 見 [Code Review Checklist](./code-review-checklist)

@@ -4,7 +4,7 @@ import {
   PmkContextTooLongError,
   isContextTooLongError,
   buildImageUserMessage,
-} from "../src/llm/claude-agent";
+} from "../src/claude-agent";
 
 describe("PmkContextTooLongError detection", () => {
   it("matches msg_too_long error message", () => {

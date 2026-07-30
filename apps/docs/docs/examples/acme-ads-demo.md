@@ -4,13 +4,13 @@ sidebar_position: 2
 
 # AcmeAds demo: watch the knowledge loop
 
-Once your gateway is installed and running, this ~10–15 minute walkthrough lets you *watch* the full knowledge loop work — PKB retrieval → a grounded, BIZ-readable answer → the escalation boundary — using the fictional **AcmeAds** ad-tech workspace. It's the companion to the install guide: [Gateway onboarding](../gateway/onboarding.md) gets the bot running; this gets you to "I've seen it answer."
+Once your gateway is installed and running, this ~10–15 minute walkthrough lets you *watch* the full knowledge loop work — PKB retrieval → a grounded, BIZ-readable answer → the escalation boundary — using the fictional **AcmeAds** ad-tech workspace. It's the companion to the install guide: [Gateway onboarding](../gateway/onboarding) gets the bot running; this gets you to "I've seen it answer."
 
-> AcmeAds is a fictional ad-tech company (see the [docs-kit example](./acme-ads.md)). All names, metrics, and data here are invented.
+> AcmeAds is a fictional ad-tech company (see the [docs-kit example](./acme-ads)). All names, metrics, and data here are invented.
 
 ## Prerequisites
 
-- The gateway is installed per [Gateway onboarding](../gateway/onboarding.md) and **running** — confirm with `pmk gateway status` (should show `running: yes`).
+- The gateway is installed per [Gateway onboarding](../gateway/onboarding) and **running** — confirm with `pmk gateway status` (should show `running: yes`).
 - Your own Slack account is in the workspace, so you can DM the bot.
 
 ## 1. Seed the AcmeAds knowledge (1 min)
@@ -96,6 +96,6 @@ pmk demo unseed     # removes the 5 AcmeAds atoms (tag acme-ads-demo)
 
 ## Related
 
-- [Gateway onboarding](../gateway/onboarding.md) — install the gateway (the 30-minute setup)
-- [Example: AcmeAds](./acme-ads.md) — the same fictional company from the docs-kit (PRDs / ADR / traceability) angle
-- [Gateway lifecycle](../gateway/lifecycle.md) — how the knowledge loop works under the hood
+- [Gateway onboarding](../gateway/onboarding) — install the gateway (the 30-minute setup)
+- [Example: AcmeAds](./acme-ads) — the same fictional company from the docs-kit (PRDs / ADR / traceability) angle
+- [Gateway lifecycle](../gateway/lifecycle) — how the knowledge loop works under the hood

@@ -124,5 +124,5 @@ Backlinks 段：`ADR-0011` 顯示 `SPEC-2026-0008` 為唯一 referrer。Orphans 
 
 ## 相關
 
-- [概念：追溯性](../concepts/traceability.md)
-- [Guide: Confluence Sync](./confluence-sync.md) — wiki → Git 反向流
+- [概念：追溯性](../concepts/traceability)
+- [Guide: Confluence Sync](./confluence-sync) — wiki → Git 反向流

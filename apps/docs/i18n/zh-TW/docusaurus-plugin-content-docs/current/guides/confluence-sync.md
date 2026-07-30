@@ -116,5 +116,5 @@ kit 的 `publish-to-confluence` skill（選配、需 Claude Code）處理：
 
 ## 相關
 
-- [Guide: Traceability Matrix](./traceability-matrix.md)
-- [Handoff: PR template](../handoff/pr-template.md)
+- [Guide: Traceability Matrix](./traceability-matrix)
+- [Handoff: PR template](../handoff/pr-template)

@@ -10,6 +10,7 @@ import {
   userCasesDir,
 } from "../session-store";
 import {
+  assertSafeCaseName,
   caseExists,
   loadCase,
   newCase,
@@ -132,6 +133,10 @@ export class SlashCommandHandler {
 
       case "open": {
         if (!arg) return void (await reply("usage: `/pmk open <name>`"));
+        if (!isSafeCaseName(arg)) {
+          await reply("case 名稱不可包含路徑分隔符、`..` 或控制字元。");
+          return;
+        }
         if (caseExists(arg, dir)) {
           if (scope.kind === "channel") {
             const meta = loadChannelMeta(scope.channelId);
@@ -165,6 +170,10 @@ export class SlashCommandHandler {
             ? loadChannelMeta(scope.channelId).activeCase
             : undefined);
         if (!target) return void (await reply("usage: `/pmk show <name>`"));
+        if (!isSafeCaseName(target)) {
+          await reply("case 名稱不可包含路徑分隔符、`..` 或控制字元。");
+          return;
+        }
         if (!caseExists(target, dir))
           return void (await reply(`找不到 case \`${target}\`。`));
         const c = loadCase(target, dir);
@@ -176,6 +185,10 @@ export class SlashCommandHandler {
         if (!arg)
           return void (await reply("usage: `/pmk close <name> [reason]`"));
         const [name, ...reasonParts] = arg.split(/\s+/);
+        if (!isSafeCaseName(name)) {
+          await reply("case 名稱不可包含路徑分隔符、`..` 或控制字元。");
+          return;
+        }
         if (!caseExists(name, dir))
           return void (await reply(`找不到 case \`${name}\`。`));
         const c = loadCase(name, dir);
@@ -222,5 +235,14 @@ export class SlashCommandHandler {
       default:
         await reply(`未知指令 \`${cmd}\`。試試 \`/pmk help\`。`);
     }
+  }
+}
+
+function isSafeCaseName(name: string): boolean {
+  try {
+    assertSafeCaseName(name);
+    return true;
+  } catch {
+    return false;
   }
 }

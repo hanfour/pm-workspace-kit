@@ -25,35 +25,35 @@ flowchart LR
 
 | Skill | What it does | When |
 |---|---|---|
-| [requirement-intake](./requirement-intake.md) | AI-guided requirement elicitation | Stakeholder brings a fuzzy idea |
-| [generate-prd](./generate-prd.md) | Auto-generate PRD from a requirement card | Requirement is clear, small/medium scope |
-| [create-prd](./create-prd.md) | Interactive PRD authoring | Large-scope or greenfield feature |
-| [write-spec](./write-spec.md) | Translate approved PRD into technical spec | PRD approved, engineering needs detail |
-| [publish-to-confluence](./publish-to-confluence.md) | Push doc to Confluence + sync back | PRD / spec in `Approved` status |
+| [requirement-intake](./requirement-intake) | AI-guided requirement elicitation | Stakeholder brings a fuzzy idea |
+| [generate-prd](./generate-prd) | Auto-generate PRD from a requirement card | Requirement is clear, small/medium scope |
+| [create-prd](./create-prd) | Interactive PRD authoring | Large-scope or greenfield feature |
+| [write-spec](./write-spec) | Translate approved PRD into technical spec | PRD approved, engineering needs detail |
+| [publish-to-confluence](./publish-to-confluence) | Push doc to Confluence + sync back | PRD / spec in `Approved` status |
 
 ### Discovery & planning (4)
 
 | Skill | What it does | When |
 |---|---|---|
-| [brainstorm-new](./brainstorm-new.md) | Multi-angle ideation for new products | Zero-to-one product discovery |
-| [brainstorm-existing](./brainstorm-existing.md) | Extension ideas for existing products | Quarterly planning |
-| [research](./research.md) | Structured competitive / market research | PRD needs market context |
-| [gather-requirements](./gather-requirements.md) | Structured stakeholder interview | Requirements not coming out in writing |
+| [brainstorm-new](./brainstorm-new) | Multi-angle ideation for new products | Zero-to-one product discovery |
+| [brainstorm-existing](./brainstorm-existing) | Extension ideas for existing products | Quarterly planning |
+| [research](./research) | Structured competitive / market research | PRD needs market context |
+| [gather-requirements](./gather-requirements) | Structured stakeholder interview | Requirements not coming out in writing |
 
 ### Decomposition & prioritization (3)
 
 | Skill | What it does | When |
 |---|---|---|
-| [decompose](./decompose.md) | Break a requirement into actionable tasks | Moving from requirement to execution |
-| [prioritize](./prioritize.md) | Apply MoSCoW / RICE frameworks | Feature list is long, capacity is short |
-| [roadmap](./roadmap.md) | Sequence features into a time plan | Quarterly / annual planning |
+| [decompose](./decompose) | Break a requirement into actionable tasks | Moving from requirement to execution |
+| [prioritize](./prioritize) | Apply MoSCoW / RICE frameworks | Feature list is long, capacity is short |
+| [roadmap](./roadmap) | Sequence features into a time plan | Quarterly / annual planning |
 
 ### Operational (2)
 
 | Skill | What it does | When |
 |---|---|---|
-| [bug-report](./bug-report.md) | Guided bug intake with triage | User reports a bug informally |
-| [create-pptx](./create-pptx.md) | Build PowerPoint from markdown | Stakeholder wants slides |
+| [bug-report](./bug-report) | Guided bug intake with triage | User reports a bug informally |
+| [create-pptx](./create-pptx) | Build PowerPoint from markdown | Stakeholder wants slides |
 
 ## How to install a skill
 
@@ -87,5 +87,5 @@ The skills gracefully degrade if the tool isn't available (they'll ask you to pr
 
 ## Related
 
-- [Concepts: DoR / DoD](../concepts/definitions-of-ready-done.md) — quality gates between skills
-- [Guide: Handoff to Implementation](../guides/handoff-to-implementation.md) — what happens after PRD → Spec
+- [Concepts: DoR / DoD](../concepts/definitions-of-ready-done) — quality gates between skills
+- [Guide: Handoff to Implementation](../guides/handoff-to-implementation) — what happens after PRD → Spec

@@ -48,7 +48,7 @@ Concretely:
 - **Slack workspace membership = authn**. No login screen, password reset, account management.
 - **mra still works**. Repos are on the host; gateway is on the host; no remote-execution problem.
 - **No infra cost / SaaS billing**. Host pays for their own LLM (their existing Claude Code OAuth) and runs the gateway on hardware they own.
-- **Same packages reused**. `@pmk/cli/{llm, case, adapters/mra, session}` all work without modification.
+- **Same packages reused**. `@pmk/llm` and `@pmk/cli/{case, adapters/mra, session}` all work without modification.
 - **Mobile is solved for free**. Slack has iOS / Android apps; the bot is reachable from anywhere the user already has Slack.
 
 ### Negative

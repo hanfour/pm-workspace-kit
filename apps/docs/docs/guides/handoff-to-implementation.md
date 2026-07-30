@@ -8,11 +8,11 @@ All the planning in the world is wasted if the engineering team opens the repo o
 
 ## Five artifacts, non-negotiable
 
-1. **[Readiness Checklist](../handoff/readiness-checklist.md)** — a pre-flight list covering organization, docs, infrastructure, platform capability, migration tooling, security. Architect + PM sign off before Sprint 5 begins.
-2. **[PR Template](../handoff/pr-template.md)** — carries traceability fields, migration stage, risk tier. Drop into `.github/pull_request_template.md` of the implementation repo.
-3. **[Code Review Checklist](../handoff/code-review-checklist.md)** — 10 review dimensions with explicit hard-blockers (bypassing Ontology codegen, removing HITL on financial writes, regression in coverage). Used by reviewers as a ruler.
-4. **[Module Runbook Template](../handoff/module-runbook-template.md)** — on-call playbook skeleton. One filled-in runbook per module before Stage 0 kicks off for that module.
-5. **[Monitoring Dashboard Spec](../handoff/monitoring-dashboard-spec.md)** — six standard panels (Health, Biz KPIs, Migration, AI, Dependencies, Data Quality). Makes per-module dashboards comparable.
+1. **[Readiness Checklist](../handoff/readiness-checklist)** — a pre-flight list covering organization, docs, infrastructure, platform capability, migration tooling, security. Architect + PM sign off before Sprint 5 begins.
+2. **[PR Template](../handoff/pr-template)** — carries traceability fields, migration stage, risk tier. Drop into `.github/pull_request_template.md` of the implementation repo.
+3. **[Code Review Checklist](../handoff/code-review-checklist)** — 10 review dimensions with explicit hard-blockers (bypassing Ontology codegen, removing HITL on financial writes, regression in coverage). Used by reviewers as a ruler.
+4. **[Module Runbook Template](../handoff/module-runbook-template)** — on-call playbook skeleton. One filled-in runbook per module before Stage 0 kicks off for that module.
+5. **[Monitoring Dashboard Spec](../handoff/monitoring-dashboard-spec)** — six standard panels (Health, Biz KPIs, Migration, AI, Dependencies, Data Quality). Makes per-module dashboards comparable.
 
 ## Handoff sequence
 
@@ -69,6 +69,6 @@ If the planning docs start drifting from reality, that's a signal to schedule a 
 
 ## Related
 
-- [Handoff Overview](../handoff/overview.md)
-- [Concepts: Strangler Fig](../concepts/strangler-fig.md)
-- [Guide: Authoring North Star](./authoring-north-star.md)
+- [Handoff Overview](../handoff/overview)
+- [Concepts: Strangler Fig](../concepts/strangler-fig)
+- [Guide: Authoring North Star](./authoring-north-star)

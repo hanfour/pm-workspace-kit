@@ -207,5 +207,5 @@ Single contributor (@hanfour) part-time. ~10–15 h/week realistic. 15-week plan
 
 ## Related
 
-- [PRD-2026-0002](../prds/2026-04-24-desktop-app-prd.md)
-- [ADR-0004: Electron choice](../adr/0004-desktop-framework.md)
+- [PRD-2026-0002](../prds/2026-04-24-desktop-app-prd)
+- [ADR-0004: Electron choice](../adr/desktop-framework)

@@ -73,8 +73,53 @@ export function casesDir(baseDir?: string): string {
   return baseDir ?? path.join(os.homedir(), ".pmk", "cases");
 }
 
+/**
+ * Case names become part of a filename in both the local CLI and the Slack
+ * gateway. Keep them as one flat path segment so external Slack input cannot
+ * escape the configured case directory.
+ */
+export function assertSafeCaseName(name: string): string {
+  if (
+    !name ||
+    name === "." ||
+    name === ".." ||
+    /[/\\\x00-\x1f]/.test(name) ||
+    name.includes("..")
+  ) {
+    throw new Error(`unsafe case name: ${JSON.stringify(name)}`);
+  }
+  return name;
+}
+
 export function casePath(name: string, baseDir?: string): string {
-  return path.join(casesDir(baseDir), `${name}.json`);
+  return path.join(casesDir(baseDir), `${assertSafeCaseName(name)}.json`);
+}
+
+// Case turns use a read-modify-write file. Serialize a complete LLM turn per
+// file so concurrent Slack users cannot overwrite each other's reply.
+const caseLocks = new Map<string, Promise<void>>();
+
+export async function withCaseLock<T>(
+  name: string,
+  baseDir: string | undefined,
+  work: () => Promise<T>,
+): Promise<T> {
+  const key = casePath(name, baseDir);
+  const previous = caseLocks.get(key) ?? Promise.resolve();
+  let release!: () => void;
+  const current = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const tail = previous.catch(() => {}).then(() => current);
+  caseLocks.set(key, tail);
+
+  await previous.catch(() => {});
+  try {
+    return await work();
+  } finally {
+    release();
+    if (caseLocks.get(key) === tail) caseLocks.delete(key);
+  }
 }
 
 export function listCases(
@@ -136,6 +181,7 @@ export function newCase(opts: {
   ingest?: string[];
   symptom?: string;
 }): CaseFile {
+  assertSafeCaseName(opts.name);
   const now = new Date().toISOString();
   return {
     version: CASE_VERSION,

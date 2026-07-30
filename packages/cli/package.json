@@ -26,10 +26,8 @@
     "test": "npm run typecheck:test && node --import tsx --test test/*.test.ts"
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "0.3.165",
-    "@anthropic-ai/sdk": "^0.100.0",
     "@clack/prompts": "^0.7.0",
-    "@pmk/core": "*",
+    "@pmk/llm": "*",
     "@pmk/rag": "*",
     "@pmk/shared": "*",
     "@slack/socket-mode": "^2.0.6",

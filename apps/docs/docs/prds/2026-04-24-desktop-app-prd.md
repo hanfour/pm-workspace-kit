@@ -158,7 +158,7 @@ apps/
 
 ## 10. Timeline
 
-Detailed milestone breakdown in [Sprint plan](../plans/2026-04-24-desktop-app-sprint-plan.md). High-level:
+Detailed milestone breakdown in [Sprint plan](../plans/2026-04-24-desktop-app-sprint-plan). High-level:
 
 - **M0 — Monorepo refactor** (done 2026-04-24)
 - **M1 — CLI scaffold + 6 verbs** (2 weeks)
@@ -181,5 +181,5 @@ Detailed milestone breakdown in [Sprint plan](../plans/2026-04-24-desktop-app-sp
 
 ## Appendix — Related Decisions
 
-- [ADR-0004](../adr/0004-desktop-framework.md) — Electron vs Tauri decision
-- Sprint plan — [2026-04-24-desktop-app-sprint-plan.md](../plans/2026-04-24-desktop-app-sprint-plan.md)
+- [ADR-0004](../adr/desktop-framework) — Electron vs Tauri decision
+- Sprint plan — [2026-04-24-desktop-app-sprint-plan.md](../plans/2026-04-24-desktop-app-sprint-plan)

@@ -71,5 +71,5 @@ related:
 
 ## Related
 
-- [Concepts: Traceability](../concepts/traceability.md) — full schema explanation
-- [Concepts: DoR / DoD](../concepts/definitions-of-ready-done.md) — when a PRD is ready to write vs ship
+- [Concepts: Traceability](../concepts/traceability) — full schema explanation
+- [Concepts: DoR / DoD](../concepts/definitions-of-ready-done) — when a PRD is ready to write vs ship

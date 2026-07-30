@@ -71,5 +71,5 @@ related:
 
 ## 相關
 
-- [概念：追溯性](../concepts/traceability.md) — 完整 schema 說明
-- [概念：DoR / DoD](../concepts/definitions-of-ready-done.md) — PRD 何時可寫 vs 可出貨
+- [概念：追溯性](../concepts/traceability) — 完整 schema 說明
+- [概念：DoR / DoD](../concepts/definitions-of-ready-done) — PRD 何時可寫 vs 可出貨

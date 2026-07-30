@@ -68,10 +68,10 @@ node scripts/traceability.js check --cwd=examples/acme-ads
 ## 此範例刻意省略的
 
 為了讀性精簡：
-- 完整 10 章北極星文件（模板見 [Guide: 撰寫北極星](../guides/authoring-north-star.md)）
+- 完整 10 章北極星文件（模板見 [Guide: 撰寫北極星](../guides/authoring-north-star)）
 - Monitoring dashboard JSON（平台相依）
 - Confluence sync 實際運作（需 live credential）
-- 多模組配對遷移順序（概念見 [Strangler Fig](../concepts/strangler-fig.md)）
+- 多模組配對遷移順序（概念見 [Strangler Fig](../concepts/strangler-fig)）
 
 ## 複製到你的專案時
 
@@ -81,6 +81,6 @@ node scripts/traceability.js check --cwd=examples/acme-ads
 
 ## 相關
 
-- [快速上手](../getting-started.md)
-- [Templates: 模組 Playbook](../templates/module-playbook-template.md)
-- [概念：追溯性](../concepts/traceability.md)
+- [快速上手](../getting-started)
+- [Templates: 模組 Playbook](../templates/module-playbook-template)
+- [概念：追溯性](../concepts/traceability)

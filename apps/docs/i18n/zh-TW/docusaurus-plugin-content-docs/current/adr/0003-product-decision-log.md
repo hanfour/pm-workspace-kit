@@ -80,5 +80,5 @@ sidebar_position: 4
 ## References
 
 - Michael Nygard, "Documenting Architecture Decisions"
-- [ADR-0001](./0001-strangler-fig-protocol.md) — 方法論 ADR pattern
-- [概念：ADR 模式](../concepts/adr-patterns.md)
+- [ADR-0001](./strangler-fig-protocol) — 方法論 ADR pattern
+- [概念：ADR 模式](../concepts/adr-patterns)

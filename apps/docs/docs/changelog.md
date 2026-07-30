@@ -345,7 +345,7 @@ As the PKB grows, approved atoms need to stay high-signal and low-signal atoms n
 
 ### Why
 
-Through v0.15 the gateway worked, but standing one up meant reading the source: `init` recited OAuth scopes line by line, there was no way to tell whether tokens / keys / mra workspace were actually wired before the daemon hit Slack, and the only way to test the retrieval → LLM → escalation path was to post real messages into a real channel. [PRD-2026-0006](./prds/2026-05-gateway-onboarding-prd.md) reframes the goal to one sentence: *a clean machine, without reading source, gets a bot answering in ~30 minutes.* v0.16 ships the five onboarding surfaces (FR1–FR5) plus the M6 baseline trial that the PRD's quality gate requires.
+Through v0.15 the gateway worked, but standing one up meant reading the source: `init` recited OAuth scopes line by line, there was no way to tell whether tokens / keys / mra workspace were actually wired before the daemon hit Slack, and the only way to test the retrieval → LLM → escalation path was to post real messages into a real channel. [PRD-2026-0006](./prds/2026-05-gateway-onboarding-prd) reframes the goal to one sentence: *a clean machine, without reading source, gets a bot answering in ~30 minutes.* v0.16 ships the five onboarding surfaces (FR1–FR5) plus the M6 baseline trial that the PRD's quality gate requires.
 
 ### Added
 
@@ -667,7 +667,7 @@ Zero migration. Existing `~/.pmk/` state and gateway config carry forward unchan
 
 v0.11.1 hardened the gateway against `msg_too_long` by lowering caps and adding an auto-retry path, but cause #2 from the 2026-05-07 incident — `claude-agent-sdk` spawning the local `claude` CLI and inheriting the host's `~/.claude/` config (skills/hooks/MCP descriptions) as un-budgeted system context — was absorbed by tighter caps, not eliminated. v0.12.0 flips the default to the direct Anthropic SDK so SDK overhead is no longer a budget unknown, and restores cap headroom.
 
-Spec: [`apps/docs/docs/plans/2026-05-08-gateway-anthropic-api-default.md`](./plans/2026-05-08-gateway-anthropic-api-default.md). Migration: [v0.12 migration notes](./gateway/v0.12-migration.md).
+Spec: [`apps/docs/docs/plans/2026-05-08-gateway-anthropic-api-default.md`](./plans/2026-05-08-gateway-anthropic-api-default). Migration: [v0.12 migration notes](./gateway/v0.12-migration).
 
 ### Changed
 
@@ -698,7 +698,7 @@ Spec: [`apps/docs/docs/plans/2026-05-08-gateway-anthropic-api-default.md`](./pla
 
 ### Why
 
-A live Slack thread on 2026-05-07 returned `pmk 內部錯誤：An API error occurred: msg_too_long` after several `mra-ask` rounds. Root-cause analysis surfaced four issues and v0.11.1 layers defenses against all of them so the failure mode does not reach production users again. See [`apps/docs/docs/plans/2026-05-07-gateway-msg-too-long-hardening.md`](./plans/2026-05-07-gateway-msg-too-long-hardening.md) for the full design spec, and `2026-05-07-gateway-msg-too-long-hardening-implementation.md` for the per-task TDD plan.
+A live Slack thread on 2026-05-07 returned `pmk 內部錯誤：An API error occurred: msg_too_long` after several `mra-ask` rounds. Root-cause analysis surfaced four issues and v0.11.1 layers defenses against all of them so the failure mode does not reach production users again. See [`apps/docs/docs/plans/2026-05-07-gateway-msg-too-long-hardening.md`](./plans/2026-05-07-gateway-msg-too-long-hardening) for the full design spec, and `2026-05-07-gateway-msg-too-long-hardening-implementation.md` for the per-task TDD plan.
 
 ### Fixed
 
@@ -741,7 +741,7 @@ Two issue-driven items plus one v0.10.x debt cleanup, sized to ship as one minor
 - **#23** — `pickAudience` had no channel tier, forcing per-user overrides for "this channel defaults to exec" cases.
 - **events.log unbounded growth TODO** from v0.10 — bumped in priority because #44 adds presence events on every start/stop.
 
-See the [v0.11 migration notes](./gateway/v0.11-migration.md) for a focused operator-facing summary of the layout + behaviour changes.
+See the [v0.11 migration notes](./gateway/v0.11-migration) for a focused operator-facing summary of the layout + behaviour changes.
 
 ### Added
 
@@ -875,7 +875,7 @@ Until step 3 is done, the leading-space path is the only one that works. After s
 
 ### Added
 
-- **`/pmk admin <subcommand>`** runs gateway-config mutations from inside Slack — no host terminal needed for day-to-day ops. Subcommands cover `status`, `audience`, `escalation`, `atoms` (list/show/approve/reject), `admins`, and `audit`. See the [Admin commands section](./gateway/lifecycle.md#11-admin-commands-v090) of the lifecycle doc.
+- **`/pmk admin <subcommand>`** runs gateway-config mutations from inside Slack — no host terminal needed for day-to-day ops. Subcommands cover `status`, `audience`, `escalation`, `atoms` (list/show/approve/reject), `admins`, and `audit`. See the [Admin commands section](./gateway/lifecycle) of the lifecycle doc.
 - **`pmk gateway admin <add|remove|list|audit>`** — host CLI counterpart for bootstrapping the very first admin and rotating the set. Bootstrap is intentionally terminal-only — there is no Slack path to grant yourself admin.
 - **Append-only audit log** at `~/.pmk/gateway/admin.log`. Every admin mutation, whether from Slack or CLI, writes one JSONL line capturing `actor`, `origin`, `action`, `args`, `ok`, and (on failure) a `reason`. Surfaced via `/pmk admin audit [N]` and `pmk gateway admin audit [N]`.
 - **`cfg.admins: string[]`** in `~/.pmk/gateway.json`. Back-fills to `[]` for legacy configs so existing deployments keep working with no migration step.

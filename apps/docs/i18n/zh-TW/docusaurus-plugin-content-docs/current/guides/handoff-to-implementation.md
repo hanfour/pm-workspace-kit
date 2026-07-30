@@ -8,11 +8,11 @@ sidebar_position: 4
 
 ## 五份產出，不可省
 
-1. **[Readiness Checklist](../handoff/readiness-checklist.md)** — 組織、文件、infra、平台能力、遷移 tooling、安全的 pre-flight 清單。Architect + PM 在 Sprint 5 前雙簽
-2. **[PR Template](../handoff/pr-template.md)** — 帶 traceability 欄位、migration stage、risk tier。直接塞 `.github/pull_request_template.md`
-3. **[Code Review Checklist](../handoff/code-review-checklist.md)** — 10 個 review 維度、含 hard-blocker（繞過 Ontology codegen、去掉金流 HITL、降低覆蓋率）。reviewer 當尺用
-4. **[Module Runbook Template](../handoff/module-runbook-template.md)** — on-call playbook 骨架。每個模組 Stage 0 前一份填好的
-5. **[Monitoring Dashboard Spec](../handoff/monitoring-dashboard-spec.md)** — 6 面板標準布局。讓模組 dashboard 可比較
+1. **[Readiness Checklist](../handoff/readiness-checklist)** — 組織、文件、infra、平台能力、遷移 tooling、安全的 pre-flight 清單。Architect + PM 在 Sprint 5 前雙簽
+2. **[PR Template](../handoff/pr-template)** — 帶 traceability 欄位、migration stage、risk tier。直接塞 `.github/pull_request_template.md`
+3. **[Code Review Checklist](../handoff/code-review-checklist)** — 10 個 review 維度、含 hard-blocker（繞過 Ontology codegen、去掉金流 HITL、降低覆蓋率）。reviewer 當尺用
+4. **[Module Runbook Template](../handoff/module-runbook-template)** — on-call playbook 骨架。每個模組 Stage 0 前一份填好的
+5. **[Monitoring Dashboard Spec](../handoff/monitoring-dashboard-spec)** — 6 面板標準布局。讓模組 dashboard 可比較
 
 ## 交接順序
 
@@ -68,6 +68,6 @@ Dashboard 在任何模組 Stage 1 前存在。Block A（Health）+ Block C（Mig
 
 ## 相關
 
-- [Handoff Overview](../handoff/overview.md)
-- [概念：Strangler Fig](../concepts/strangler-fig.md)
-- [Guide: 撰寫北極星](./authoring-north-star.md)
+- [Handoff Overview](../handoff/overview)
+- [概念：Strangler Fig](../concepts/strangler-fig)
+- [Guide: 撰寫北極星](./authoring-north-star)

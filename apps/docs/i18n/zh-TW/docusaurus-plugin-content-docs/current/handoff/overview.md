@@ -8,11 +8,11 @@ sidebar_position: 1
 
 | 檔案 | 放到 | 用途 |
 |---|---|---|
-| [`pr-template.md`](./pr-template.md) | `.github/pull_request_template.md` | 強制 traceability、migration-stage、risk tier 欄位 |
-| [`code-review-checklist.md`](./code-review-checklist.md) | `docs/CODE_REVIEW.md` 或 wiki | 10 個 review 維度、含明確 hard-blocker |
-| [`module-runbook-template.md`](./module-runbook-template.md) | `apps/<service>/<module>/RUNBOOK.md` | 逐模組 on-call playbook 骨架 |
-| [`monitoring-dashboard-spec.md`](./monitoring-dashboard-spec.md) | Datadog / Grafana / Vercel Analytics | 6 面板標準布局 |
-| [`readiness-checklist.md`](./readiness-checklist.md) | Sprint 5 kickoff gate | Architect + PM 聯合簽核 |
+| [`pr-template.md`](./pr-template) | `.github/pull_request_template.md` | 強制 traceability、migration-stage、risk tier 欄位 |
+| [`code-review-checklist.md`](./code-review-checklist) | `docs/CODE_REVIEW.md` 或 wiki | 10 個 review 維度、含明確 hard-blocker |
+| [`module-runbook-template.md`](./module-runbook-template) | `apps/<service>/<module>/RUNBOOK.md` | 逐模組 on-call playbook 骨架 |
+| [`monitoring-dashboard-spec.md`](./monitoring-dashboard-spec) | Datadog / Grafana / Vercel Analytics | 6 面板標準布局 |
+| [`readiness-checklist.md`](./readiness-checklist) | Sprint 5 kickoff gate | Architect + PM 聯合簽核 |
 
 ## 原則
 
@@ -45,4 +45,4 @@ flowchart TB
 
 ## 相關
 
-- [Guide: 交接到實作](../guides/handoff-to-implementation.md) — 整體順序與失敗模式
+- [Guide: 交接到實作](../guides/handoff-to-implementation) — 整體順序與失敗模式

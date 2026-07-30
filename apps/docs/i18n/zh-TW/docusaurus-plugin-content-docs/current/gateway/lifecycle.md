@@ -4,7 +4,7 @@ sidebar_position: 1
 
 # Gateway 生命週期
 
-一條 Slack DM 從進到 `pmk gateway` 到落地的整個流程。設計動機請看 [ADR-0006](../adr/0006-pmk-gateway-slack.md)，v0.7.0 的表面合約見 [PRD-2026-0005](../prds/2026-04-27-pmk-gateway-prd.md)。下方流程圖中的編號對應到同名的章節。
+一條 Slack DM 從進到 `pmk gateway` 到落地的整個流程。設計動機請看 [ADR-0006](../adr/pmk-gateway-slack)，v0.7.0 的表面合約見 [PRD-2026-0005](../prds/2026-04-27-pmk-gateway-prd)。下方流程圖中的編號對應到同名的章節。
 
 ## 流程圖
 
@@ -252,7 +252,7 @@ Phase 9 結束後寄給原提問者的合成回覆**不**經過 approval gate（
 
 ## 延伸閱讀
 
-- [ADR-0006: pmk gateway — Slack/LINE bot, not SaaS](../adr/0006-pmk-gateway-slack.md)
-- [PRD-2026-0005: pmk gateway v0.7.0 surface](../prds/2026-04-27-pmk-gateway-prd.md)
+- [ADR-0006: pmk gateway — Slack/LINE bot, not SaaS](../adr/pmk-gateway-slack)
+- [PRD-2026-0005: pmk gateway v0.7.0 surface](../prds/2026-04-27-pmk-gateway-prd)
 - [v0.7.0–v0.9.0 release notes on GitHub](https://github.com/hanfour/pm-workspace-kit/releases)
-- [Changelog](../changelog.md) — release-by-release 摘要
+- [Changelog](../changelog) — release-by-release 摘要

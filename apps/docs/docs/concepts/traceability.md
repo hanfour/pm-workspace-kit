@@ -101,10 +101,10 @@ Nested empty arrays (`related.prd: []`) are **allowed** — the field exists, th
 
 - **Pre-commit**: add `npm run traceability:check -- path/to/changed/file.md` to a husky hook for the fastest feedback loop.
 - **CI**: the included `.github/workflows/traceability-check.yml` runs on every PR, validates changed files, regenerates the matrix, and fails if the committed copy is stale.
-- **Confluence**: see [Confluence Sync](../guides/confluence-sync.md) for the reverse loop — wiki comments + approval labels flow back into the same front-matter.
+- **Confluence**: see [Confluence Sync](../guides/confluence-sync) for the reverse loop — wiki comments + approval labels flow back into the same front-matter.
 
 ## Related
 
-- [Concepts: DoR / DoD](./definitions-of-ready-done.md)
-- [Concepts: ADR Patterns](./adr-patterns.md)
-- [Guide: Traceability Matrix](../guides/traceability-matrix.md)
+- [Concepts: DoR / DoD](./definitions-of-ready-done)
+- [Concepts: ADR Patterns](./adr-patterns)
+- [Guide: Traceability Matrix](../guides/traceability-matrix)

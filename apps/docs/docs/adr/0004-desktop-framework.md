@@ -11,7 +11,7 @@ sidebar_position: 5
 
 ## Context
 
-The pmk desktop app (see [PRD-2026-0002](../prds/2026-04-24-desktop-app-prd.md)) needs a cross-platform shell. Two constraints shape the choice:
+The pmk desktop app (see [PRD-2026-0002](../prds/2026-04-24-desktop-app-prd)) needs a cross-platform shell. Two constraints shape the choice:
 
 1. The renderer is React/TypeScript (same stack as the Docusaurus site); team has zero Rust experience.
 2. v1.0 ships all 15 functional requirements including Git worktree integration, child process management, local file system access — all of which need a real Node (or Rust) runtime, not just a browser.
@@ -96,5 +96,5 @@ Revisit this ADR when any of:
 
 - [Electron 33 release notes](https://www.electronjs.org/blog/electron-33-0)
 - [Tauri 2.0 docs](https://v2.tauri.app/)
-- [PRD-2026-0002](../prds/2026-04-24-desktop-app-prd.md) — source PRD
+- [PRD-2026-0002](../prds/2026-04-24-desktop-app-prd) — source PRD
 - Spectra (closed-source, Taiwan) — prior-art GUI for OpenSpec, framework unspecified

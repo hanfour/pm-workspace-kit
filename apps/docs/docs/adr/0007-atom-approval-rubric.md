@@ -20,7 +20,7 @@ related:
 
 ## Context
 
-The gateway proposes knowledge atoms from conversations; a human approver reacts (👍 approve / edit-then-approve / 👎 reject), with a TTL auto-promote fallback for un-acted proposals. As the PKB grows, accumulating low-signal atoms is an effectively irreversible failure mode — the later you clean, the more there is (priorities-plan brief R4). v0.17.0 (P2a) added per-atom telemetry (`reuseCount`, `lastRetrievedAt`, `questionedCount`, `lastQuestionedAt`), but telemetry only describes an atom *after* it has been retrieved — it cannot inform the *initial* approval. So the primary quality gate must sit at approval time, applied consistently. This ADR documents that rubric. The recurring telemetry-driven cleanup of existing atoms lives in the separate [atom audit playbook](../guides/atom-audit-playbook.md).
+The gateway proposes knowledge atoms from conversations; a human approver reacts (👍 approve / edit-then-approve / 👎 reject), with a TTL auto-promote fallback for un-acted proposals. As the PKB grows, accumulating low-signal atoms is an effectively irreversible failure mode — the later you clean, the more there is (priorities-plan brief R4). v0.17.0 (P2a) added per-atom telemetry (`reuseCount`, `lastRetrievedAt`, `questionedCount`, `lastQuestionedAt`), but telemetry only describes an atom *after* it has been retrieved — it cannot inform the *initial* approval. So the primary quality gate must sit at approval time, applied consistently. This ADR documents that rubric. The recurring telemetry-driven cleanup of existing atoms lives in the separate [atom audit playbook](../guides/atom-audit-playbook).
 
 ## Decision
 
@@ -72,5 +72,5 @@ Outcome mapping:
 ## References
 
 - priorities-plan P2 — `apps/docs/docs/plans/2026-05-product-priorities-plan.md`
-- [Atom audit playbook](../guides/atom-audit-playbook.md) — the cleanup side of P2
+- [Atom audit playbook](../guides/atom-audit-playbook) — the cleanup side of P2
 - Atom telemetry (P2a, v0.17.0): `packages/cli/src/gateway/atom-telemetry.ts`, `pmk gateway atoms telemetry`

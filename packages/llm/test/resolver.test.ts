@@ -1,7 +1,7 @@
 import { describe, it, beforeEach, afterEach } from "node:test";
 import * as assert from "node:assert/strict";
 import { DEFAULT_CONFIG, type PmkConfig } from "@pmk/shared";
-import { NoProviderAvailableError, resolveProvider } from "../src/llm";
+import { NoProviderAvailableError, resolveProvider } from "../src";
 
 const ORIG_PATH = process.env.PATH;
 const ORIG_API_KEY = process.env.ANTHROPIC_API_KEY;

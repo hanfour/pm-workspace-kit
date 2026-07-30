@@ -57,7 +57,7 @@ related:
 ```
 
 :::note
-The front-matter keys (`doc_id`, `title`, `owner`, `status`, `date`, `related`) are the **required** schema. `related.requirement` is required for PRD-\*, `related.prd` is required for SPEC-\*, etc. See [Concepts: Traceability](./concepts/traceability.md) for the full validation matrix.
+The front-matter keys (`doc_id`, `title`, `owner`, `status`, `date`, `related`) are the **required** schema. `related.requirement` is required for PRD-\*, `related.prd` is required for SPEC-\*, etc. See [Concepts: Traceability](./concepts/traceability) for the full validation matrix.
 :::
 
 ## 4. Run the validator
@@ -109,7 +109,7 @@ Edit the copy: title, Context, Decision, Consequences (positive / negative / neu
 
 ## 7. Wire Confluence sync (optional)
 
-If your team publishes PRDs to Confluence, see the [Confluence Sync guide](./guides/confluence-sync.md) — reviewer comments and approval-status labels flow back into your markdown automatically every 30 minutes.
+If your team publishes PRDs to Confluence, see the [Confluence Sync guide](./guides/confluence-sync) — reviewer comments and approval-status labels flow back into your markdown automatically every 30 minutes.
 
 ## 8. Try the CLI (optional)
 
@@ -138,7 +138,7 @@ npx pmk gateway init    # one-time: paste Slack app + bot tokens, set mra worksp
 npx pmk gateway start   # foreground bridge — leave this running
 ```
 
-The gateway is a host-run Slack bridge (Socket Mode), not a SaaS bot — your tokens and your code stay on your machine. See [ADR-0006: pmk gateway](./adr/0006-pmk-gateway-slack.md) for the design rationale.
+The gateway is a host-run Slack bridge (Socket Mode), not a SaaS bot — your tokens and your code stay on your machine. See [ADR-0006: pmk gateway](./adr/pmk-gateway-slack) for the design rationale.
 
 ### v0.7 gateway features
 
@@ -160,13 +160,13 @@ pmk gateway atoms approve <id-prefix>       # promote early (skip the TTL wait)
 pmk gateway atoms reject <id-prefix>        # delete
 ```
 
-The full gateway flow — *PM asks → bot tries PKB → asks mra → escalates to a human → absorbs the answer → retrieves it for next person* — is documented in [PRD-2026-0005](./prds/2026-04-27-pmk-gateway-prd.md) and the v0.7 [release notes](https://github.com/hanfour/pm-workspace-kit/releases).
+The full gateway flow — *PM asks → bot tries PKB → asks mra → escalates to a human → absorbs the answer → retrieves it for next person* — is documented in [PRD-2026-0005](./prds/2026-04-27-pmk-gateway-prd) and the v0.7 [release notes](https://github.com/hanfour/pm-workspace-kit/releases).
 
 ## What next
 
-- [Concepts: DoR / DoD](./concepts/definitions-of-ready-done.md) — when is a PRD ready to be written vs ready to ship
-- [Guides: Authoring a North Star](./guides/authoring-north-star.md) — use the 10-chapter template for a full platform migration
-- [Handoff overview](./handoff/overview.md) — the five artifacts engineering expects before Sprint 5
+- [Concepts: DoR / DoD](./concepts/definitions-of-ready-done) — when is a PRD ready to be written vs ready to ship
+- [Guides: Authoring a North Star](./guides/authoring-north-star) — use the 10-chapter template for a full platform migration
+- [Handoff overview](./handoff/overview) — the five artifacts engineering expects before Sprint 5
 
 ## Troubleshooting
 

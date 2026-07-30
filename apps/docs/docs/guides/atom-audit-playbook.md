@@ -4,7 +4,7 @@ sidebar_position: 5
 
 # Atom audit playbook (quarterly)
 
-A recurring, telemetry-driven review of the **existing** approved atoms, to keep the PKB high-signal as it grows. It is the safety net to [ADR-0007](../adr/0007-atom-approval-rubric.md)'s approval gate: the rubric prevents low-signal atoms at the door; this audit catches what slipped through (notably via TTL auto-promote) and retires what has gone stale.
+A recurring, telemetry-driven review of the **existing** approved atoms, to keep the PKB high-signal as it grows. It is the safety net to [ADR-0007](../adr/atom-approval-rubric)'s approval gate: the rubric prevents low-signal atoms at the door; this audit catches what slipped through (notably via TTL auto-promote) and retires what has gone stale.
 
 ## When + who
 
@@ -78,6 +78,6 @@ Keep a short entry per run so successive audits show the trend:
 
 ## Related
 
-- [ADR-0007: Atom approval rubric](../adr/0007-atom-approval-rubric.md) — the prevention side.
+- [ADR-0007: Atom approval rubric](../adr/atom-approval-rubric) — the prevention side.
 - Atom telemetry (P2a): `pmk gateway atoms telemetry`.
 - priorities-plan P2 — `apps/docs/docs/plans/2026-05-product-priorities-plan.md`.

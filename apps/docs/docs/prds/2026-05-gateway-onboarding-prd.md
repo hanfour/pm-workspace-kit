@@ -30,7 +30,7 @@ PRD-2026-0005（gateway slack PRD）證明了 Slack 是非 CLI stakeholder 的
 
 這份 PRD 把目標縮成一句：**乾淨機器上、不讀 source code、30 分鐘內
 host 能讓 gateway 回完一個訊息**。對應
-[2026-05 product priorities plan](../plans/2026-05-product-priorities-plan.md)
+[2026-05 product priorities plan](../plans/2026-05-product-priorities-plan)
 的 P1，是放在 brief `apps/docs/docs/_briefs/2026-05-product-narrative-brief.md`
 （repo-only，未發佈在 Docusaurus）R2 之前的最大槓桿。
 

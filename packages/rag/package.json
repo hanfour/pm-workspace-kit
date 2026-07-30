@@ -17,8 +17,6 @@
     "test": "npm run typecheck:test && node --import tsx --test test/*.test.ts"
   },
   "dependencies": {
-    "@pmk/core": "*",
-    "@pmk/shared": "*",
     "gray-matter": "^4.0.3"
   },
   "devDependencies": {
