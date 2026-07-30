@@ -5,7 +5,7 @@ import * as os from "node:os";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { FakeWebClient } from "./harness/slack-fakes";
-import { ReviewCoordinator, effectiveMraReviewStrategy, isReviewRequest, isRetryRequest, isRerunRequest, isApproveRequest, isApproveConfirmationRequest, canConfirmApproveFromReview, reviewResultText, approveResultText, describeMraFailure, type ReviewGateway } from "../src/gateway/slack/review";
+import { ReviewCoordinator, effectiveMraReviewStrategy, isReviewRequest, isRetryRequest, isRerunRequest, isApproveRequest, isApproveConfirmationRequest, canConfirmApproveFromReview, reviewResultText, approveResultText, describeMraFailure, protectionNotReadyMessage, type ReviewGateway } from "../src/gateway/slack/review";
 import { gatewayConfigPath, resolveReviewConfig, saveGatewayConfig } from "../src/gateway/config";
 
 const ORIG_HOME = process.env.HOME; // gatewayDir() is HOME-based; isolate via HOME (not PMK_HOME)
@@ -846,6 +846,40 @@ describe("ReviewCoordinator.retryInThread", () => {
   });
 });
 
+// roccochen retried `approve` 7 times over 2 hours against superdsp-ui and got
+// the same unactionable "repository protection is not approval-ready" each
+// time. The message must name what is missing and who can change it.
+describe("protectionNotReadyMessage", () => {
+  it("names the two missing ruleset controls when the repo IS gated", () => {
+    const m = protectionNotReadyMessage("onead/superdsp-ui", "main", true);
+    assert.ok(m.includes("onead/superdsp-ui"), "names the repo");
+    assert.ok(/dismiss_stale_reviews_on_push/.test(m), "names the first control");
+    assert.ok(/require_last_push_approval/.test(m), "names the second control");
+    assert.ok(/admin/i.test(m), "says who can fix it");
+  });
+
+  it("says the protection could not be READ when the probe ran and came back unknown", () => {
+    const m = protectionNotReadyMessage("onead/x", "main", undefined, true);
+    assert.ok(/讀取|無法確認/.test(m), "distinguishes unreadable from underprotected");
+    assert.ok(!/dismiss_stale_reviews_on_push/.test(m), "must not claim a specific missing control it never observed");
+  });
+
+  // Flag off → the probe never runs, but approvalProtectionReady already told
+  // us the two controls are not both on. Explain that rather than guessing.
+  it("names the missing controls when the probe was never consulted", () => {
+    const m = protectionNotReadyMessage("onead/x", "main", undefined, false);
+    assert.ok(/缺少兩項必要保護/.test(m));
+    assert.ok(!/無法確認/.test(m), "an unprobed refusal must not claim the API was unreadable");
+  });
+
+  it("never tells the reader to edit host-side settings", () => {
+    for (const [s, p] of [[true, true], [undefined, true], [undefined, false]] as const) {
+      const m = protectionNotReadyMessage("o/r", "main", s, p);
+      assert.ok(!/~\/\.claude|allowedTools|\/permissions/.test(m));
+    }
+  });
+});
+
 describe("ReviewCoordinator.confirmApproveInThread", () => {
   /** Live gateway.json that revokes approval — currentConfig() prefers the file. */
   function revokeApprovalOnDisk() {
@@ -1108,7 +1142,7 @@ describe("ReviewCoordinator.confirmApproveInThread", () => {
 
     assert.equal(approved, 0, "an exemption for another repo must never leak across repos");
     const allTexts = [...web.posted, ...web.updated].map((m) => m.text ?? "");
-    assert.ok(allTexts.some((t) => /protection is not approval-ready/.test(t)));
+    assert.ok(allTexts.some((t) => /缺少兩項必要保護/.test(t)), "underprotected repo must name the two missing controls");
   });
 
   it("reports an exempt repo's waiver as obsolete once its branch is genuinely protected", async () => {
@@ -1268,7 +1302,7 @@ describe("ReviewCoordinator.confirmApproveInThread", () => {
 
     assert.equal(approved, 0, "an unreadable gate must never auto-allow");
     const allTexts = [...web.posted, ...web.updated].map((m) => m.text ?? "");
-    assert.ok(allTexts.some((t) => /protection is not approval-ready/.test(t)));
+    assert.ok(allTexts.some((t) => /無法確認.*保護狀態/.test(t)), "unreadable probe must not claim a specific missing control");
   });
 
   it("still refuses a gated repo with the flag on (the ungated path must not fire)", async () => {
