@@ -18,28 +18,9 @@ export default defineConfig({
   },
   renderer: {
     root: resolve(__dirname, "src/renderer"),
-    resolve: {
-      // Import @pmk/shared straight from TS source — avoids the
-      // CJS→ESM interop issue where Rollup can't statically resolve
-      // named exports from TypeScript's `Object.defineProperty`-style
-      // compiled output. Only affects renderer bundling; CLI/main
-      // still consume the compiled dist via require().
-      //
-      // CONSTRAINTS:
-      // - @pmk/shared MUST stay browser-safe (no `node:fs`, no
-      //   `process.env`, no Electron-only globals). Vite bundles the
-      //   raw .ts file; any Node-only import will only break at
-      //   runtime in the renderer.
-      // - The relative path is brittle: if the monorepo is restructured,
-      //   this alias must be updated or Vite silently falls back to the
-      //   compiled CJS dist (which then re-trips the named-export bug).
-      // - Long-term fix: ship @pmk/shared as dual CJS/ESM (tsup or
-      //   project-references) so every consumer goes through the
-      //   package boundary. Tracked as a v1.1 task.
-      alias: {
-        "@pmk/shared": resolve(__dirname, "../../packages/shared/src/index.ts"),
-      },
-    },
+    // @pmk/shared exposes a browser condition from its public package
+    // boundary. Keep it browser-safe: Vite resolves that condition to the
+    // TypeScript source while Node consumers use the compiled CJS entry.
     build: {
       rollupOptions: {
         input: resolve(__dirname, "src/renderer/index.html"),

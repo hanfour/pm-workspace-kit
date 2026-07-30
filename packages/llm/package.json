@@ -1,21 +1,23 @@
 {
-  "name": "@pmk/shared",
+  "name": "@pmk/llm",
   "version": "0.34.1",
-  "description": "Shared types and utilities for pm-workspace-kit packages",
+  "description": "LLM provider runtime shared by the pmk CLI and desktop app",
   "license": "MIT",
   "main": "dist/index.js",
-  "types": "dist/index.d.ts",
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
-      "browser": "./src/index.ts",
       "default": "./dist/index.js"
     }
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "typecheck:test": "tsc -p tsconfig.test.json",
-    "test": "npm run typecheck:test && node --import tsx --test test/*.test.ts"
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "0.3.165",
+    "@anthropic-ai/sdk": "^0.100.0",
+    "@pmk/shared": "*"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",
