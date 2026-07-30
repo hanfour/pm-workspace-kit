@@ -16,11 +16,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Workspaces with real test suites. packages/cli/rag/shared and
+        # Workspaces with real test suites. packages/cli/llm/rag/shared and
         # apps/desktop run `typecheck:test` (tsc) + node --test on TS sources;
         # packages/core runs plain node --test on JS (no TS toolchain by design).
         workspace:
           - packages/cli
+          - packages/llm
           - packages/rag
           - packages/shared
           - apps/desktop
