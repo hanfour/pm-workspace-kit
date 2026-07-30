@@ -4,7 +4,7 @@ sidebar_position: 1
 
 # ADR Template
 
-Copy this file, rename to `docs/adr/NNNN-your-decision.md`, fill in each section. One decision per file. See [Concepts: ADR Patterns](../concepts/adr-patterns.md) for usage guidance.
+Copy this file, rename to `docs/adr/NNNN-your-decision.md`, fill in each section. One decision per file. See [Concepts: ADR Patterns](../concepts/adr-patterns) for usage guidance.
 
 ---
 

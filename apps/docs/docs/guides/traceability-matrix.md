@@ -126,5 +126,5 @@ The file is deterministic for a given tree — rebuilds produce byte-identical o
 
 ## Related
 
-- [Concepts: Traceability](../concepts/traceability.md)
-- [Guide: Confluence Sync](./confluence-sync.md) — the reverse flow from wiki → Git
+- [Concepts: Traceability](../concepts/traceability)
+- [Guide: Confluence Sync](./confluence-sync) — the reverse flow from wiki → Git

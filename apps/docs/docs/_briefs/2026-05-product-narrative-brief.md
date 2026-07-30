@@ -98,4 +98,4 @@ code-aware teams**。其餘是 supporting。Desktop 之後它本身夠強再講�
 現在拉它上來只會稀釋這條已經 working 的線。
 
 對應的 priorities 計畫見
-[plans/2026-05-product-priorities-plan.md](../plans/2026-05-product-priorities-plan.md)。
+[plans/2026-05-product-priorities-plan.md](../plans/2026-05-product-priorities-plan)。

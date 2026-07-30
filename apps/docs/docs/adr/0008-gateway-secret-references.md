@@ -107,7 +107,7 @@ The apiKey `{cmd}` **does not execute** when the CLI config already supplies a k
 
 - Design spec: `docs/superpowers/specs/2026-06-05-gateway-secret-references-design.md`
 - Implementation plan: `docs/superpowers/plans/2026-06-05-gateway-secret-references.md`
-- [ADR-0006: pmk gateway — Slack/LINE bot, not SaaS](./0006-pmk-gateway-slack.md)
+- [ADR-0006: pmk gateway — Slack/LINE bot, not SaaS](./pmk-gateway-slack)
 - Secret resolution unit: `packages/cli/src/gateway/secret-source.ts`
 - Raw/resolved config boundary: `packages/cli/src/gateway/config.ts` (`loadRawGatewayConfig`, `resolveGatewayApiKey`)
 - Doctor check: `packages/cli/src/gateway/doctor-checks/secret-sources.ts`

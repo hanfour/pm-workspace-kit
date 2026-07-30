@@ -119,5 +119,5 @@ Open an issue if you want any of these — they're plugins that wouldn't change 
 
 ## Related
 
-- [Guide: Traceability Matrix](./traceability-matrix.md)
-- [Handoff: PR template](../handoff/pr-template.md)
+- [Guide: Traceability Matrix](./traceability-matrix)
+- [Handoff: PR template](../handoff/pr-template)

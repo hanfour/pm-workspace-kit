@@ -74,10 +74,10 @@ The repo's `npm run traceability:check` targets `apps/docs`; use the explicit `-
 
 Deliberately omitted to keep it readable:
 
-- A full 10-chapter north-star document (see [Guide: Authoring North Star](../guides/authoring-north-star.md) for the template)
+- A full 10-chapter north-star document (see [Guide: Authoring North Star](../guides/authoring-north-star) for the template)
 - Monitoring dashboard JSON (platform-specific)
 - Confluence sync in action (requires live credentials)
-- Multi-module co-migration sequencing (covered conceptually in [Strangler Fig](../concepts/strangler-fig.md))
+- Multi-module co-migration sequencing (covered conceptually in [Strangler Fig](../concepts/strangler-fig))
 
 ## When you copy this for your own project
 
@@ -87,6 +87,6 @@ Deliberately omitted to keep it readable:
 
 ## Related
 
-- [Getting Started](../getting-started.md) — 10-minute walkthrough
-- [Templates: Module Playbook](../templates/module-playbook-template.md) — the blank version
-- [Concepts: Traceability](../concepts/traceability.md) — why the front-matter matters
+- [Getting Started](../getting-started) — 10-minute walkthrough
+- [Templates: Module Playbook](../templates/module-playbook-template) — the blank version
+- [Concepts: Traceability](../concepts/traceability) — why the front-matter matters

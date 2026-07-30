@@ -80,5 +80,5 @@ Same ADR template (`docs/templates/adr-template.md`). Difference is in Deciders:
 ## References
 
 - Michael Nygard, "Documenting Architecture Decisions"
-- [ADR-0001](./0001-strangler-fig-protocol.md) — the methodology ADR pattern
-- [Concepts: ADR Patterns](../concepts/adr-patterns.md)
+- [ADR-0001](./strangler-fig-protocol) — the methodology ADR pattern
+- [Concepts: ADR Patterns](../concepts/adr-patterns)

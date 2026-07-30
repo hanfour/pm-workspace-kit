@@ -4,7 +4,7 @@ sidebar_position: 1
 
 # ADR 範本
 
-複製此檔、改名為 `docs/adr/NNNN-your-decision.md`、填每段。一個決策一個檔。用法見 [概念：ADR 模式](../concepts/adr-patterns.md)。
+複製此檔、改名為 `docs/adr/NNNN-your-decision.md`、填每段。一個決策一個檔。用法見 [概念：ADR 模式](../concepts/adr-patterns)。
 
 ---
 

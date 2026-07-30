@@ -8,11 +8,11 @@ Five artifacts an engineering team inherits when planning ends and implementatio
 
 | File | Goes into | Purpose |
 |---|---|---|
-| [`pr-template.md`](./pr-template.md) | `.github/pull_request_template.md` | Mandatory traceability, migration-stage, risk tier fields |
-| [`code-review-checklist.md`](./code-review-checklist.md) | `docs/CODE_REVIEW.md` or wiki | 10 review dimensions with explicit hard-blockers |
-| [`module-runbook-template.md`](./module-runbook-template.md) | `apps/<service>/<module>/RUNBOOK.md` | Per-module on-call playbook skeleton |
-| [`monitoring-dashboard-spec.md`](./monitoring-dashboard-spec.md) | Datadog / Grafana / Vercel Analytics | 6-panel standard layout |
-| [`readiness-checklist.md`](./readiness-checklist.md) | Sprint 5 kickoff gate | Architect + PM joint sign-off |
+| [`pr-template.md`](./pr-template) | `.github/pull_request_template.md` | Mandatory traceability, migration-stage, risk tier fields |
+| [`code-review-checklist.md`](./code-review-checklist) | `docs/CODE_REVIEW.md` or wiki | 10 review dimensions with explicit hard-blockers |
+| [`module-runbook-template.md`](./module-runbook-template) | `apps/<service>/<module>/RUNBOOK.md` | Per-module on-call playbook skeleton |
+| [`monitoring-dashboard-spec.md`](./monitoring-dashboard-spec) | Datadog / Grafana / Vercel Analytics | 6-panel standard layout |
+| [`readiness-checklist.md`](./readiness-checklist) | Sprint 5 kickoff gate | Architect + PM joint sign-off |
 
 ## Principles
 
@@ -45,4 +45,4 @@ flowchart TB
 
 ## Related
 
-- [Guide: Handoff to Implementation](../guides/handoff-to-implementation.md) — the overall sequence and failure modes
+- [Guide: Handoff to Implementation](../guides/handoff-to-implementation) — the overall sequence and failure modes

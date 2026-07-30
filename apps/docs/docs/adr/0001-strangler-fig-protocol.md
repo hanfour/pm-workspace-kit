@@ -22,7 +22,7 @@ A shared protocol with named stages and quantitative exit criteria solves all fo
 
 ## Decision
 
-Adopt the four-stage **Strangler Fig** protocol (see [Concepts: Strangler Fig](../concepts/strangler-fig.md) for narrative). Every module migration uses the same stage names, reconciliation thresholds, and rollback playbooks. Per-module overrides require an explicit note in the module's playbook.
+Adopt the four-stage **Strangler Fig** protocol (see [Concepts: Strangler Fig](../concepts/strangler-fig) for narrative). Every module migration uses the same stage names, reconciliation thresholds, and rollback playbooks. Per-module overrides require an explicit note in the module's playbook.
 
 ### The four stages
 
@@ -75,5 +75,5 @@ Per-module playbook may override defaults:
 ## References
 
 - Martin Fowler, ["StranglerFigApplication"](https://martinfowler.com/bliki/StranglerFigApplication.html)
-- [Concepts: Strangler Fig](../concepts/strangler-fig.md)
-- [Templates: Module Playbook](../templates/module-playbook-template.md)
+- [Concepts: Strangler Fig](../concepts/strangler-fig)
+- [Templates: Module Playbook](../templates/module-playbook-template)

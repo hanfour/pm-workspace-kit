@@ -4,9 +4,9 @@ sidebar_position: 1
 
 # Gateway lifecycle
 
-How a single Slack DM walks through `pmk gateway` end-to-end. This page is the integrated story; the design rationale lives in [ADR-0006](../adr/0006-pmk-gateway-slack.md) and the v0.7.0 surface contract in [PRD-2026-0005](../prds/2026-04-27-pmk-gateway-prd.md). Each numbered phase in the diagram below is described in the section of the same name.
+How a single Slack DM walks through `pmk gateway` end-to-end. This page is the integrated story; the design rationale lives in [ADR-0006](../adr/pmk-gateway-slack) and the v0.7.0 surface contract in [PRD-2026-0005](../prds/2026-04-27-pmk-gateway-prd). Each numbered phase in the diagram below is described in the section of the same name.
 
-> First time setting this up? Start with the [30-minute onboarding guide](./onboarding.md) — manifest → tokens → `init` → `doctor` → dry-run → first message. This page explains what happens *after* the bot is live.
+> First time setting this up? Start with the [30-minute onboarding guide](./onboarding) — manifest → tokens → `init` → `doctor` → dry-run → first message. This page explains what happens *after* the bot is live.
 
 ## The flow
 
@@ -305,9 +305,9 @@ No `caffeinate` / launchd hacks ship by default — accepting bounded availabili
 
 ## See also
 
-- [Gateway onboarding (30 minutes)](./onboarding.md) — host-side install rail
-- [ADR-0006: pmk gateway — Slack/LINE bot, not SaaS](../adr/0006-pmk-gateway-slack.md)
-- [PRD-2026-0005: pmk gateway v0.7.0 surface](../prds/2026-04-27-pmk-gateway-prd.md)
-- [PRD-2026-0006: 30-minute host onboarding](../prds/2026-05-gateway-onboarding-prd.md)
+- [Gateway onboarding (30 minutes)](./onboarding) — host-side install rail
+- [ADR-0006: pmk gateway — Slack/LINE bot, not SaaS](../adr/pmk-gateway-slack)
+- [PRD-2026-0005: pmk gateway v0.7.0 surface](../prds/2026-04-27-pmk-gateway-prd)
+- [PRD-2026-0006: 30-minute host onboarding](../prds/2026-05-gateway-onboarding-prd)
 - [v0.7.0–v0.9.0 release notes on GitHub](https://github.com/hanfour/pm-workspace-kit/releases)
-- [Changelog](../changelog.md) — release-by-release summary
+- [Changelog](../changelog) — release-by-release summary

@@ -49,7 +49,7 @@ What did we decide? Lead with one sentence. Then detail.
 - Links, prior ADRs, external docs.
 ```
 
-The template is at [`docs/templates/adr-template.md`](../templates/adr-template.md).
+The template is at [`docs/templates/adr-template.md`](../templates/adr-template).
 
 ## Two classes of ADR
 
@@ -98,5 +98,5 @@ For any non-trivial project:
 
 ## Related
 
-- [Templates: ADR](../templates/adr-template.md)
-- [Concepts: Strangler Fig](./strangler-fig.md)
+- [Templates: ADR](../templates/adr-template)
+- [Concepts: Strangler Fig](./strangler-fig)

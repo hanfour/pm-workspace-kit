@@ -78,6 +78,6 @@ review 別人的北極星草稿：
 
 ## 相關
 
-- [概念：ADR 模式](../concepts/adr-patterns.md)
-- [概念：Strangler Fig](../concepts/strangler-fig.md)
-- [Templates: 模組 Playbook](../templates/module-playbook-template.md)
+- [概念：ADR 模式](../concepts/adr-patterns)
+- [概念：Strangler Fig](../concepts/strangler-fig)
+- [Templates: 模組 Playbook](../templates/module-playbook-template)

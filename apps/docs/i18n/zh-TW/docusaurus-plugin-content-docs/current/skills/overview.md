@@ -25,35 +25,35 @@ flowchart LR
 
 | Skill | 用途 | 何時 |
 |---|---|---|
-| [requirement-intake](./requirement-intake.md) | AI 引導需求蒐集 | Stakeholder 帶來模糊想法 |
-| [generate-prd](./generate-prd.md) | 由需求卡自動產 PRD | 需求清楚、規模小中 |
-| [create-prd](./create-prd.md) | 互動式 PRD 撰寫 | 大規模或綠地功能 |
-| [write-spec](./write-spec.md) | PRD → 技術 spec | PRD 核准後工程需細節 |
-| [publish-to-confluence](./publish-to-confluence.md) | 推文件到 Confluence + 回寫 | PRD / spec 已 Approved |
+| [requirement-intake](./requirement-intake) | AI 引導需求蒐集 | Stakeholder 帶來模糊想法 |
+| [generate-prd](./generate-prd) | 由需求卡自動產 PRD | 需求清楚、規模小中 |
+| [create-prd](./create-prd) | 互動式 PRD 撰寫 | 大規模或綠地功能 |
+| [write-spec](./write-spec) | PRD → 技術 spec | PRD 核准後工程需細節 |
+| [publish-to-confluence](./publish-to-confluence) | 推文件到 Confluence + 回寫 | PRD / spec 已 Approved |
 
 ### 探索與規劃（4）
 
 | Skill | 用途 | 何時 |
 |---|---|---|
-| [brainstorm-new](./brainstorm-new.md) | 新產品多角度發想 | 0-to-1 產品探索 |
-| [brainstorm-existing](./brainstorm-existing.md) | 現有產品擴展想法 | 季度規劃 |
-| [research](./research.md) | 結構化競品 / 市場研究 | PRD 需市場 context |
-| [gather-requirements](./gather-requirements.md) | 結構化 stakeholder 訪談 | 需求寫不出來 |
+| [brainstorm-new](./brainstorm-new) | 新產品多角度發想 | 0-to-1 產品探索 |
+| [brainstorm-existing](./brainstorm-existing) | 現有產品擴展想法 | 季度規劃 |
+| [research](./research) | 結構化競品 / 市場研究 | PRD 需市場 context |
+| [gather-requirements](./gather-requirements) | 結構化 stakeholder 訪談 | 需求寫不出來 |
 
 ### 拆解與優先（3）
 
 | Skill | 用途 | 何時 |
 |---|---|---|
-| [decompose](./decompose.md) | 需求拆為可執行任務 | 從需求到執行 |
-| [prioritize](./prioritize.md) | 套 MoSCoW / RICE | 功能清單 > 容量 |
-| [roadmap](./roadmap.md) | 功能排序到時間計畫 | 季度 / 年度規劃 |
+| [decompose](./decompose) | 需求拆為可執行任務 | 從需求到執行 |
+| [prioritize](./prioritize) | 套 MoSCoW / RICE | 功能清單 > 容量 |
+| [roadmap](./roadmap) | 功能排序到時間計畫 | 季度 / 年度規劃 |
 
 ### 運營（2）
 
 | Skill | 用途 | 何時 |
 |---|---|---|
-| [bug-report](./bug-report.md) | 引導 bug 記錄含分診 | 使用者非正式報 bug |
-| [create-pptx](./create-pptx.md) | 從 markdown 產 PowerPoint | Stakeholder 要投影片 |
+| [bug-report](./bug-report) | 引導 bug 記錄含分診 | 使用者非正式報 bug |
+| [create-pptx](./create-pptx) | 從 markdown 產 PowerPoint | Stakeholder 要投影片 |
 
 ## 如何安裝 skill
 
@@ -86,5 +86,5 @@ kit skills 寫給通用 B2B SaaS workflow。你可能要改：
 
 ## 相關
 
-- [概念：DoR / DoD](../concepts/definitions-of-ready-done.md)
-- [Guide: 交接到實作](../guides/handoff-to-implementation.md)
+- [概念：DoR / DoD](../concepts/definitions-of-ready-done)
+- [Guide: 交接到實作](../guides/handoff-to-implementation)

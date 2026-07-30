@@ -46,7 +46,7 @@ Architecture Decision Records（ADR）記錄**為什麼**做這個選擇。程�
 - 連結、先前 ADR、外部文件。
 ````
 
-模板在 [`docs/templates/adr-template.md`](../templates/adr-template.md)。
+模板在 [`docs/templates/adr-template.md`](../templates/adr-template)。
 
 ## 兩類 ADR
 
@@ -91,5 +91,5 @@ Architecture Decision Records（ADR）記錄**為什麼**做這個選擇。程�
 
 ## 相關
 
-- [Templates: ADR](../templates/adr-template.md)
-- [概念：Strangler Fig](./strangler-fig.md)
+- [Templates: ADR](../templates/adr-template)
+- [概念：Strangler Fig](./strangler-fig)

@@ -37,7 +37,7 @@ This loop is what makes PMK more than a PRD generator or a wiki bot.
 
 ### 3. Desktop app — early shell (secondary)
 
-Electron GUI over the same CLI surface (chat panel + worktree manager). Still early; treat as a secondary surface until parity with the [Desktop PRD](./prds/2026-04-24-desktop-app-prd.md) is reached. The CLI and gateway carry the core experience today.
+Electron GUI over the same CLI surface (chat panel + worktree manager). Still early; treat as a secondary surface until parity with the [Desktop PRD](./prds/2026-04-24-desktop-app-prd) is reached. The CLI and gateway carry the core experience today.
 
 ## Base value vs. mra-enhanced value
 
@@ -59,7 +59,7 @@ The fastest way to feel the value is to follow this order. The earliest steps do
 
 - **Day 1** — `pmk propose` produces a real PRD in `docs/prds/`. Same-day output, no infra needed.
 - **Day 2–3** — Author a second PRD. `traceability.js` now has links to validate; the dependency graph and orphan report start earning their keep.
-- **Week 1** — Stand up the Slack gateway against one channel. Today's flow lives in the [gateway lifecycle](./gateway/lifecycle.md) deep-dive, with a 30-minute walkthrough in the [onboarding guide](./gateway/onboarding.md); `pmk gateway doctor` + `gateway start --dry-run` make the first install verifiable before live traffic. Seed your existing PKB.
+- **Week 1** — Stand up the Slack gateway against one channel. Today's flow lives in the [gateway lifecycle](./gateway/lifecycle) deep-dive, with a 30-minute walkthrough in the [onboarding guide](./gateway/onboarding); `pmk gateway doctor` + `gateway start --dry-run` make the first install verifiable before live traffic. Seed your existing PKB.
 - **Week 2** — Run the full knowledge loop end-to-end: ask → `mra-ask` → escalation → absorb → reuse. By this point, the second PM who asks a previously-escalated question gets the cached answer without anyone re-typing.
 
 ## What you don't get
@@ -79,7 +79,7 @@ The fastest way to feel the value is to follow this order. The earliest steps do
 
 ## Next
 
-- [Getting Started](./getting-started.md) — 10 minutes from clone to first PRD with validated front-matter (plus a CLI quickstart).
-- [Concepts: Traceability](./concepts/traceability.md) — the front-matter schema and why it matters.
-- [Gateway lifecycle](./gateway/lifecycle.md) — the full knowledge-loop walkthrough.
-- [Example: AcmeAds](./examples/acme-ads.md) — a fictional ad-tech company using the kit end-to-end.
+- [Getting Started](./getting-started) — 10 minutes from clone to first PRD with validated front-matter (plus a CLI quickstart).
+- [Concepts: Traceability](./concepts/traceability) — the front-matter schema and why it matters.
+- [Gateway lifecycle](./gateway/lifecycle) — the full knowledge-loop walkthrough.
+- [Example: AcmeAds](./examples/acme-ads) — a fictional ad-tech company using the kit end-to-end.

@@ -60,6 +60,6 @@ related:
 
 ## 相關
 
-- [概念：DoR / DoD](./definitions-of-ready-done.md)
-- [概念：ADR 模式](./adr-patterns.md)
-- [指南：追溯矩陣](../guides/traceability-matrix.md)
+- [概念：DoR / DoD](./definitions-of-ready-done)
+- [概念：ADR 模式](./adr-patterns)
+- [指南：追溯矩陣](../guides/traceability-matrix)

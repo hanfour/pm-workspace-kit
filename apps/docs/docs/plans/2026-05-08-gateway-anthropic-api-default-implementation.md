@@ -811,7 +811,7 @@ Verify `loadGatewayConfig()` already returns `apiKey?: string` on its result typ
 
 v0.11.1 hardened the gateway against `msg_too_long` by lowering caps and adding an auto-retry path, but cause #2 from the 2026-05-07 incident — `claude-agent-sdk` spawning the local `claude` CLI and inheriting the host's `~/.claude/` config (skills/hooks/MCP descriptions) as un-budgeted system context — was absorbed by tighter caps, not eliminated. v0.12.0 flips the default to the direct Anthropic SDK so SDK overhead is no longer a budget unknown, and restores cap headroom.
 
-Spec: [`apps/docs/docs/plans/2026-05-08-gateway-anthropic-api-default.md`](./plans/2026-05-08-gateway-anthropic-api-default.md). Migration: [v0.12 migration notes](./gateway/v0.12-migration.md).
+Spec: [`apps/docs/docs/plans/2026-05-08-gateway-anthropic-api-default.md`](./plans/2026-05-08-gateway-anthropic-api-default). Migration: [v0.12 migration notes](./gateway/v0.12-migration).
 
 ### Changed
 
@@ -933,8 +933,8 @@ If you're on the `claude-agent` fallback (no API key), tighten these back down �
 
 ## See also
 
-- [v0.11 migration notes](./v0.11-migration.md) — preceding milestone
-- [Changelog](../changelog.md)
+- [v0.11 migration notes](../gateway/v0.11-migration) — preceding milestone
+- [Changelog](../changelog)
 ```
 
 - [ ] **Commit:** `git add apps/docs/docs/changelog.md apps/docs/docs/gateway/v0.12-migration.md && git commit -m "docs: changelog + migration notes for v0.12.0 anthropic-api default"`
@@ -1034,5 +1034,4 @@ gh release create v0.12.0 --title "v0.12.0 — gateway anthropic-api as default 
   - Forward link (v0.11.2 harness, v0.13 deprecation, $-cost) → no implementation needed
 - [x] **No placeholders** — every code block is real code; commands are runnable; no `// TODO`.
 - [x] **Type consistency** — `ChatOptions.actor`, `TokenUsageEvent` fields (`inputTokens`/`outputTokens`/`cacheReadTokens`/`cacheCreationTokens`), env var names (`PMK_MAX_SESSION_TOKENS`/`PMK_SEED_CAP`/`PMK_MRA_RESULT_CAP`/`PMK_PROVIDER`/`ANTHROPIC_API_KEY`), constants (`MAX_SESSION_TOKENS`/`SEED_CAP`/`MRA_RESULT_CAP`), `AuditReport.tokenUsage` shape, formatter helper `formatTokens` — all referenced consistently across tasks.
-
 

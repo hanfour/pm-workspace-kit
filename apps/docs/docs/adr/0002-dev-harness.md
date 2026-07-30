@@ -87,4 +87,4 @@ Only the skills and commands unique to that workspace. Must `extends` or `import
 ## References
 
 - Claude Code docs on skills / hooks / subagents / MCP
-- [Templates: Claude skill frontmatter](../templates/prd-frontmatter.md) (frontmatter pattern reused)
+- [Templates: Claude skill frontmatter](../templates/prd-frontmatter) (frontmatter pattern reused)

@@ -9,9 +9,9 @@ question in Slack in under 30 minutes**, without reading the source.
 
 This is the host-side setup. Once it's done, the people you support
 just DM or `@`-mention the bot — they install nothing. The full
-runtime behaviour is in the [gateway lifecycle](./lifecycle.md)
+runtime behaviour is in the [gateway lifecycle](./lifecycle)
 deep-dive; this page is the install rail. The product rationale is in
-[PRD-2026-0006](../prds/2026-05-gateway-onboarding-prd.md).
+[PRD-2026-0006](../prds/2026-05-gateway-onboarding-prd).
 
 ## Prerequisites
 
@@ -436,4 +436,4 @@ as the wrong account). Private-repo default-deny and the allowlist are checked
 Onboarding is the **Week 1** milestone in the README adoption path.
 By Week 2 you run the full knowledge loop end-to-end (ask → `mra-ask`
 → escalation → absorb → reuse), walked through in the
-[gateway lifecycle](./lifecycle.md).
+[gateway lifecycle](./lifecycle).

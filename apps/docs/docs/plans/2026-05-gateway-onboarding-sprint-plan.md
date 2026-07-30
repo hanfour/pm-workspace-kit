@@ -15,7 +15,7 @@ related:
 
 # pmk Gateway Onboarding — Sprint Plan
 
-PRD: [PRD-2026-0006](../prds/2026-05-gateway-onboarding-prd.md)。
+PRD: [PRD-2026-0006](../prds/2026-05-gateway-onboarding-prd)。
 
 兩個 sprint（每個 ~1 週 part-time），共 7 個 milestone。每個 milestone
 最後有一個可示範的 deliverable 與 go / no-go gate。M6 是 baseline 量測，

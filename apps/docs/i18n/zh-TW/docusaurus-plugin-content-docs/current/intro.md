@@ -57,6 +57,6 @@ sidebar_position: 1
 
 ## 下一步
 
-- [快速上手](./getting-started.md) — 10 分鐘從 clone 到第一份經驗證 front-matter 的 PRD（內附 CLI 快速試駕）
-- [概念：追溯性](./concepts/traceability.md) — front-matter schema 與它存在的理由
-- [範例：AcmeAds](./examples/acme-ads.md) — 虛構廣告公司的端到端使用範例
+- [快速上手](./getting-started) — 10 分鐘從 clone 到第一份經驗證 front-matter 的 PRD（內附 CLI 快速試駕）
+- [概念：追溯性](./concepts/traceability) — front-matter schema 與它存在的理由
+- [範例：AcmeAds](./examples/acme-ads) — 虛構廣告公司的端到端使用範例
