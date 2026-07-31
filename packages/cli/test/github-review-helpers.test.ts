@@ -162,6 +162,41 @@ describe("reviewGateStatus (three-state review-gate probe)", () => {
     assert.equal(await reviewGateStatus({ slug: "o/r", branch: "main" }, { findBinary: () => undefined } as never), undefined);
   });
 
+  /** gh exits 1 on a 404; the body lands on stdout and a summary on stderr. */
+  const ghFailure = (stderr: string, stdout = "") => ({
+    exec: async () => {
+      throw Object.assign(new Error("Command failed"), { stderr, stdout });
+    },
+    findBinary: () => "/usr/bin/gh",
+  });
+
+  // A branch with no ruleset 404s instead of returning []. Both express the
+  // same fact — no pull_request rule — so both mean "ungated".
+  it("ungated: the Rules API 404s (branch has no ruleset) → false", async () => {
+    const deps404 = ghFailure(
+      "gh: Not Found (HTTP 404)",
+      '{"message":"Not Found","documentation_url":"https://docs.github.com/rest/repos/rules","status":"404"}',
+    );
+    assert.equal(await reviewGateStatus({ slug: "o/r", branch: "main" }, deps404 as never), false);
+  });
+
+  // Load-bearing: "cannot see the protection" must never read as "there is no
+  // protection". Only a literal 404 may downgrade to ungated.
+  it("unknown: auth/transport failures stay undefined, never false", async () => {
+    for (const stderr of [
+      "gh: Bad credentials (HTTP 401)",
+      "gh: Resource not accessible by integration (HTTP 403)",
+      "gh: Internal Server Error (HTTP 500)",
+      "error connecting to api.github.com",
+    ]) {
+      assert.equal(
+        await reviewGateStatus({ slug: "o/r", branch: "main" }, ghFailure(stderr) as never),
+        undefined,
+        stderr,
+      );
+    }
+  });
+
   it("buildGhArgs_getReviewGate targets the Rules API and extracts the review count", () => {
     const args = buildGhArgs_getReviewGate("o/r", "main");
     assert.deepEqual(args.slice(0, 2), ["api", "repos/o/r/rules/branches/main"]);

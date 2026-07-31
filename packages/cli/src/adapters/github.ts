@@ -261,9 +261,28 @@ export function buildGhArgs_getReviewGate(slug: string, branch: string): string[
 }
 
 /**
+ * True only for a literal HTTP 404 from the Rules API, read off the failed
+ * process rather than the Error message: `gh` exits 1 with the API body on
+ * stdout and a summary on stderr. Deliberately narrow — 401/403/5xx and
+ * transport errors must NOT match, because "cannot see the protection" is not
+ * "there is no protection". Never inspects `err.message`, which callers and
+ * tests may set to arbitrary text.
+ */
+function isRulesApiNotFound(err: unknown): boolean {
+  const e = err as { stderr?: unknown; stdout?: unknown };
+  const streams = [e?.stderr, e?.stdout]
+    .filter((s): s is string => typeof s === "string")
+    .join("\n");
+  if (!streams) return false;
+  return /\(HTTP 404\)|"status"\s*:\s*"?404"?/.test(streams);
+}
+
+/**
  * Three-state review-gate probe for the ungated auto-allow path.
  *   true      → gated (some ruleset requires >=1 approving review)
- *   false     → ungated (no pull_request rule, or count 0/absent)
+ *   false     → ungated (no pull_request rule, count 0/absent, or the branch
+ *               has no ruleset at all — which the Rules API reports as 404
+ *               rather than an empty array)
  *   undefined → unknown (no gh, or the Rules API is unreadable)
  * The undefined state is load-bearing: the caller allows ONLY on a literal
  * false, and fails closed on undefined. Classic (admin-only) branch protection
@@ -282,7 +301,11 @@ export async function reviewGateStatus(
     const { stdout } = await exec(gh, buildGhArgs_getReviewGate(args.slug, args.branch), { env, timeoutMs: 15_000 });
     const counts = JSON.parse(stdout) as Array<number | null>;
     return counts.some((c) => typeof c === "number" && c >= 1);
-  } catch {
+  } catch (err) {
+    // A branch with no ruleset 404s instead of returning []. That is the same
+    // "no pull_request rule" fact an empty array expresses, so report it as
+    // ungated. Every other failure stays unknown and the caller fails closed.
+    if (isRulesApiNotFound(err)) return false;
     return undefined;
   }
 }
