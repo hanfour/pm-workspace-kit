@@ -15,6 +15,10 @@ export interface ReviewRef {
   pr: number;
   headSha: string;
   intent?: "review" | "approve";
+  /**
+   * The PR's `updated_at` at trigger time. Carried for callers that record it,
+   * but DELIBERATELY NOT part of the claim key — see {@link reviewClaimKey}.
+   */
   contextVersion?: string;
 }
 
@@ -34,11 +38,26 @@ function sanitize(s: string): string {
   return s.replace(/[^A-Za-z0-9._-]/g, "_");
 }
 
+/**
+ * The identity of one review: (owner, repo, pr, headSha) plus intent.
+ *
+ * `contextVersion` (the PR's `updated_at`) is deliberately EXCLUDED. Including
+ * it silently defeated the whole mechanism: the gateway's own review post bumps
+ * `updated_at`, as does any teammate comment, so the next trigger computed a
+ * different key, the `wx` create succeeded, and the same commit was reviewed
+ * again. Seen live 9 times, with the verdict flipping between
+ * CHANGES_REQUESTED and 0-blocker on byte-identical code — and since a
+ * 0-blocker result is what opens the approve offer, a blocked PR could become
+ * approvable without a single line changing.
+ *
+ * The approve path reached the same conclusion independently (see the
+ * freshness-pin comment in slack/review.ts: pin headSha + baseRef, never
+ * updatedAt); the claim key simply never followed.
+ */
 export function reviewClaimKey(r: ReviewRef): string {
   const base = [sanitize(r.owner), sanitize(r.repo), String(r.pr), sanitize(r.headSha)];
   const intent = r.intent ?? "review";
-  const withIntent = intent === "review" ? base : [...base, sanitize(intent)];
-  return (r.contextVersion ? [...withIntent, sanitize(r.contextVersion)] : withIntent).join("__");
+  return (intent === "review" ? base : [...base, sanitize(intent)]).join("__");
 }
 
 function reviewsDir(): string {
@@ -51,8 +70,51 @@ function claimPath(r: ReviewRef): string {
   return path.join(reviewsDir(), `${reviewClaimKey(r)}.json`);
 }
 
+/**
+ * A sanitized ISO instant, i.e. the shape a legacy `contextVersion` segment
+ * takes on disk (`2026-07-13T08_42_44Z`). Matching the SHAPE rather than any
+ * `key__…` suffix matters: the approve key is the review key plus `__approve`,
+ * so a loose prefix match would let an approve claim block a review claim.
+ */
+const LEGACY_CONTEXT_SUFFIX = /^\d{4}-\d{2}-\d{2}T[\d_]+Z$/;
+
+/**
+ * True when a pre-upgrade claim for this same review was already finalized.
+ *
+ * Claims written while `contextVersion` was part of the key carry it as a
+ * trailing segment. Dropping it from the key would otherwise orphan every one
+ * of them, so the first trigger after upgrading would re-review an
+ * already-reviewed commit — reproducing, once per PR, the very bug the change
+ * removes. Recognised on read; nothing on disk is rewritten.
+ */
+function hasFinalizedLegacyClaim(key: string): boolean {
+  let names: string[];
+  try {
+    names = fs.readdirSync(reviewsDir());
+  } catch {
+    return false;
+  }
+  for (const name of names) {
+    if (!name.endsWith(".json") || !name.startsWith(`${key}__`)) continue;
+    const suffix = name.slice(key.length + 2, -".json".length);
+    if (!LEGACY_CONTEXT_SUFFIX.test(suffix)) continue;
+    try {
+      const rec = JSON.parse(
+        fs.readFileSync(path.join(reviewsDir(), name), "utf8"),
+      ) as ClaimRecord;
+      // Only a FINALIZED legacy claim counts. An unfinalized one is an orphan
+      // from a crashed run, which recoverReviewClaims would have released.
+      if (rec.done === true) return true;
+    } catch {
+      /* unreadable — treat as absent rather than blocking a fresh review */
+    }
+  }
+  return false;
+}
+
 export function claimReview(r: ReviewRef): boolean {
   const key = reviewClaimKey(r);
+  if (hasFinalizedLegacyClaim(key)) return false;
   const ownerId = randomUUID();
   const rec: ClaimRecord = { key, claimedAt: nowIso(), ownerPid: process.pid, ownerId };
   try {

@@ -38,6 +38,13 @@ export function reviewResultText(
   res: ReviewOutcome,
   approvalEnabled = true,
   protectionExempted = false,
+  /**
+   * Which command the user actually typed. An `:a:` with no offer yet runs a
+   * review FIRST and delegates here, so without this the reply lectured the
+   * user about `:cr:` not auto-approving when they had typed `:a:` — advice
+   * about a command they did not use.
+   */
+  origin: "cr" | "a" = "cr",
 ): string {
   if (res.incomplete)
     return `:warning: ${slug}#${ref.number} review 未完成（mra 回報 REVIEW_INCOMPLETE，未真正評估此 PR — 可能 max-turns 截斷或 provider 呼叫失敗）；已貼中性佔位，claim 已釋放，請重試 :cr:：${ref.url}`;
@@ -47,7 +54,7 @@ export function reviewResultText(
     const exemptNote = protectionExempted
       ? "（此 repo 已列入 protection 豁免清單，approve 時會略過 branch-protection 檢查）"
       : "";
-    return `:mag: 已完成 ${slug}#${ref.number} review（GitHub action: ${status}；${count} 則）。這個結果沒有 HIGH/CRITICAL blocker，可進一步 approve，但 :cr: 不會主動 approve；請由 PMK admin 在此 channel thread @PMK 回覆 \`approve\` 授權（DM 可直接回覆）${exemptNote}：${ref.url}`;
+    return `:mag: 已完成 ${slug}#${ref.number} review（GitHub action: ${status}；${count} 則）。這個結果沒有 HIGH/CRITICAL blocker，可進一步 approve，但 \`:${origin}:\` 不會主動 approve；請由 PMK admin 在此 channel thread @PMK 回覆 \`approve\` 授權（DM 可直接回覆）${exemptNote}：${ref.url}`;
   }
   return `:mag: 已完成 ${slug}#${ref.number} review（GitHub action: ${status}；${count} 則；未執行 GitHub approve）：${ref.url}`;
 }

@@ -74,6 +74,8 @@ export {
   isReviewRequest,
   isApproveRequest,
   isApproveConfirmationRequest,
+  isReviewCommandMissingPr,
+  reviewCommandUsageText,
   isRetryRequest,
   isRerunRequest,
 } from "./review-requests";
@@ -386,11 +388,26 @@ export class ReviewCoordinator {
     }
     if (!args.offeredRefs) {
       await this.reply(channelId, threadTs, ":mag: `:a:` 會先執行安全 review；完成且沒有 blocker 後，我會再請你於 thread 明確回覆 `approve`，不會直接核准。");
+      // Record the APPROVE intent before delegating. The delegated run audits
+      // itself as a review (that is what runs), so without this line an
+      // `:a:`-initiated run is indistinguishable from a plain `:cr:` after
+      // the fact — the audit could not answer "who asked to approve what".
+      appendGatewayEvent({
+        type: "review.triggered",
+        actor: actorUserId,
+        channelId,
+        prCount: parsePrRefs(text, { cap: review.maxPrsPerTrigger }).length,
+        intent: "approve",
+        providerMode: review.providerMode,
+        strategy: effectiveMraReviewStrategy(review.strategy, review.providerMode, true),
+        forced: args.forced,
+      });
       await this.processReviewRequest({
         channelId,
         threadTs,
         actorUserId,
         text: text.replace(":a:", ":cr:"),
+        origin: "a",
       });
       return;
     }
@@ -782,6 +799,8 @@ export class ReviewCoordinator {
 
   /** Shared core: parse PR refs from the text, then review each (fail-soft). */
   private async processReviewRequest(args: {
+    /** Which command the user typed. `:a:` delegates here for its pre-review. */
+    origin?: "cr" | "a";
     channelId: string;
     threadTs: string;
     actorUserId: string;
@@ -844,6 +863,7 @@ export class ReviewCoordinator {
           review,
           token,
           forceRerun: args.forced,
+          origin: args.origin,
         }, "review");
       } finally {
         try { fs.rmSync(reviewWorkspace, { recursive: true, force: true }); } catch { /* best-effort */ }
@@ -873,6 +893,8 @@ export class ReviewCoordinator {
       token?: string;
       authorizedHeads?: Map<string, string>;
       forceRerun?: boolean;
+      /** Which command the user typed; only affects wording. */
+      origin?: "cr" | "a";
     },
     mode: "review" | "approve",
   ): Promise<void> {
@@ -953,13 +975,16 @@ export class ReviewCoordinator {
       slugParts.length === 2
         ? slugParts
         : [ref.owner, ref.repo];
+    // No contextVersion: the claim identifies the COMMIT, and head.updatedAt
+    // moves on any PR activity — including the review this run is about to
+    // post. Keying on it re-opened the same commit for review (see
+    // reviewClaimKey).
     const claimRef = {
       owner: slugOwner,
       repo: slugRepo,
       pr: ref.number,
       headSha: head.sha,
       intent: isApprove ? "approve" as const : "review" as const,
-      contextVersion: head.updatedAt,
     };
     const projectKey = `${slugOwner}/${slugRepo}`;
     const actorActive = [...this.inFlight].filter((r) => r.actorUserId === ctx.reactorUserId).length;
@@ -1160,7 +1185,7 @@ export class ReviewCoordinator {
       const resultText = isApprove
         ? approveResultText(slug, ref, res)
         : reviewResultText(slug, ref, res, ctx.review.approval.enabled,
-            !!findProtectionExemption(ctx.review.approval, slug));
+            !!findProtectionExemption(ctx.review.approval, slug), ctx.origin);
       if (progress) await progress.finish(resultText);
       else await this.reply(ctx.channelId, ctx.threadTs, resultText);
     } catch (err) {
