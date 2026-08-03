@@ -20,6 +20,7 @@
  * invisible to every downstream consumer.
  */
 import { appendGatewayEvent, type GatewayEvent } from "./events";
+import { redactSecrets } from "./redact";
 
 /** Human-readable one-liner for an unhandled-rejection reason (pure, testable). */
 export function describeRejection(reason: unknown): string {
@@ -42,6 +43,24 @@ export function describeRejection(reason: unknown): string {
 /** Longest stack we put on disk. Enough to name the frame, bounded so a deep
  *  recursion crash can't write a megabyte into the audit partition. */
 const MAX_STACK_CHARS = 2000;
+
+/**
+ * Scrub anything credential- or content-shaped before it reaches the durable
+ * event log.
+ *
+ * Error messages routinely quote what failed — a Slack API error can echo a
+ * bot token, a provider error an API key, a parse error a user's message — and
+ * `err.stack` embeds the message verbatim. The event log outlives the incident
+ * and is read back by audit tooling, so it must not become the place a secret
+ * comes to rest. github.ts already refuses to log a subprocess's stdout/stderr
+ * for the same reason; this holds the crash path to that line.
+ *
+ * Redaction is applied to the RECORDED copy only. The operator log keeps the
+ * raw text: it is transient, local, and where debugging actually happens.
+ */
+function scrubForAudit(text: string): string {
+  return redactSecrets(text);
+}
 
 /**
  * Record the failure on the event stream, never letting the recording itself
@@ -81,7 +100,7 @@ export function makeRejectionHandler(
       {
         type: "gateway.rejection",
         kind: "unhandledRejection",
-        reason: description,
+        reason: scrubForAudit(description),
         fatal: false,
       },
       log,
@@ -107,13 +126,17 @@ export function makeUncaughtExceptionHandler(
   return (err: unknown): void => {
     const description = describeRejection(err);
     log(`[uncaughtException] FATAL — exiting for supervisor restart: ${description}`);
-    const stack = err instanceof Error && err.stack ? err.stack.slice(0, MAX_STACK_CHARS) : undefined;
+    // Scrub BEFORE truncating: redaction can only shorten, so a scrubbed
+    // stack still fits the bound, whereas truncating first could cut a secret
+    // mid-token and leave a recognisable prefix behind.
+    const rawStack = err instanceof Error && err.stack ? err.stack : undefined;
+    const stack = rawStack ? scrubForAudit(rawStack).slice(0, MAX_STACK_CHARS) : undefined;
     recordSafely(
       emit,
       {
         type: "gateway.rejection",
         kind: "uncaughtException",
-        reason: description,
+        reason: scrubForAudit(description),
         fatal: true,
         ...(stack ? { stack } : {}),
       },

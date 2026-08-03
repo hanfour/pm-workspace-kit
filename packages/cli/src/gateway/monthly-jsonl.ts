@@ -97,14 +97,75 @@ interface AuditWriteFailures {
 
 let auditFailures: AuditWriteFailures = { count: 0 };
 
-/** Snapshot of dropped-audit-line accounting (a copy — never the live object). */
+/** Snapshot of THIS process's accounting (a copy — never the live object). */
 export function auditWriteFailures(): AuditWriteFailures {
   return { ...auditFailures };
 }
 
-/** Reset the accounting. Exists for tests; production never resets. */
+/** Reset the in-process accounting. Exists for tests; production never resets. */
 export function resetAuditWriteFailures(): void {
   auditFailures = { count: 0 };
+}
+
+/** Record file, kept beside the partition whose write failed. */
+function failuresPath(baseDir: string): string {
+  return path.join(baseDir, "audit-write-failures.json");
+}
+
+/**
+ * Read the durable record. Returns a zeroed value when absent or unreadable —
+ * a missing record and a clean run are indistinguishable, and neither is worth
+ * failing over.
+ */
+export function readPersistedAuditWriteFailures(
+  baseDir: string,
+): AuditWriteFailures {
+  try {
+    const raw = JSON.parse(
+      fs.readFileSync(failuresPath(baseDir), "utf8"),
+    ) as Partial<AuditWriteFailures>;
+    if (typeof raw.count !== "number" || !Number.isFinite(raw.count)) {
+      return { count: 0 };
+    }
+    return {
+      count: raw.count,
+      ...(typeof raw.lastError === "string" ? { lastError: raw.lastError } : {}),
+      ...(typeof raw.lastAt === "string" ? { lastAt: raw.lastAt } : {}),
+    };
+  } catch {
+    return { count: 0 };
+  }
+}
+
+/**
+ * Add one to the durable record.
+ *
+ * An in-memory counter cannot reach an operator: the gateway accumulates it in
+ * the long-lived `pmk gateway start` process, while `pmk gateway doctor` runs
+ * in a fresh CLI process and `/pmk admin doctor` does not run DEFAULT_CHECKS at
+ * all. The record has to outlive the process that observed the failure.
+ *
+ * Accumulates rather than overwrites, so a daemon restart does not zero the
+ * history. Best-effort by the same logic as the append itself — and honestly
+ * limited: a full disk or an unwritable baseDir defeats this write too. It
+ * captures the likelier shape, a single partition file with wrong ownership,
+ * where the directory is still writable.
+ */
+function persistAuditFailure(baseDir: string, err: unknown): void {
+  try {
+    const prev = readPersistedAuditWriteFailures(baseDir);
+    fs.writeFileSync(
+      failuresPath(baseDir),
+      JSON.stringify({
+        count: prev.count + 1,
+        lastError: (err as Error).message,
+        lastAt: new Date().toISOString(),
+      }),
+      "utf8",
+    );
+  } catch {
+    /* the condition that broke the append can break this too — nothing left to try */
+  }
 }
 
 export function appendJsonl(
@@ -125,6 +186,7 @@ export function appendJsonl(
       lastError: (err as Error).message,
       lastAt: new Date().toISOString(),
     };
+    persistAuditFailure(baseDir, err);
   }
 }
 

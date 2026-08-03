@@ -116,6 +116,37 @@ describe("gateway config concurrent-write conflict", () => {
     assert.equal(loadRawGatewayConfig().mraWorkspace, "/x");
   });
 
+  // Load must read the file ONCE and derive both the parsed value and its
+  // baseline from that read. Digesting in a second read reopens the lost
+  // update: a writer committing between the two leaves the snapshot holding
+  // OLD content while its baseline records the NEW digest, so the save
+  // compares equal and overwrites them. Pinned structurally — the snapshot is
+  // built from explicit bytes, so a baseline taken from anything else shows up
+  // here rather than only in a microsecond-wide race.
+  it("baselines a snapshot against the bytes it parsed, not later disk state", async () => {
+    const { loadRawGatewayConfig, saveGatewayConfig, snapshotConfigFromTextForTest } =
+      await import("../src/gateway/config");
+    await seed();
+    const before = fs.readFileSync(
+      path.join(tmpHome, ".pmk", "gateway.json"),
+      "utf8",
+    );
+
+    // Another writer commits while we hold `before`.
+    const theirs = loadRawGatewayConfig();
+    theirs.admins = ["U_A"];
+    saveGatewayConfig(theirs);
+
+    // A snapshot of the pre-change bytes must be refused against current disk.
+    const stale = snapshotConfigFromTextForTest(before);
+    stale.mraWorkspace = "/tmp/ws";
+    assert.throws(
+      () => saveGatewayConfig(stale),
+      (err: Error) => err.name === "GatewayConfigConflictError",
+    );
+    assert.deepEqual(loadRawGatewayConfig().admins, ["U_A"]);
+  });
+
   it("allows the first write when no config file exists yet", async () => {
     const { loadRawGatewayConfig, saveGatewayConfig } = await import(
       "../src/gateway/config"

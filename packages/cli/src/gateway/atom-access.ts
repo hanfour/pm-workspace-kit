@@ -6,16 +6,22 @@ interface Cached<T> { value: T; at: number; }
 
 /**
  * The channel segment of a `<channel>:<ts>` thread key, or undefined when the
- * key does not carry one.
+ * key is not that shape.
  *
- * Split out and made total on purpose: the previous inline parse mapped every
- * unparseable shape ("", "CPRIV" with no colon, ":123" with an empty segment)
- * onto the same empty string, which the caller then treated as "legacy →
- * allow". Returning undefined forces the caller to make that a denial.
+ * The SEPARATOR is what makes a thread key a thread key, so its absence is a
+ * rejection rather than "the whole string is the channel". Guessing there is
+ * not merely imprecise, it fails OPEN: a damaged key that happens to name a
+ * real PUBLIC channel (its `:<ts>` suffix lost) would pass the is-public test
+ * and the atom would be injected for any requester.
+ *
+ * Total on purpose — the previous inline parse mapped every unparseable shape
+ * onto an empty string that the caller read as "legacy → allow". Returning
+ * undefined forces the caller to make that a denial.
  */
 export function parseAtomChannel(threadKey: string): string | undefined {
-  const channel = threadKey.split(":")[0];
-  return channel.length > 0 ? channel : undefined;
+  const separator = threadKey.indexOf(":");
+  if (separator <= 0) return undefined; // absent, or an empty channel segment
+  return threadKey.slice(0, separator);
 }
 
 /** Channel-membership access checker for atom retrieval. Caches is_private +

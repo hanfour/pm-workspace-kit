@@ -95,6 +95,18 @@ export function formatAuditReport(report: AuditReport): string {
   );
 
   // context safety
+  // Reliability before context safety: a crash invalidates everything above it
+  // (turns that never completed, reviews that never replied), so an operator
+  // scanning the report should meet it before the finer-grained counters.
+  lines.push("");
+  lines.push(chalk.bold("Reliability"));
+  const rel = report.reliability;
+  lines.push(
+    label("rejections:") +
+      `${rel.rejections} (fatal ${rel.fatal}, survived ${rel.rejections - rel.fatal})`,
+  );
+  if (rel.lastReason) lines.push(label("most recent:") + rel.lastReason);
+
   lines.push("");
   lines.push(chalk.bold("Context safety"));
   const cs = report.contextSafety;

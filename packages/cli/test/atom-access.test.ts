@@ -42,6 +42,40 @@ describe("canUserAccessAtom", () => {
       });
     }
 
+    // The separator is what makes a thread key a thread key. Without it we are
+    // looking at an arbitrary string, and treating it as a channel id is a
+    // guess — one that fails OPEN when the guess happens to name a real PUBLIC
+    // channel whose ":<ts>" suffix was lost, because public channels are
+    // readable by everyone. The earlier "no colon separator" case only denied
+    // because the stub made every channel private, i.e. for the wrong reason.
+    it("denies a separator-less key even when it names a public channel", async () => {
+      const publicWeb = {
+        conversations: {
+          info: async () => ({ channel: { is_channel: true, is_private: false } }),
+          members: async () => ({ members: [] }),
+        },
+      } as never;
+      const c = makeAtomAccessChecker(publicWeb);
+      assert.equal(
+        await c.canUserAccessAtom("Ustranger", atom("CPUB:1.1")),
+        true,
+        "a well-formed public key stays readable",
+      );
+      assert.equal(
+        await c.canUserAccessAtom("Ustranger", atom("CPUB")),
+        false,
+        "a separator-less key must not be trusted as a channel id",
+      );
+    });
+
+    it("parseAtomChannel requires the separator", async () => {
+      const { parseAtomChannel } = await import("../src/gateway/atom-access");
+      assert.equal(parseAtomChannel("C123:1.1"), "C123");
+      assert.equal(parseAtomChannel("C123"), undefined);
+      assert.equal(parseAtomChannel(""), undefined);
+      assert.equal(parseAtomChannel(":1.1"), undefined);
+    });
+
     it("names the denied atom in the log so a mangled file is fixable", async () => {
       const logs: string[] = [];
       const c = makeAtomAccessChecker(web(), undefined, (m) => logs.push(m));

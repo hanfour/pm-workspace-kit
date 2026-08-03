@@ -490,10 +490,8 @@ export function loadRawGatewayConfig(): RawGatewayConfig {
     configSnapshotDigests.set(fresh, ABSENT);
     return fresh;
   }
-  const raw = JSON.parse(fs.readFileSync(file, "utf8")) as unknown;
-  const cfg = normaliseRawConfig(raw);
-  configSnapshotDigests.set(cfg, onDiskDigest(file));
-  return cfg;
+  // ONE read: the parsed value and its baseline must describe the same bytes.
+  return snapshotFromText(fs.readFileSync(file, "utf8"));
 }
 
 /** Runtime config consumers see: Slack tokens resolved eagerly (override
@@ -733,13 +731,40 @@ const configSnapshotDigests = new WeakMap<RawGatewayConfig, string>();
 
 const ABSENT = "absent";
 
+/** Digest of one config document's exact bytes. */
+function digestOfText(text: string): string {
+  return createHash("sha256").update(text).digest("hex");
+}
+
 /** Digest of the config file as it is on disk right now. */
 function onDiskDigest(file: string): string {
   try {
-    return createHash("sha256").update(fs.readFileSync(file)).digest("hex");
+    return digestOfText(fs.readFileSync(file, "utf8"));
   } catch {
     return ABSENT;
   }
+}
+
+/**
+ * Build a snapshot from the exact bytes of one config document, baselining it
+ * against THOSE bytes.
+ *
+ * Load must read the file once and derive both the parsed value and its
+ * baseline from that single read. Reading twice — once to parse, once to
+ * digest — reintroduces the very lost update this guard exists to stop: a
+ * writer committing between the two reads leaves the snapshot holding OLD
+ * content while its baseline records the NEW digest, so the eventual save
+ * compares equal and silently overwrites that writer's change.
+ */
+function snapshotFromText(text: string): RawGatewayConfig {
+  const cfg = normaliseRawConfig(JSON.parse(text) as unknown);
+  configSnapshotDigests.set(cfg, digestOfText(text));
+  return cfg;
+}
+
+/** Test seam — builds a baselined snapshot without reading the real file. */
+export function snapshotConfigFromTextForTest(text: string): RawGatewayConfig {
+  return snapshotFromText(text);
 }
 
 export function saveGatewayConfig(cfg: RawGatewayConfig): string {

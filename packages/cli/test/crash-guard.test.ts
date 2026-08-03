@@ -67,6 +67,27 @@ describe("installUnhandledRejectionGuard", () => {
     }
   });
 
+  // The event log is durable and is read back by audit tooling, so anything
+  // written there outlives the incident. Error messages routinely quote the
+  // thing that failed -- a Slack API error can echo a bot token, a provider
+  // error an API key, a parse error a user's message -- and stack traces embed
+  // the message verbatim. github.ts already refuses to log stdout/stderr for
+  // exactly this reason; the crash path must hold the same line.
+  it("redacts secrets out of the recorded reason", () => {
+    const events: GatewayEvent[] = [];
+    const handler = makeRejectionHandler(
+      () => {},
+      (e) => events.push(e),
+    );
+    handler(new Error("posting failed for token xoxb-4444444444-abcdefghijkl"));
+    const e = events[0];
+    assert.equal(e.type, "gateway.rejection");
+    if (e.type === "gateway.rejection") {
+      assert.ok(!/xoxb-4444444444/.test(e.reason), "the token must not be persisted");
+      assert.match(e.reason, /slack-token/, "the shape should still be named");
+    }
+  });
+
   it("still survives when the event emitter itself throws", () => {
     const logs: string[] = [];
     const handler = makeRejectionHandler(
@@ -100,6 +121,27 @@ describe("uncaught-exception guard", () => {
       assert.ok(e.stack && e.stack.length > 0, "a fatal crash must carry a stack");
     }
     assert.deepEqual(exits, [1], "must exit non-zero so the supervisor restarts");
+  });
+
+  it("redacts secrets out of the recorded reason AND stack", () => {
+    const events: GatewayEvent[] = [];
+    const err = new Error("auth failed with sk-ant-api03-SECRETSECRETSECRET");
+    const handler = makeUncaughtExceptionHandler(
+      () => {},
+      (e) => events.push(e),
+      () => {},
+    );
+    handler(err);
+    const e = events[0];
+    assert.equal(e.type, "gateway.rejection");
+    if (e.type === "gateway.rejection") {
+      assert.ok(!/SECRETSECRETSECRET/.test(e.reason), "reason must be redacted");
+      assert.ok(
+        !/SECRETSECRETSECRET/.test(e.stack ?? ""),
+        "the stack embeds the message and must be redacted too",
+      );
+      assert.ok(e.stack && e.stack.length > 0, "a stack must still be recorded");
+    }
   });
 
   it("exits even when recording the event fails", () => {

@@ -35,7 +35,7 @@ import { reserveAudioQuota, releaseAudioQuota } from "./quota";
 import { probeAudio } from "./probe";
 import { makeJobTempDir } from "./temp";
 import { claimAudio, releaseAudio, finalizeAudio } from "./claim";
-import { redactSecrets, countHighEntropyTokens } from "./redact";
+import { redactSecrets, countHighEntropyTokens } from "../redact";
 import { writeAtomMarker, readAtomMarker, acquireAtomMarker, deleteAtomMarker, restoreAtomMarker } from "./atom-marker";
 import { saveAtom, findAtomByThreadKey, generateAtomId, type KnowledgeAtom } from "../knowledge";
 import { scanAtomFields } from "../atom-sanitizer";

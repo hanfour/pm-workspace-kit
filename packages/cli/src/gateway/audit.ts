@@ -63,6 +63,20 @@ export interface AuditReport {
     topContributors: Array<{ userId: string; count: number }>;
   };
   /**
+   * Process-level failures the crash guard intercepted. Recording the event
+   * only removes the silence if the rollup counts it — otherwise the report
+   * still reads clean after a crash and the guard has just moved the blind
+   * spot one layer out.
+   */
+  reliability: {
+    /** All gateway.rejection events in window. */
+    rejections: number;
+    /** The subset that killed the process (uncaughtException). */
+    fatal: number;
+    /** Most recent reason, already redacted at write time. */
+    lastReason?: string;
+  };
+  /**
    * v0.11.1: rollup of context-safety events written by the gateway
    * when budget caps and the msg_too_long retry path fire. Operators
    * use these counts to decide whether to tighten PMK_*_CAP env vars.
@@ -149,6 +163,9 @@ export function buildAuditReport(
     ctxExcFirst = 0,
     ctxExcSynth = 0;
   let ctxForcePruned = 0;
+  let rejections = 0,
+    fatalRejections = 0;
+  let lastRejectionReason: string | undefined;
   let msgCap = 0,
     msgCapSeed = 0,
     msgCapMra = 0;
@@ -211,6 +228,11 @@ export function buildAuditReport(
       case "context.force-pruned":
         ctxForcePruned++;
         break;
+      case "gateway.rejection":
+        rejections++;
+        if (e.fatal) fatalRejections++;
+        lastRejectionReason = e.reason;
+        break;
       case "message.capped":
         msgCap++;
         if (e.kind === "seed") msgCapSeed++;
@@ -254,6 +276,19 @@ export function buildAuditReport(
       `${stuckAtoms} atom(s) have been pending > 24h (auto-promote stuck — gateway not restarted?)`,
     );
   }
+  if (fatalRejections > 0) {
+    flags.push(
+      `${fatalRejections} fatal crash(es) (uncaughtException) — the gateway restarted; ` +
+        "any review in flight at the time was orphaned and produced no Slack reply",
+    );
+  }
+  const survivedRejections = rejections - fatalRejections;
+  if (survivedRejections > 0) {
+    flags.push(
+      `${survivedRejections} unhandled rejection(s) survived — the daemon kept running, ` +
+        "but whatever was awaiting them silently produced nothing",
+    );
+  }
   const staleEscalations = pendingEscalations.filter(
     (esc) => now - esc.pendingSince > ESCALATE_STALE_FLAG_MS,
   ).length;
@@ -293,6 +328,11 @@ export function buildAuditReport(
       retrievalInjections,
       medianAtomsInjectedPerTurn: median(injectedSamples),
       topContributors: rank(contributors, "userId", "count"),
+    },
+    reliability: {
+      rejections,
+      fatal: fatalRejections,
+      ...(lastRejectionReason ? { lastReason: lastRejectionReason } : {}),
     },
     contextSafety: {
       contextExceeded: {
