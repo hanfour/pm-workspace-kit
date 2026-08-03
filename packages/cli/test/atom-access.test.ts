@@ -20,10 +20,39 @@ const web = (over: Record<string, unknown> = {}) => ({
 }) as never;
 
 describe("canUserAccessAtom", () => {
-  it("legacy atom with no channel → accessible", async () => {
-    const c = makeAtomAccessChecker(web());
-    assert.equal(await c.canUserAccessAtom("Uany", { ...atom(""), source: { threadKey: "", contributorUserId: "U1" } }), true);
+  // BEHAVIOUR CHANGE: an unparseable threadKey used to resolve to an empty
+  // channel and return TRUE ("legacy/general atom — was always retrievable").
+  // That is a fail-OPEN default in the only untrusted-content→LLM-context path
+  // there is, and it contradicts the module's own fail-closed policy for
+  // present-but-unresolvable channels. `parseAtomMarkdown` defaults a missing
+  // front-matter field to "", so a mangled atom file landed straight on it and
+  // became readable by every Slack user regardless of channel privacy.
+  //
+  // Unreachable-but-fixable beats silently-leaked: a denied atom shows up in
+  // the log with its id, and repairing the front-matter restores it.
+  describe("malformed threadKey → fail closed", () => {
+    for (const [label, threadKey] of [
+      ["empty (parseAtomMarkdown default for a missing field)", ""],
+      ["no colon separator", "CPRIV"],
+      ["leading colon → empty channel segment", ":1700000000.1"],
+    ] as Array<[string, string]>) {
+      it(`denies ${label}`, async () => {
+        const c = makeAtomAccessChecker(web());
+        assert.equal(await c.canUserAccessAtom("Uany", atom(threadKey)), false);
+      });
+    }
+
+    it("names the denied atom in the log so a mangled file is fixable", async () => {
+      const logs: string[] = [];
+      const c = makeAtomAccessChecker(web(), undefined, (m) => logs.push(m));
+      await c.canUserAccessAtom("Uany", atom(""));
+      assert.ok(
+        logs.some((l) => l.includes("x")),
+        "the denial must name the atom id",
+      );
+    });
   });
+
   it("public channel → accessible to anyone", async () => {
     const c = makeAtomAccessChecker(web());
     assert.equal(await c.canUserAccessAtom("Ustranger", atom("CPUB:1.1")), true);

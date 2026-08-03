@@ -136,15 +136,18 @@ describe("free-chat-turn access filter (Task 10)", () => {
     assert.deepEqual(result, []);
   });
 
-  it("legacy atom with no channel is always accessible", async () => {
+  // Was "legacy atom with no channel is always accessible". An atom whose
+  // thread key names no channel cannot be proven visible to the asker, and
+  // `parseAtomMarkdown` produces exactly that shape from a damaged front-matter
+  // field — so the old carve-out let a mangled private-channel atom reach any
+  // user through retrieval injection. Fail closed at the filter too, not just
+  // in the checker, so the end-to-end path can never re-open it.
+  it("atom whose thread key names no channel is filtered out", async () => {
     const checker = makeAtomAccessChecker(makeStubWeb());
     const result = await filterAtoms(checker, "Ustranger", [
       atom("legacy-1", ""),
     ]);
-    assert.deepEqual(
-      result.map((a) => a.id),
-      ["legacy-1"],
-    );
+    assert.deepEqual(result, []);
   });
 
   it("checker instance reuses TTL cache across successive calls (simulate per-turn reuse)", async () => {
