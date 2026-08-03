@@ -116,6 +116,31 @@ export interface GatewayPresenceEvent {
 }
 
 /**
+ * A process-level failure the crash guard intercepted.
+ *
+ * `kind: "unhandledRejection"` is survived (the daemon keeps running); the
+ * event exists because the guard previously only wrote a log line, leaving
+ * `pmk gateway audit`, doctor, and event tailers blind to the exact failure
+ * class the guard was built for — a detached review could die with no Slack
+ * reply AND no auditable trace.
+ *
+ * `kind: "uncaughtException"` is FATAL: the handler records this event, then
+ * exits non-zero so the supervisor restarts a clean process. Recording it
+ * before exiting is the point — a bare crash orphans in-flight subprocesses
+ * with nothing on disk explaining why.
+ *
+ * `reason` is a one-line description; `stack` is present for exceptions only
+ * and is truncated. Neither ever carries message text or tokens.
+ */
+export interface GatewayRejectionEvent {
+  type: "gateway.rejection";
+  kind: "unhandledRejection" | "uncaughtException";
+  reason: string;
+  fatal: boolean;
+  stack?: string;
+}
+
+/**
  * Emitted when the model returns a `prompt is too long` 400 at one of
  * the two budget walls — the first call (seed + history + retrieval)
  * or the synthesise call (mra-result fold-in). `sessionTokensBefore`
@@ -314,6 +339,7 @@ export type GatewayEvent =
   | EscalateTriggeredEvent
   | EscalateAbsorbedEvent
   | GatewayPresenceEvent
+  | GatewayRejectionEvent
   | ContextExceededEvent
   | ContextForcePrunedEvent
   | MessageCappedEvent
@@ -332,27 +358,47 @@ export type GatewayEvent =
 /** What lands on disk: the event plus the ISO timestamp added at append time. */
 export type StoredGatewayEvent = GatewayEvent & { at: string };
 
-const VALID_TYPES: ReadonlySet<string> = new Set([
-  "mra-ask.end",
-  "turn.processed",
-  "escalate.triggered",
-  "escalate.absorbed",
-  "gateway.online",
-  "gateway.offline",
-  "context.exceeded",
-  "context.force-pruned",
-  "message.capped",
-  "token.usage",
-  "github.issue.created",
-  "github.issue.failed",
-  "review.triggered",
-  "review.posted",
-  "review.approved",
-  "review.skipped",
-  "audio.transcribed",
-  "audio.summarized",
-  "audio.failed",
-]);
+/**
+ * The read-side allowlist, keyed by the union so it CANNOT drift.
+ *
+ * This is a `Record<GatewayEvent["type"], true>`, not a bare string array:
+ * omitting an arm is a compile error. That matters because a missing entry
+ * fails silently and asymmetrically — `appendGatewayEvent` still writes the
+ * line to disk, but `isStoredGatewayEvent` rejects it on the way back, so the
+ * event vanishes from `pmk gateway audit`, doctor, and any log tailer.
+ * `message.redacted` was lost that way: declared, emitted by free-chat-turn,
+ * and unreadable for its whole life.
+ */
+const EVENT_TYPE_TABLE: Record<GatewayEvent["type"], true> = {
+  "mra-ask.end": true,
+  "turn.processed": true,
+  "escalate.triggered": true,
+  "escalate.absorbed": true,
+  "gateway.online": true,
+  "gateway.offline": true,
+  "gateway.rejection": true,
+  "context.exceeded": true,
+  "context.force-pruned": true,
+  "message.capped": true,
+  "message.redacted": true,
+  "token.usage": true,
+  "github.issue.created": true,
+  "github.issue.failed": true,
+  "review.triggered": true,
+  "review.posted": true,
+  "review.approved": true,
+  "review.skipped": true,
+  "audio.transcribed": true,
+  "audio.summarized": true,
+  "audio.failed": true,
+};
+
+/** Every event type the reader accepts. Exported so tests can assert coverage. */
+export const GATEWAY_EVENT_TYPES = Object.keys(
+  EVENT_TYPE_TABLE,
+) as ReadonlyArray<GatewayEvent["type"]>;
+
+const VALID_TYPES: ReadonlySet<string> = new Set(GATEWAY_EVENT_TYPES);
 
 /**
  * v0.16 (M3): events partition switches to `dryrun-events-YYYY-MM.log`

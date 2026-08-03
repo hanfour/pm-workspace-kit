@@ -486,4 +486,46 @@ describe("gateway events log (#24)", () => {
       );
     });
   });
+
+  describe("read-side type coverage", () => {
+    // Regression: `message.redacted` was declared in the GatewayEvent union and
+    // emitted by free-chat-turn.ts, but was missing from the read-side
+    // VALID_TYPES set — so every occurrence was written to disk and then
+    // silently dropped by readGatewayEvents(). The event exists to reveal
+    // requests reaching free-chat that should have been routed to a real
+    // handler, so dropping it made that signal permanently invisible.
+    it("round-trips message.redacted (was written but dropped on read)", async () => {
+      const { appendGatewayEvent, readGatewayEvents } =
+        await import("../src/gateway/events");
+      appendGatewayEvent({
+        type: "message.redacted",
+        actor: "U_X",
+        reason: "host-guidance",
+        markers: ["~/.claude/settings.json"],
+        originalChars: 420,
+      });
+      const entries = readGatewayEvents();
+      assert.equal(entries.length, 1, "message.redacted must survive the read");
+      const e = entries[0];
+      assert.equal(e.type, "message.redacted");
+      if (e.type === "message.redacted") {
+        assert.equal(e.actor, "U_X");
+        assert.deepEqual(e.markers, ["~/.claude/settings.json"]);
+      }
+    });
+
+    // Structural guard: every arm of the GatewayEvent union must be readable.
+    // Without this, adding an event type and forgetting the read-side set
+    // reproduces the message.redacted bug with no test failing.
+    it("every declared event type survives a write→read round trip", async () => {
+      const { appendGatewayEvent, readGatewayEvents, GATEWAY_EVENT_TYPES } =
+        await import("../src/gateway/events");
+      for (const type of GATEWAY_EVENT_TYPES) {
+        appendGatewayEvent({ type } as never);
+      }
+      const seen = new Set(readGatewayEvents().map((e) => e.type));
+      const missing = GATEWAY_EVENT_TYPES.filter((t) => !seen.has(t));
+      assert.deepEqual(missing, [], `unreadable event types: ${missing.join(", ")}`);
+    });
+  });
 });
