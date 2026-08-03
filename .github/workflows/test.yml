@@ -51,6 +51,29 @@ jobs:
       - name: Test (typecheck + unit)
         run: npm test --workspace=${{ matrix.workspace }}
 
+      # A test that exercises production objects without isolating HOME writes
+      # into the operator's real ~/.pmk store. socket-watchdog-alert.test.ts did
+      # this for two months: it constructs a PresenceBroadcaster and calls
+      # watchdogTerminate, which appends the daemon's SELF-TERMINATION record.
+      # By 2026-08-03 the live audit log held 1,056 fabricated terminations
+      # against one genuine incident — the real event was unfindable, and
+      # discovering that cost a full investigation.
+      #
+      # The suite must leave $HOME untouched. Runs after the tests so it sees
+      # whatever they created; the runner's HOME is otherwise pristine.
+      - name: Assert tests did not write to the real ~/.pmk
+        run: |
+          if [ -e "$HOME/.pmk" ]; then
+            echo "::error::the test suite wrote to \$HOME/.pmk — a test is missing HOME isolation"
+            echo "files created:"
+            find "$HOME/.pmk" -type f | head -50
+            echo
+            echo "Fix: use test/helpers/isolated-home.ts (useIsolatedHome()), or inject the"
+            echo "write path instead of letting it default to the real store."
+            exit 1
+          fi
+          echo "ok — \$HOME/.pmk absent; the suite touched no production state"
+
   docs:
     name: docs quality
     runs-on: ubuntu-latest

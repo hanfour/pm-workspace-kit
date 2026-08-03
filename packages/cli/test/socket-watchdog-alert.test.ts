@@ -1,6 +1,7 @@
 import { describe, it } from "node:test";
 import * as assert from "node:assert/strict";
 import type { WebClient } from "@slack/web-api";
+import { useIsolatedHome } from "./helpers/isolated-home";
 
 function fakeWeb(opts: { hang?: boolean } = {}) {
   const posts: Array<{ channel: string; text: string }> = [];
@@ -20,6 +21,13 @@ function fakeWeb(opts: { hang?: boolean } = {}) {
 }
 
 describe("PresenceBroadcaster.watchdogTerminate", () => {
+  // watchdogTerminate APPENDS the daemon's self-termination record to the
+  // event log before it DMs anyone. Without an isolated home that lands in the
+  // operator's live audit trail — which is exactly what happened here: three
+  // entries per suite run, 1,056 fabricated self-terminations against one real
+  // incident.
+  useIsolatedHome("pmk-watchdog-alert-");
+
   it("DMs each admin via conversations.open → postMessage", async () => {
     const { PresenceBroadcaster } = await import("../src/gateway/slack/presence");
     const { web, posts } = fakeWeb();
