@@ -39,7 +39,10 @@ describe("installUnhandledRejectionGuard", () => {
     // suppresses Node's crash (covered by the test above); here we verify the
     // handler itself logs + doesn't throw on the exact reason we saw live.
     const logs: string[] = [];
-    const handler = makeRejectionHandler((m) => logs.push(m));
+    // Inject the emitter. Left to its default this reaches appendGatewayEvent
+    // and writes a real gateway.rejection into the operator's live audit log —
+    // this test did exactly that until 2026-08-03.
+    const handler = makeRejectionHandler((m) => logs.push(m), () => {});
     assert.doesNotThrow(() => handler(undefined));
     assert.ok(
       logs.some((l) => /\[unhandledRejection\] survived.*socket-mode/.test(l)),
