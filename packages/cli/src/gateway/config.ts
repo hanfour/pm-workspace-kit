@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -476,7 +477,7 @@ function resolveSlackToken(
 export function loadRawGatewayConfig(): RawGatewayConfig {
   const file = gatewayConfigPath();
   if (!fs.existsSync(file)) {
-    return {
+    const fresh: RawGatewayConfig = {
       version: GATEWAY_CONFIG_VERSION,
       blocklist: [],
       admins: [],
@@ -484,9 +485,15 @@ export function loadRawGatewayConfig(): RawGatewayConfig {
       escalation: defaultEscalation(),
       slack: {},
     };
+    // Baseline "absent": if someone else creates the file before this snapshot
+    // is saved, that is still a lost update and must be refused.
+    configSnapshotDigests.set(fresh, ABSENT);
+    return fresh;
   }
   const raw = JSON.parse(fs.readFileSync(file, "utf8")) as unknown;
-  return normaliseRawConfig(raw);
+  const cfg = normaliseRawConfig(raw);
+  configSnapshotDigests.set(cfg, onDiskDigest(file));
+  return cfg;
 }
 
 /** Runtime config consumers see: Slack tokens resolved eagerly (override
@@ -689,6 +696,52 @@ export function isAdmin(cfg: GatewayConfig, userId: string): boolean {
   return Array.isArray(cfg.admins) && cfg.admins.includes(userId);
 }
 
+/**
+ * Raised when a save would overwrite a config that changed after the snapshot
+ * being saved was read. Distinct from AuthorizationLockBusyError: the lock says
+ * "not now", this says "your copy is stale — re-read and reapply".
+ */
+export class GatewayConfigConflictError extends Error {
+  constructor() {
+    super(
+      "gateway config changed since it was read — another writer committed " +
+        "first; re-read the config and reapply this change",
+    );
+    this.name = "GatewayConfigConflictError";
+  }
+}
+
+/**
+ * Digest of each loaded snapshot, so a save can tell whether the file still
+ * holds what its caller read.
+ *
+ * Why this is needed: every admin command is a read-modify-write —
+ * `loadRawGatewayConfig()` → mutate one field → `saveGatewayConfig()` — but
+ * only the WRITE took the authorization lock. The read sat outside it, so two
+ * writers (the daemon handling a Slack `/pmk admin …` and the host running
+ * `pmk gateway admin …`) could both read, then both write, and the second
+ * write would silently discard the first from its stale snapshot. When the
+ * discarded field is `admins` or `blocklist`, that is a security regression:
+ * removing a compromised admin can be undone by an unrelated concurrent toggle.
+ *
+ * Keyed on the loaded OBJECT rather than a per-process global so two snapshots
+ * held at once are distinguishable — which is exactly the situation being
+ * guarded. A config the caller built itself (a spread, or `pmk gateway init`)
+ * has no entry and is written unconditionally, as before.
+ */
+const configSnapshotDigests = new WeakMap<RawGatewayConfig, string>();
+
+const ABSENT = "absent";
+
+/** Digest of the config file as it is on disk right now. */
+function onDiskDigest(file: string): string {
+  try {
+    return createHash("sha256").update(fs.readFileSync(file)).digest("hex");
+  } catch {
+    return ABSENT;
+  }
+}
+
 export function saveGatewayConfig(cfg: RawGatewayConfig): string {
   // #90: every config write serializes with the GitHub-approve POST critical
   // section via the shared authorization lock. While an approve is in flight
@@ -699,8 +752,20 @@ export function saveGatewayConfig(cfg: RawGatewayConfig): string {
   const lock = acquireAuthorizationLockSync();
   try {
     const file = gatewayConfigPath();
+    // Conflict check inside the lock: between the caller's read and here,
+    // another process may have committed. Refuse rather than clobber — a
+    // silent lost update is indistinguishable from the change never happening.
+    const expected = configSnapshotDigests.get(cfg);
+    if (expected !== undefined && onDiskDigest(file) !== expected) {
+      throw new GatewayConfigConflictError();
+    }
     fs.mkdirSync(path.dirname(file), { recursive: true });
     fs.writeFileSync(file, JSON.stringify(cfg, null, 2), { mode: 0o600 });
+    // Re-baseline: admin commands save the same loaded object once per switch
+    // branch, and each write is legitimately built on the one before it.
+    if (expected !== undefined) {
+      configSnapshotDigests.set(cfg, onDiskDigest(file));
+    }
     // Tighten existing-file permissions in case the file was created with
     // the umask default.
     try {
