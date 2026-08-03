@@ -54,6 +54,80 @@ describe("review-claim", () => {
     assert.equal(claimReview({ ...r, intent: "approve" }), false);
   });
 
+  // The whole point of the claim is "this exact commit is never reviewed
+  // twice". Folding the PR's updatedAt into the key defeated that, because the
+  // bot's OWN review post bumps updatedAt — as does any teammate comment. The
+  // next trigger then computed a different key, the wx create succeeded, and
+  // the same commit was reviewed again. Observed live 9 times, with the verdict
+  // flipping between CHANGES_REQUESTED and 0-blocker on identical code; a
+  // 0-blocker result is what opens the approve offer, so a blocked PR could
+  // become approvable with no code change. review.ts already refuses to pin
+  // freshness on updatedAt for exactly this reason — the claim never followed.
+  it("ignores PR activity: same SHA stays claimed after updatedAt moves", async () => {
+    const { claimReview } = await import("../src/gateway/review-claim");
+    assert.equal(claimReview({ ...r, contextVersion: "2026-07-13T08:42:44Z" }), true);
+    assert.equal(
+      claimReview({ ...r, contextVersion: "2026-07-14T01:20:08Z" }),
+      false,
+      "a bumped updatedAt must not open a second claim on the same commit",
+    );
+  });
+
+  it("claim key is independent of contextVersion", async () => {
+    const { reviewClaimKey } = await import("../src/gateway/review-claim");
+    assert.equal(
+      reviewClaimKey({ ...r, contextVersion: "2026-07-13T08:42:44Z" }),
+      reviewClaimKey({ ...r, contextVersion: "2026-08-01T09:01:12Z" }),
+    );
+    assert.equal(reviewClaimKey({ ...r, contextVersion: "x" }), reviewClaimKey(r));
+  });
+
+  it("still separates intents and SHAs", async () => {
+    const { reviewClaimKey } = await import("../src/gateway/review-claim");
+    assert.notEqual(
+      reviewClaimKey({ ...r, intent: "approve" }),
+      reviewClaimKey({ ...r, intent: "review" }),
+    );
+    assert.notEqual(reviewClaimKey({ ...r, headSha: "def456" }), reviewClaimKey(r));
+  });
+
+  // Claims written before contextVersion left the key carry it as a trailing
+  // segment. Shortening the key would otherwise orphan every one of them, so
+  // the first trigger after upgrading would re-review an already-reviewed
+  // commit -- reproducing the exact bug this change removes, once per PR.
+  // Recognised on read rather than renamed on disk: production state is not
+  // worth rewriting for a compatibility window.
+  describe("legacy keys (contextVersion suffix)", () => {
+    const claimsDir = () => path.join(tmp, ".pmk", "gateway", "reviews");
+    const writeLegacy = (name: string, done: boolean) => {
+      fs.mkdirSync(claimsDir(), { recursive: true });
+      fs.writeFileSync(
+        path.join(claimsDir(), `${name}.json`),
+        JSON.stringify({ key: name, claimedAt: new Date().toISOString(), done }),
+      );
+    };
+
+    it("a finalized legacy claim still blocks a re-review", async () => {
+      const { claimReview, reviewClaimKey } = await import("../src/gateway/review-claim");
+      writeLegacy(`${reviewClaimKey(r)}__2026-07-13T08_42_44Z`, true);
+      assert.equal(claimReview(r), false);
+    });
+
+    it("an UNfinalized legacy claim does not block (it was an orphan)", async () => {
+      const { claimReview, reviewClaimKey } = await import("../src/gateway/review-claim");
+      writeLegacy(`${reviewClaimKey(r)}__2026-07-13T08_42_44Z`, false);
+      assert.equal(claimReview(r), true);
+    });
+
+    // The approve key is the review key plus "__approve", so a naive prefix
+    // match would let an approve claim block an unrelated review claim.
+    it("an approve claim does not masquerade as a legacy review claim", async () => {
+      const { claimReview, reviewClaimKey } = await import("../src/gateway/review-claim");
+      writeLegacy(reviewClaimKey({ ...r, intent: "approve" }), true);
+      assert.equal(claimReview(r), true, "review intent must be unaffected");
+    });
+  });
+
   it("forceClaimReview archives a finalized claim and reclaims the same SHA", async () => {
     const { claimReview, finalizeReview, forceClaimReview } = await import("../src/gateway/review-claim");
     claimReview(r);

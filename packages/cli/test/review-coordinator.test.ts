@@ -5,7 +5,7 @@ import * as os from "node:os";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { FakeWebClient } from "./harness/slack-fakes";
-import { ReviewCoordinator, effectiveMraReviewStrategy, isReviewRequest, isRetryRequest, isRerunRequest, isApproveRequest, isApproveConfirmationRequest, canConfirmApproveFromReview, reviewResultText, approveResultText, describeMraFailure, protectionNotReadyMessage, type ReviewGateway } from "../src/gateway/slack/review";
+import { ReviewCoordinator, effectiveMraReviewStrategy, isReviewRequest, isRetryRequest, isRerunRequest, isApproveRequest, isApproveConfirmationRequest, isReviewCommandMissingPr, canConfirmApproveFromReview, reviewResultText, approveResultText, describeMraFailure, protectionNotReadyMessage, type ReviewGateway } from "../src/gateway/slack/review";
 import { gatewayConfigPath, resolveReviewConfig, saveGatewayConfig } from "../src/gateway/config";
 
 const ORIG_HOME = process.env.HOME; // gatewayDir() is HOME-based; isolate via HOME (not PMK_HOME)
@@ -150,6 +150,74 @@ describe("ReviewCoordinator.fromReaction", () => {
     // arrives via progress.finish() → chat.update (web.updated), not a new postMessage.
     const allTexts = [...web.posted, ...web.updated].map((m) => m.text ?? "");
     assert.ok(allTexts.some((t) => /public/i.test(t)));
+  });
+});
+
+// A message that OPENS with :cr: / :a: is a command attempt. Without a PR ref
+// the typed classifiers both return false, and the message fell through to
+// free-chat -- where the LLM answered from its own vocabulary and told a Slack
+// user that "/code-review 需要指定一個 PR 才能啟動". /code-review is a Claude
+// Code command, not a pmk surface; the classifier gap leaked internal tooling
+// into a user-facing answer. Observed live 2026-08-03 (two consecutive turns).
+// An `:a:` with no offer yet runs a REVIEW first and delegates to the review
+// path, which owns both the wording and the audit line. Two consequences the
+// user saw live: the result told them ":cr: 不會主動 approve" when they had
+// typed `:a:`, and the audit recorded only intent=review, so an `:a:`-initiated
+// run is indistinguishable from a plain `:cr:` after the fact.
+describe("reviewResultText — names the command the user actually typed", () => {
+  const ref = { owner: "o", repo: "r", number: 7, url: "https://github.com/o/r/pull/7" };
+  const approvable = {
+    ok: true, protocolVersion: "1.0" as const, artifactSha256: "a".repeat(64),
+    analyzedHeadSha: "b".repeat(40), blockerCount: 0, status: "COMMENT",
+    commentCount: 0, stdout: "", stderr: "",
+  };
+
+  it("says :cr: for a :cr:-initiated review", () => {
+    const text = reviewResultText("o/r", ref, approvable, true, false, "cr");
+    assert.match(text, /`:cr:` 不會主動 approve/);
+    assert.ok(!/`:a:` 不會主動 approve/.test(text));
+  });
+
+  it("says :a: for an :a:-initiated pre-review", () => {
+    const text = reviewResultText("o/r", ref, approvable, true, false, "a");
+    assert.match(text, /`:a:` 不會主動 approve/);
+    assert.ok(!/`:cr:` 不會主動 approve/.test(text));
+  });
+
+  it("defaults to :cr: when the origin is not supplied", () => {
+    assert.match(reviewResultText("o/r", ref, approvable), /`:cr:`/);
+  });
+});
+
+describe("isReviewCommandMissingPr (classifier fall-through guard)", () => {
+  it("catches a bare command token", () => {
+    assert.equal(isReviewCommandMissingPr(":cr:"), true);
+    assert.equal(isReviewCommandMissingPr(":a:"), true);
+    assert.equal(isReviewCommandMissingPr("  :cr:  "), true);
+  });
+
+  it("catches a command token with an unusable argument", () => {
+    assert.equal(isReviewCommandMissingPr(":cr: 4914"), true);
+    assert.equal(isReviewCommandMissingPr(":a: 那個 PR"), true);
+  });
+
+  it("does NOT catch a command that carries a PR (the typed path owns it)", () => {
+    assert.equal(
+      isReviewCommandMissingPr(":cr: https://github.com/o/r/pull/1"),
+      false,
+    );
+    assert.equal(
+      isReviewCommandMissingPr(":a: https://github.com/o/r/pull/1"),
+      false,
+    );
+  });
+
+  // Ordinary chat that merely mentions the token must stay in free-chat --
+  // answering it with usage help would be its own kind of hijack.
+  it("does NOT catch a mid-sentence mention", () => {
+    assert.equal(isReviewCommandMissingPr("我剛用 :cr: 審過了"), false);
+    assert.equal(isReviewCommandMissingPr("請問 :a: 是什麼意思"), false);
+    assert.equal(isReviewCommandMissingPr("hello"), false);
   });
 });
 

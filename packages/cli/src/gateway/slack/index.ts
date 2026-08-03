@@ -55,7 +55,7 @@ import {
   runMraAsk as runMraAskImpl,
 } from "../../adapters/mra";
 import { IssueCoordinator, realGithubGateway, type GithubGateway } from "./issue";
-import { ReviewCoordinator, realReviewGateway, isReviewRequest, isRetryRequest, isRerunRequest, isApproveRequest, isApproveConfirmationRequest } from "./review";
+import { ReviewCoordinator, realReviewGateway, isReviewRequest, isRetryRequest, isRerunRequest, isApproveRequest, isApproveConfirmationRequest, isReviewCommandMissingPr, reviewCommandUsageText } from "./review";
 import { AudioCoordinator, isAudioMessage } from "../audio/coordinator";
 import { needsConsentNotice } from "../audio/consent";
 import { pickAudience } from "../config";
@@ -705,6 +705,17 @@ export class SlackAdapter {
       return;
     }
 
+    // A command token with no PR: answer with usage rather than letting the
+    // message fall through to free-chat, where the model improvises a product
+    // surface (it once told a user to use "/code-review", a Claude Code
+    // command that does not exist here).
+    if (isReviewCommandMissingPr(text) && this.review.isEnabled()) {
+      await this.web.chat
+        .postMessage({ channel: channelId, thread_ts: replyThreadTs, text: reviewCommandUsageText() })
+        .catch(() => {});
+      return;
+    }
+
     // `retry` command: audio-first so audio threads are never intercepted by
     // review. audio.retryInThread returns false (and posts nothing) for
     // non-audio threads; the caller then falls through to review. Nothing is
@@ -884,6 +895,17 @@ export class SlackAdapter {
         .catch((err) =>
           this.onLog(`review: detached DM review failed: ${(err as Error).message}`),
         );
+      return;
+    }
+
+    // A command token with no PR: answer with usage rather than letting the
+    // message fall through to free-chat, where the model improvises a product
+    // surface (it once told a user to use "/code-review", a Claude Code
+    // command that does not exist here).
+    if (isReviewCommandMissingPr(text) && this.review.isEnabled()) {
+      await this.web.chat
+        .postMessage({ channel: channelId, thread_ts: threadTs, text: reviewCommandUsageText() })
+        .catch(() => {});
       return;
     }
 

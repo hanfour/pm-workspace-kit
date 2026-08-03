@@ -21,6 +21,36 @@ export function isApproveRequest(text: string): boolean {
 }
 
 /**
+ * True when a message OPENS with a review command token but carries no PR
+ * reference — `:cr:` on its own, `:a: 4914`, and so on.
+ *
+ * Without this, both typed classifiers return false and the message falls
+ * through to free-chat, where the LLM answers a command from its own
+ * vocabulary. Live on 2026-08-03 that produced "/code-review 需要指定一個 PR
+ * 才能啟動" — `/code-review` is a Claude Code command, not a pmk surface, so the
+ * gap leaked internal tooling into a user-facing answer. A classifier that
+ * falls through is not silent; it hands the wheel to the model.
+ *
+ * Anchored at the start on purpose. A message that merely MENTIONS the token
+ * ("我剛用 :cr: 審過了") is ordinary chat and belongs in free-chat — answering
+ * that with usage help would be its own kind of hijack.
+ */
+export function isReviewCommandMissingPr(text: string): boolean {
+  if (!/^:(cr|a):/.test(text.trim())) return false;
+  return parsePrRefs(text).length === 0;
+}
+
+/** What to say instead of letting the model improvise. */
+export function reviewCommandUsageText(): string {
+  return (
+    ":information_source: 這個指令需要一個 PR 才能執行。\n" +
+    "• `:cr: <PR 連結>` — 執行 code review\n" +
+    "• `:a: <PR 連結>` — 先 review，通過後再由 admin 於 thread 回覆 `approve` 授權\n" +
+    "例如：`:cr: https://github.com/onead/erp/pull/4914`"
+  );
+}
+
+/**
  * A GitHub PR link in either bare or Slack (`<url>` / `<url|label>`) form. The
  * confirmation matcher strips these before comparing: the bot asks the admin to
  * reply `approve` in a thread whose root message carries the PR link, so
