@@ -4,9 +4,34 @@ import type { KnowledgeAtom } from "./knowledge";
 const TTL_MS = 5 * 60 * 1000;
 interface Cached<T> { value: T; at: number; }
 
+/**
+ * The channel segment of a `<channel>:<ts>` thread key, or undefined when the
+ * key is not that shape.
+ *
+ * The SEPARATOR is what makes a thread key a thread key, so its absence is a
+ * rejection rather than "the whole string is the channel". Guessing there is
+ * not merely imprecise, it fails OPEN: a damaged key that happens to name a
+ * real PUBLIC channel (its `:<ts>` suffix lost) would pass the is-public test
+ * and the atom would be injected for any requester.
+ *
+ * Total on purpose — the previous inline parse mapped every unparseable shape
+ * onto an empty string that the caller read as "legacy → allow". Returning
+ * undefined forces the caller to make that a denial.
+ */
+export function parseAtomChannel(threadKey: string): string | undefined {
+  const separator = threadKey.indexOf(":");
+  if (separator <= 0) return undefined; // absent, or an empty channel segment
+  return threadKey.slice(0, separator);
+}
+
 /** Channel-membership access checker for atom retrieval. Caches is_private +
- *  member sets for TTL_MS. Fail-closed on any lookup error. */
-export function makeAtomAccessChecker(web: WebClient, now: () => number = () => Date.now()) {
+ *  member sets for TTL_MS. Fail-closed on any lookup error AND on a thread key
+ *  that carries no resolvable channel. */
+export function makeAtomAccessChecker(
+  web: WebClient,
+  now: () => number = () => Date.now(),
+  onLog: (msg: string) => void = () => {},
+) {
   const pubCache = new Map<string, Cached<boolean>>();
   const memberCache = new Map<string, Cached<Set<string>>>();
 
@@ -31,9 +56,19 @@ export function makeAtomAccessChecker(web: WebClient, now: () => number = () => 
 
   return {
     async canUserAccessAtom(userId: string, atom: KnowledgeAtom): Promise<boolean> {
-      const threadKey = atom.source?.threadKey ?? "";
-      const channel = threadKey.includes(":") ? threadKey.split(":")[0] : "";
-      if (!channel) return true; // legacy/general atom — was always retrievable
+      const channel = parseAtomChannel(atom.source?.threadKey ?? "");
+      // No resolvable channel → we cannot prove the asker may see this atom, so
+      // we do not inject it. Logged (never silently), because the only way this
+      // happens in practice is a damaged atom file, and the operator needs the
+      // id to repair the front-matter and bring the atom back.
+      if (!channel) {
+        onLog(
+          `atom-access: denied atom ${atom.id} — thread key ${JSON.stringify(
+            atom.source?.threadKey ?? "",
+          )} names no channel; repair its front-matter to restore retrieval`,
+        );
+        return false;
+      }
       try {
         if (await isPublicChannel(channel)) return true; // open public channel
         return (await members(channel)).has(userId);

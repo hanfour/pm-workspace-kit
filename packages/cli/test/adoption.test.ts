@@ -69,6 +69,7 @@ function fakeAudit(over: Partial<AuditReport> = {}): AuditReport {
     mraAsk: { invocations: 8, successes: 6, retries: 0, failures: 2, medianDurationMs: undefined, topRepos: [] },
     escalate: { triggered: 5, absorbed: 3, pending: 0, medianTimeToReplyMs: undefined },
     atoms: { total: 0, approved: 0, pending: 0, retrievalInjections: 0, medianAtomsInjectedPerTurn: undefined, topContributors: [] },
+    reliability: { rejections: 0, fatal: 0 },
     contextSafety: {} as AuditReport["contextSafety"],
     tokenUsage: {} as AuditReport["tokenUsage"],
     flags: [],

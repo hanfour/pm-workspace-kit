@@ -68,4 +68,52 @@ describe("json-store", () => {
     assert.equal(isRecord(null), false);
     assert.equal(isRecord("x"), false);
   });
+
+  // These pin the DURABILITY property, not an implementation detail. A plain
+  // writeFileSync truncates the existing inode in place, so a process killed
+  // mid-write (SIGKILL, power loss, a launchd restart) leaves a half-written
+  // document; readJsonFile then collapses it to undefined and the state is
+  // silently gone. session.json, meta.json, escalation markers and run-state
+  // all go through here. The approve-offer store already writes atomically
+  // (writeOfferAtomic) — this brings the shared helper up to the same bar.
+  describe("crash safety", () => {
+    it("replaces the file rather than truncating it in place", () => {
+      const file = path.join(tmp, "state.json");
+      writeJsonFile(file, { a: 1 });
+      // A reader that opened the old document keeps reading the OLD bytes:
+      // an atomic write swaps in a new inode instead of rewriting this one.
+      // Under truncate-in-place this fd would observe the new or partial doc.
+      const held = fs.openSync(file, "r");
+      try {
+        writeJsonFile(file, { a: 2 });
+        const buf = Buffer.alloc(64);
+        const n = fs.readSync(held, buf, 0, 64, 0);
+        assert.equal(
+          JSON.parse(buf.subarray(0, n).toString()).a,
+          1,
+          "the previously-opened document must still read as complete old content",
+        );
+      } finally {
+        fs.closeSync(held);
+      }
+      // and the new content did land
+      assert.deepEqual(readJsonFile(file, isFoo), { a: 2 });
+    });
+
+    it("leaves no temp files behind", () => {
+      const file = path.join(tmp, "state.json");
+      writeJsonFile(file, { a: 1 });
+      writeJsonFile(file, { a: 2 });
+      assert.deepEqual(fs.readdirSync(tmp), ["state.json"]);
+    });
+
+    it("keeps the mode on replacement, not just on create", () => {
+      const file = path.join(tmp, "secret.json");
+      writeJsonFile(file, { a: 1 }, { mode: 0o600 });
+      writeJsonFile(file, { a: 2 }, { mode: 0o600 });
+      if (process.platform !== "win32") {
+        assert.equal(fs.statSync(file).mode & 0o777, 0o600);
+      }
+    });
+  });
 });

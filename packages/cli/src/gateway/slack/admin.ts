@@ -78,6 +78,15 @@ export async function handleAdminSlash(
     if ((err as Error).name === "AuthorizationLockBusyError") {
       return { text: ":hourglass: 有一筆 GitHub approve 正在進行，設定暫時鎖定；請幾秒後重試這個指令。" };
     }
+    // Another writer (typically the host running `pmk gateway admin …`)
+    // committed between this command's read and its write. Refusing is the
+    // point: applying our stale snapshot would silently revert their change.
+    // Re-running the command re-reads and reapplies cleanly.
+    if ((err as Error).name === "GatewayConfigConflictError") {
+      return {
+        text: ":warning: 設定在這個指令執行期間被其他人改動，為避免覆蓋掉對方的變更，這次沒有寫入。請重新執行一次這個指令。",
+      };
+    }
     throw err;
   }
 }

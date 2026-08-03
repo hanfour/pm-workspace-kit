@@ -1,6 +1,6 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { redactSecrets } from "./redact";
+import { redactSecrets } from "../redact";
 
 export class TranscribeError extends Error {
   status?: number;

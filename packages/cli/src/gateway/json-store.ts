@@ -48,21 +48,58 @@ export function readJsonFile<T>(
 }
 
 /**
- * Write a JSON document, creating parent directories as needed. Matches
- * the pre-existing on-disk format exactly: 2-space indent, no trailing
- * newline. `mode` (e.g. 0o600 for secrets) is applied on create.
+ * Write a JSON document atomically, creating parent directories as needed.
+ * Matches the pre-existing on-disk format exactly: 2-space indent, no
+ * trailing newline. `mode` (e.g. 0o600 for secrets) is applied to the temp
+ * file before it is published, so the document is never briefly world-readable.
+ *
+ * Atomic because a plain `writeFileSync` truncates the target in place: a
+ * process killed mid-write (SIGKILL, power loss, a launchd restart) leaves a
+ * half-written document, and `readJsonFile` then collapses it to `undefined` —
+ * the state is silently gone rather than loudly broken. Every caller here is
+ * daemon state that outlives a single run (session.json, meta.json, escalation
+ * markers, run-state.json).
+ *
+ * Mechanics: write a sibling temp file in the SAME directory (rename is only
+ * atomic within one filesystem), fsync it so the bytes are durable before they
+ * become reachable, then rename over the target. A reader either sees the whole
+ * old document or the whole new one. Mirrors `writeOfferAtomic` in
+ * review-approval.ts, which already held this bar.
  */
 export function writeJsonFile(
   file: string,
   value: unknown,
   opts: { mode?: number } = {},
 ): void {
-  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const dir = path.dirname(file);
+  fs.mkdirSync(dir, { recursive: true });
   const json = JSON.stringify(value, null, 2);
-  if (opts.mode !== undefined) {
-    fs.writeFileSync(file, json, { mode: opts.mode });
-  } else {
-    fs.writeFileSync(file, json, "utf8");
+  const tmp = path.join(
+    dir,
+    `.${path.basename(file)}.tmp.${process.pid}.${Math.random().toString(16).slice(2)}`,
+  );
+  try {
+    // "wx" — never clobber a temp name; the pid+random suffix makes a
+    // collision a genuine bug rather than something to silently overwrite.
+    const fd = fs.openSync(tmp, "wx", opts.mode);
+    try {
+      fs.writeFileSync(fd, json, "utf8");
+      fs.fsyncSync(fd);
+    } finally {
+      fs.closeSync(fd);
+    }
+    // openSync's mode is subject to umask; re-assert it so a restrictive
+    // request (0o600 for secrets) is exact rather than best-effort.
+    if (opts.mode !== undefined) fs.chmodSync(tmp, opts.mode);
+    fs.renameSync(tmp, file);
+  } catch (err) {
+    // Leave the target untouched — the previous document is still the truth.
+    try {
+      fs.rmSync(tmp, { force: true });
+    } catch {
+      /* temp already gone or undeletable — nothing further to do */
+    }
+    throw err;
   }
 }
 

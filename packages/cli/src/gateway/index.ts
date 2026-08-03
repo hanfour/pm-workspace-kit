@@ -19,7 +19,10 @@ import {
   startHeartbeat,
 } from "./heartbeat";
 import { startKeepAwake } from "./keep-awake";
-import { installUnhandledRejectionGuard } from "./crash-guard";
+import {
+  installUncaughtExceptionGuard,
+  installUnhandledRejectionGuard,
+} from "./crash-guard";
 import { recoverReviewClaims } from "./review-claim";
 import { sweepApprovalOffers } from "./review-approval";
 import { sweepStaleAudioTemp } from "./audio/temp";
@@ -195,6 +198,11 @@ export async function runGateway(opts: GatewayRunOptions = {}): Promise<void> {
   // orphan in-flight reviews. Log + keep running; the socket-watchdog still
   // owns deliberate loud-exit on genuine unrecoverable socket failure.
   installUnhandledRejectionGuard(log);
+  // A synchronous throw that escaped every try/catch is NOT survivable, but it
+  // must not vanish either: record the crash on the event stream, then exit(1)
+  // so launchd restarts a clean process. Without this, Node's default crash
+  // leaves no auditable trace of why the gateway disappeared.
+  installUncaughtExceptionGuard(log);
 
   try {
     const info = await adapter.start();

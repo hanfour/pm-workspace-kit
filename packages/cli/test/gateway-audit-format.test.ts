@@ -36,6 +36,7 @@ function emptyReport(overrides: Partial<AuditReport> = {}): AuditReport {
       medianAtomsInjectedPerTurn: undefined,
       topContributors: [],
     },
+    reliability: { rejections: 0, fatal: 0 },
     contextSafety: {
       contextExceeded: { total: 0, firstCall: 0, synthesise: 0 },
       contextForcePruned: 0,

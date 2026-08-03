@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import * as assert from "node:assert/strict";
-import { redactSecrets, countHighEntropyTokens } from "../src/gateway/audio/redact";
+import { redactSecrets, countHighEntropyTokens } from "../src/gateway/redact";
 
 describe("redactSecrets broadened", () => {
   it("redacts cloud/service creds, emails, separator-delimited phones", () => {

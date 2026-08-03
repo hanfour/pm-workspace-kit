@@ -562,3 +562,64 @@ describe("gateway audit aggregator (#24)", () => {
     assert.equal(report.tokenUsage.perModel[0].outputTokens, 600);
   });
 });
+
+describe("audit — gateway.rejection rollup", () => {
+  let tmpHome: string;
+  beforeEach(() => {
+    tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), "pmk-audit-rej-"));
+    process.env.HOME = tmpHome;
+  });
+  afterEach(() => {
+    fs.rmSync(tmpHome, { recursive: true, force: true });
+    if (ORIG_HOME !== undefined) process.env.HOME = ORIG_HOME;
+  });
+
+  const now = () => new Date().toISOString();
+
+  // The crash guard records gateway.rejection so intercepted failures stop
+  // being invisible. That only holds if the audit rollup actually counts them:
+  // a report that still reads clean after a crash is the same silence the
+  // guard was meant to remove, moved one layer out.
+  it("counts rejections and separates the fatal ones", async () => {
+    seedEvent(tmpHome, now(), { type: "gateway.rejection", kind: "unhandledRejection", reason: "TypeError: boom", fatal: false });
+    seedEvent(tmpHome, now(), { type: "gateway.rejection", kind: "uncaughtException", reason: "RangeError: bad", fatal: true });
+    const { buildAuditReport } = await import("../src/gateway/audit");
+    const report = buildAuditReport({});
+    assert.equal(report.reliability.rejections, 2);
+    assert.equal(report.reliability.fatal, 1);
+    assert.equal(report.reliability.lastReason, "RangeError: bad");
+  });
+
+  it("raises separate flags for a fatal crash and a survived rejection", async () => {
+    seedEvent(tmpHome, now(), { type: "gateway.rejection", kind: "uncaughtException", reason: "RangeError: bad", fatal: true });
+    seedEvent(tmpHome, now(), { type: "gateway.rejection", kind: "unhandledRejection", reason: "TypeError: boom", fatal: false });
+    const { buildAuditReport } = await import("../src/gateway/audit");
+    const flags = buildAuditReport({}).flags;
+    assert.ok(flags.some((f) => /fatal crash/i.test(f)), `expected a fatal flag, got ${JSON.stringify(flags)}`);
+    assert.ok(flags.some((f) => /unhandled rejection/i.test(f)), `expected a survived flag, got ${JSON.stringify(flags)}`);
+  });
+
+  it("stays quiet when nothing was intercepted", async () => {
+    seedEvent(tmpHome, now(), { type: "turn.processed", actor: "U1", audience: "tech", hadMraAsk: false, atomsInjected: 0 });
+    const { buildAuditReport } = await import("../src/gateway/audit");
+    const report = buildAuditReport({});
+    assert.equal(report.reliability.rejections, 0);
+    assert.ok(!report.flags.some((f) => /rejection|crash/i.test(f)));
+  });
+
+  // Deliberately NOT a bare /rejection/ match: the flags block already
+  // contains that word, so a loose assertion passes without the rollup ever
+  // being rendered. Pin the counts section itself.
+  it("renders a reliability section with the counts, not just a flag", async () => {
+    seedEvent(tmpHome, now(), { type: "gateway.rejection", kind: "unhandledRejection", reason: "TypeError: boom", fatal: false });
+    seedEvent(tmpHome, now(), { type: "gateway.rejection", kind: "uncaughtException", reason: "RangeError: bad", fatal: true });
+    const { buildAuditReport } = await import("../src/gateway/audit");
+    const { formatAuditReport } = await import("../src/gateway/audit-format");
+    const text = formatAuditReport(buildAuditReport({}));
+    const idx = text.search(/Reliability/i);
+    assert.ok(idx >= 0, "a Reliability section must exist");
+    const section = text.slice(idx).split("\n").slice(0, 4).join("\n");
+    assert.match(section, /2\b/, "total count must be shown");
+    assert.match(section, /fatal/i, "the fatal split must be shown");
+  });
+});

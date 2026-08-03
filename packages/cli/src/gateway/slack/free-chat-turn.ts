@@ -169,7 +169,11 @@ export class FreeChatTurnRunner {
     // The checker is lazily cached on the runner instance so the TTL
     // cache survives across turns — one instance per gateway lifetime.
     const retrievedRaw = searchAtoms(text, { limit: 3 });
-    const checker = (this.accessChecker ??= makeAtomAccessChecker(web));
+    const checker = (this.accessChecker ??= makeAtomAccessChecker(
+      web,
+      undefined,
+      onLog,
+    ));
     const accessible: typeof retrievedRaw = [];
     for (const a of retrievedRaw) {
       if (await checker.canUserAccessAtom(userId, a)) accessible.push(a);
