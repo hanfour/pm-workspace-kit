@@ -806,8 +806,8 @@ describe("doctor — allowWhenNoReviewGate", () => {
 });
 
 describe("doctor — DEFAULT_CHECKS shape", () => {
-  it("exports exactly 12 checks (FR2 + secret-sources + github-token + review + audio)", () => {
-    assert.equal(DEFAULT_CHECKS.length, 12);
+  it("exports exactly 13 checks (FR2 + secret-sources + github-token + review + audio + audit-log)", () => {
+    assert.equal(DEFAULT_CHECKS.length, 13);
     const names = DEFAULT_CHECKS.map((c) => c.name);
     assert.deepEqual(names, [
       "configFileCheck",
@@ -822,6 +822,9 @@ describe("doctor — DEFAULT_CHECKS shape", () => {
       "githubTokenCheck",
       "reviewDoctorCheck",
       "audioDoctorCheck",
+      // Last on purpose: it reports lines this process failed to persist,
+      // including any produced while the checks above were running.
+      "auditLogCheck",
     ]);
   });
 });

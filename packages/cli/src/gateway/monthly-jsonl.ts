@@ -80,6 +80,33 @@ export function legacyMonolithPath(baseDir: string, prefix: string): string {
  * the gateway on a corrupt audit log would be worse than the
  * missing line.
  */
+/**
+ * Accounting for lines the audit log could not persist.
+ *
+ * The swallow above is deliberate and stays — but it used to be invisible:
+ * no log, no counter, no doctor check. For a daemon that publishes real
+ * GitHub approvals the event log is the only forensic record, so a full disk
+ * or a broken permission could stop it recording indefinitely with nothing
+ * to notice. Counting costs nothing and makes the silence observable.
+ */
+interface AuditWriteFailures {
+  count: number;
+  lastError?: string;
+  lastAt?: string;
+}
+
+let auditFailures: AuditWriteFailures = { count: 0 };
+
+/** Snapshot of dropped-audit-line accounting (a copy — never the live object). */
+export function auditWriteFailures(): AuditWriteFailures {
+  return { ...auditFailures };
+}
+
+/** Reset the accounting. Exists for tests; production never resets. */
+export function resetAuditWriteFailures(): void {
+  auditFailures = { count: 0 };
+}
+
 export function appendJsonl(
   baseDir: string,
   prefix: string,
@@ -90,8 +117,14 @@ export function appendJsonl(
     const line =
       JSON.stringify({ at: new Date().toISOString(), ...payload }) + "\n";
     fs.appendFileSync(monthlyPath(baseDir, prefix), line, "utf8");
-  } catch {
-    /* non-fatal */
+  } catch (err) {
+    // Still non-fatal: blocking the gateway on a broken audit log would be
+    // worse than the missing line. Only the silence is removed.
+    auditFailures = {
+      count: auditFailures.count + 1,
+      lastError: (err as Error).message,
+      lastAt: new Date().toISOString(),
+    };
   }
 }
 

@@ -11,6 +11,7 @@ import { secretSourcesCheck } from "./secret-sources";
 import { githubTokenCheck } from "./github-token";
 import { reviewDoctorCheck } from "./review";
 import { audioDoctorCheck } from "./audio";
+import { auditLogCheck } from "./audit-log";
 
 export {
   configFileCheck,
@@ -25,6 +26,7 @@ export {
   githubTokenCheck,
   reviewDoctorCheck,
   audioDoctorCheck,
+  auditLogCheck,
 };
 
 // Order matters for output legibility: config-file first (blocks
@@ -45,4 +47,7 @@ export const DEFAULT_CHECKS: DoctorCheck[] = [
   githubTokenCheck,
   reviewDoctorCheck,
   audioDoctorCheck,
+  // Last: reports what this process failed to record, including failures
+  // produced by the checks above.
+  auditLogCheck,
 ];
