@@ -1618,7 +1618,15 @@ describe("ReviewCoordinator project concurrency", () => {
     await new Promise((resolve) => setImmediate(resolve));
     await c.fromMessage({ channelId: "C1", threadTs: "1.2", userId: "U1", text: ":cr: https://github.com/onead/OnePixel/pull/13" });
     assert.equal(calls, 1);
-    assert.ok(web.posted.some((p) => /同一 repo 正在 review|併發上限/.test(p.text ?? "")));
+    // Asserts the CAUSE, not just that something was refused. The previous
+    // assertion allowed either wording because the message itself named all
+    // three limits joined by "或" — a user blocked by their own still-running
+    // review of this repo was told the system was busy. admissionRefusal now
+    // reports which limit fired, so the reply names the repo.
+    assert.ok(
+      web.posted.some((p) => /onead\/OnePixel/.test(p.text ?? "") && /同一個 repo/.test(p.text ?? "")),
+      `expected a same-repo refusal naming the repo, got: ${JSON.stringify(web.posted.map((p) => p.text))}`,
+    );
     release();
     await first;
   });
