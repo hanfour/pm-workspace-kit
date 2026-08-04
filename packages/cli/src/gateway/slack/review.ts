@@ -70,6 +70,7 @@ import {
 // Imported for internal use, and re-exported so slack/index.ts and the review
 // tests keep importing them from "./review" unchanged.
 import { isReviewRequest, isApproveRequest } from "./review-requests";
+import { resolveReviewTarget } from "./review-target";
 export {
   isReviewRequest,
   isApproveRequest,
@@ -922,53 +923,15 @@ export class ReviewCoordinator {
       else await this.reply(ctx.channelId, ctx.threadTs, msg);
     };
 
-    const project = gateway.resolveProjectByRemote(ctx.workspace, slugDisplay);
-    if (!project) {
-      await skip(
-        "not-in-workspace",
-        `:information_source: \`${slugDisplay}\` 不在 mra workspace，略過 PR #${ref.number}`,
-      );
+    // Every pre-claim guard (workspace, slug, head, approve-head authorisation,
+    // allowlist, visibility) lives in resolveReviewTarget. Refusals never reach
+    // a claim, so a rejected PR does not burn one.
+    const target = await resolveReviewTarget(ref, ctx, gateway);
+    if (!target.ok) {
+      await skip(target.reason, target.message);
       return;
     }
-
-    const slug = await gateway.resolveRepoSlug(ctx.workspace, project);
-    if (!slug) {
-      await skip(
-        "slug",
-        `:warning: 無法從 \`${project}\` 推出 GitHub slug，略過 PR #${ref.number}`,
-      );
-      return;
-    }
-
-    const head = await gateway.getPrHead({ slug, pr: ref.number, token: ctx.token });
-    if (!head) {
-      await skip("pr-head", `:warning: 取不到 PR #${ref.number} 的 head，略過`);
-      return;
-    }
-    const authorizedHead = ctx.authorizedHeads?.get(`${ref.owner}/${ref.repo}#${ref.number}`);
-    if (authorizedHead && authorizedHead !== head.sha) {
-      await skip("approval-head-changed", `:warning: PR #${ref.number} 在 approve 授權後已有新 commit；未 approve，請重新執行 :cr:。`);
-      return;
-    }
-
-    // public-repo / allowlist guard (checked BEFORE claim to avoid wasted claims)
-    if (ctx.review.repoAllowlist && !ctx.review.repoAllowlist.includes(slug)) {
-      await skip(
-        "allowlist",
-        `:no_entry: \`${slug}\` 不在 review allowlist，略過 PR #${ref.number}`,
-      );
-      return;
-    }
-    if (!ctx.review.allowPublicRepos) {
-      const vis = await gateway.repoVisibility({ slug, token: ctx.token });
-      if (vis !== "private") {
-        await skip(
-          "public-repo",
-          `:no_entry: \`${slug}\` 為 public（或無法判定），略過 PR #${ref.number} 以免外洩`,
-        );
-        return;
-      }
-    }
+    const { project, slug, head } = target;
 
     const slugParts = slug.split("/");
     const [slugOwner, slugRepo] =
