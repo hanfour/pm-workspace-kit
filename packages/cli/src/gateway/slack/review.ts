@@ -27,13 +27,10 @@ import {
   reviewWorkspaceDir,
   isAdmin,
 } from "../config";
-import { appendGatewayEvent, readGatewayEvents } from "../events";
+import { appendGatewayEvent } from "../events";
 import { parsePrRefs, type PrRef } from "../pr-ref";
 import { claimReview, forceClaimReview, finalizeReview, releaseReview, type ReviewRef } from "../review-claim";
 import {
-  listPendingApprovalReconciliations,
-  reserveApprovalOffer,
-  resolveApprovalReconciliation,
   saveApprovalOffer,
   type ApprovalOfferRef,
 } from "../review-approval";
@@ -42,7 +39,7 @@ import {
   runMraReview as runMraReviewImpl,
   runMraAnalyze as runMraAnalyzeImpl,
 } from "../../adapters/mra";
-import { AUTOMATIC_APPROVAL_RELEASE_READY, effectiveMraReviewStrategy, findProtectionExemption } from "../review-policy";
+import { effectiveMraReviewStrategy, findProtectionExemption } from "../review-policy";
 export { effectiveMraReviewStrategy } from "../review-policy";
 import {
   resolveRepoSlug as resolveRepoSlugImpl,
@@ -541,135 +538,16 @@ export class ReviewCoordinator {
 
   /**
    * `approve` posted in a `:cr:` review thread → explicit authorization to run
-   * the approve path for the same PR. This keeps `:cr:` review-only while giving
-   * users a clear one-step confirmation when the review result is approvable.
+   * the approve path for the same PR. Implemented in ApproveFlow; kept here so
+   * the coordinator's public surface (and slack/index.ts) is unchanged.
    */
   async confirmApproveInThread(args: {
     channelId: string;
     threadTs: string;
     userId: string;
-    /**
-     * The confirmation text, when available. A PR link inside it never selects
-     * the PR — the thread's offer does — but a link naming a DIFFERENT PR means
-     * the admin thinks they are approving something else, so we refuse.
-     */
     text?: string;
   }): Promise<void> {
-    const config = this.currentConfig();
-    const review = resolveReviewConfig(config.review);
-    if (!review.enabled) return;
-    if (!AUTOMATIC_APPROVAL_RELEASE_READY || !review.approval.enabled) {
-      await this.reply(args.channelId, args.threadTs, ":lock: GitHub automatic approval 目前為安全停用狀態；這個 review 不會執行 approve。");
-      return;
-    }
-    if (!isAdmin(config, args.userId)) {
-      await this.reply(args.channelId, args.threadTs, ":no_entry: approve 授權只接受 PMK admin；請 admin 在此 thread 回覆 `approve`。");
-      return;
-    }
-    const mismatch = await this.mismatchedConfirmationPr(args);
-    if (mismatch) {
-      await this.reply(args.channelId, args.threadTs, mismatch);
-      return;
-    }
-    const pending = listPendingApprovalReconciliations(args.channelId, args.threadTs);
-    if (pending.length > 0) {
-      const token = resolveReviewGhToken(config.review) ?? resolveGithubToken(config.github);
-      const actor = review.expectedGhUser ?? await this.opts.gateway.getAuthUser({ token });
-      if (!actor) {
-        await this.reply(args.channelId, args.threadTs, ":warning: pending approve 無法確認 GitHub identity，未自動重送。");
-        return;
-      }
-      for (const item of pending) {
-        const matches = await Promise.all(item.refs.map((ref) => this.opts.gateway.hasPullRequestApproval({
-          slug: `${ref.owner}/${ref.repo}`, pr: ref.number, commitId: ref.headSha,
-          artifactSha256: ref.artifactSha256, actor, token,
-        })));
-        if (matches.every((v) => v === true)) {
-          resolveApprovalReconciliation(item, "consumed");
-          await this.reply(args.channelId, args.threadTs, ":information_source: 已由 GitHub review ledger 確認先前 approve 成功，不會重送。");
-          return;
-        }
-        // A negative list result is not proof that a timed-out POST will never
-        // become visible. Keep pending until an operator explicitly resolves it.
-        if (matches.every((v) => v === false)) {
-          await this.reply(args.channelId, args.threadTs, ":warning: GitHub 尚未找到先前 approve，但為避免 eventual-consistency 重複送出，維持 pending reconcile，需由 operator 處理。");
-          return;
-        }
-        await this.reply(args.channelId, args.threadTs, ":warning: pending approve 對帳結果不完整，維持 pending reconcile，不會自動重送。");
-        return;
-      }
-    }
-    const reservation = reserveApprovalOffer(args.channelId, args.threadTs);
-    if (!reservation?.refs.length) {
-      await this.reply(args.channelId, args.threadTs, await this.missingOfferMessage(args.channelId, args.threadTs));
-      return;
-    }
-    await this.approveFlow.publishReservation(reservation, args.userId);
-  }
-
-  /**
-   * Guards the intent behind a confirmation that carries a PR link. The thread's
-   * offer selects what gets approved, so a link naming a different PR means the
-   * admin is authorizing something other than what they believe. Returns the
-   * refusal text, or null when there is nothing to object to.
-   *
-   * Runs BEFORE the offer is reserved, so a refused confirmation leaves the
-   * offer intact and the admin can simply reply `approve` again.
-   */
-  private async mismatchedConfirmationPr(args: {
-    channelId: string;
-    threadTs: string;
-    text?: string;
-  }): Promise<string | null> {
-    if (!args.text) return null;
-    const named = parsePrRefs(args.text);
-    if (named.length === 0) return null;
-    const rootText = await this.fetchMessageText(args.channelId, args.threadTs);
-    const threadRefs = rootText ? parsePrRefs(rootText) : [];
-    // No PR in the thread root to compare against — leave the decision to the
-    // offer lookup rather than inventing a mismatch.
-    if (threadRefs.length === 0) return null;
-    const key = (r: PrRef) => `${r.owner}/${r.repo}#${r.number}`;
-    const threadKeys = new Set(threadRefs.map(key));
-    const stray = named.filter((r) => !threadKeys.has(key(r)));
-    if (stray.length === 0) return null;
-    return (
-      `:no_entry: 你附的連結指向不同的 PR（${stray.map(key).join("、")}），` +
-      `與這個 thread 正在處理的 ${[...threadKeys].join("、")} 不符。` +
-      "為避免核准到未 review 的 PR，這次授權不會執行。\n" +
-      "若要核准本 thread 的 PR，直接回覆 `approve`；" +
-      "若要核准另一個 PR，請對它執行 `:cr: <PR 連結>` 後在該 thread 授權。"
-    );
-  }
-
-  /**
-   * The reply when `approve` finds no usable offer. Usually that means no review
-   * has run — "complete a `:cr:` review first". But a review that finds blockers
-   * posts CHANGES_REQUESTED and NEVER creates an offer, so telling the admin to
-   * re-run a review they already ran is misleading. When the thread's PR was most
-   * recently reviewed with blockers, name that as the real reason instead.
-   */
-  private async missingOfferMessage(channelId: string, threadTs: string): Promise<string> {
-    const generic = ":information_source: 這個 thread 沒有有效、未使用的 approve offer。請先完成 `:cr: <PR 連結>` review；offer 使用一次或逾時後需重新 review。";
-    const rootText = await this.fetchMessageText(channelId, threadTs);
-    if (!rootText) return generic;
-    const review = resolveReviewConfig(this.currentConfig().review);
-    const refs = parsePrRefs(rootText, { cap: review.maxPrsPerTrigger });
-    if (refs.length === 0) return generic;
-    const posted = readGatewayEvents().filter((e) => e.type === "review.posted");
-    for (const ref of refs) {
-      const slug = `${ref.owner}/${ref.repo}`;
-      // The MOST RECENT review.posted for this PR decides: a since-fixed PR
-      // re-reviewed clean has a newer 0-blocker event and correctly falls through.
-      const last = [...posted].reverse().find((e) => e.repo === slug && e.pr === ref.number) as
-        | { status?: string; blockerCount?: number } | undefined;
-      if (last && ((last.blockerCount ?? 0) >= 1 || last.status === "CHANGES_REQUESTED")) {
-        const n = last.blockerCount ?? 0;
-        const count = n >= 1 ? `${n} 個 blocker` : "blocker";
-        return `:information_source: ${slug}#${ref.number} 的 review 發現 ${count}（GitHub 已標記 CHANGES_REQUESTED），因此未提供 approve。請修正後重新 \`:cr:\` review。`;
-      }
-    }
-    return generic;
+    return this.approveFlow.confirmInThread(args);
   }
 
   /** Shared core: parse PR refs from the text, then review each (fail-soft). */
