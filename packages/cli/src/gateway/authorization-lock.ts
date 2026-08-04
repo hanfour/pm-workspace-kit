@@ -3,7 +3,7 @@
  * writers and the GitHub-approve POST path (#90 — the #70 release-veto
  * precondition).
  *
- * Why it exists: `publishApprovalReservation` re-validates live policy with
+ * Why it exists: `ApproveFlow.publishReservation` re-validates live policy with
  * a three-phase revision fence before POSTing, but fences are reads — they
  * cannot exclude a writer landing between the last read and the POST. This
  * lock makes them mutually exclusive: while the approve critical section

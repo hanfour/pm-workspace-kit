@@ -41,6 +41,10 @@ import {
 } from "../../adapters/mra";
 import { effectiveMraReviewStrategy, findProtectionExemption } from "../review-policy";
 export { effectiveMraReviewStrategy } from "../review-policy";
+// protectionNotReadyMessage moved to the leaf review-policy module so
+// review-approve-flow can import it without a runtime cycle back through here.
+// Re-exported so existing importers keep working unchanged.
+export { protectionNotReadyMessage } from "../review-policy";
 import {
   resolveRepoSlug as resolveRepoSlugImpl,
   repoVisibility as repoVisibilityImpl,
@@ -154,45 +158,6 @@ interface InFlightReview {
   projectKey: string;
 }
 
-/**
- * The refusal shown when approve preflight finds the repo not approval-ready.
- *
- * Two very different situations reach this point and the old single sentence
- * covered both, leaving the reader nothing to act on — one admin retried the
- * same `approve` seven times over two hours against an underprotected repo.
- *
- * `approvalProtectionReady` returning false already establishes that the two
- * controls are not both on, so that is the default explanation — it holds even
- * when the gate probe was never consulted (the flag is off). The probe only
- * adds one distinction: if it ran and came back unknown, the Rules API is
- * unreadable, which also makes the `false` above untrustworthy. Say that
- * instead of naming controls we could not actually observe.
- *
- * @param gateStatus probe result; meaningful only when `gateProbed` is true
- * @param gateProbed whether the gate probe was consulted at all
- */
-export function protectionNotReadyMessage(
-  slug: string,
-  branch: string,
-  gateStatus: boolean | undefined,
-  gateProbed = false,
-): string {
-  if (gateProbed && gateStatus === undefined) {
-    return (
-      `無法確認 ${slug} 的 \`${branch}\` 保護狀態（Rules API 讀取失敗），` +
-      "為安全起見不予核准。請 repo admin 確認 pmk 的 review 身分是否有讀取權限；" +
-      "在確認之前，請直接在 GitHub 上人工核准。"
-    );
-  }
-  return (
-    `${slug} 的 \`${branch}\` 需要 review 核准，但缺少兩項必要保護：` +
-    "`dismiss_stale_reviews_on_push` 與 `require_last_push_approval`（目前皆為 false）。" +
-    "少了它們，核准後推的新 commit 不會讓核准失效，未經審查的變更就能合併。\n" +
-    "請 repo admin 於 ruleset 開啟這兩項；" +
-    "若需在調整前先行放行，請 PMK admin 將此 repo 加入 `review.approval.protectionExemptions`。" +
-    "在此之前，請直接在 GitHub 上人工核准。"
-  );
-}
 
 export class ReviewCoordinator {
   /** Reviews running right now (detached). Drained on shutdown (A). */

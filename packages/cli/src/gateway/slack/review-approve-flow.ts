@@ -27,7 +27,7 @@ import { parsePrRefs, type PrRef } from "../pr-ref";
 import { AUTOMATIC_APPROVAL_RELEASE_READY, findProtectionExemption } from "../review-policy";
 import { withAuthorizationLock } from "../authorization-lock";
 import type { ReviewGateway } from "./review";
-import { protectionNotReadyMessage } from "./review";
+import { protectionNotReadyMessage } from "../review-policy";
 
 export interface ApproveFlowDeps {
   gateway: ReviewGateway;
@@ -44,6 +44,14 @@ export interface ApproveFlowDeps {
 export class ApproveFlow {
   constructor(private readonly deps: ApproveFlowDeps) {}
 
+  /**
+   * Public, deliberately: this is the seam the fence tests drive directly
+   * (approve-flow-fences.test.ts). `confirmInThread` is the only production
+   * caller and the guard chain callers must not skip lives there — but the
+   * fences below independently re-check admin, allowlist and approval-enabled,
+   * so a direct call cannot bypass authorisation, only the offer bookkeeping.
+   * The module is internal: no barrel, no package export.
+   */
   async publishReservation(reservation: ApprovalReservation, actorUserId: string): Promise<void> {
     const { gateway } = this.deps;
     let mutationStarted = false;
