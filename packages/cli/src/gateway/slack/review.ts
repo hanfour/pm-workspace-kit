@@ -1,23 +1,20 @@
 /**
- * ReviewCoordinator — orchestrates a single `:cr:` reaction into an mra PR review.
+ * ReviewCoordinator — parses `:cr:` reactions and gates them for admission.
  *
  * Flow per reaction:
  *   config.enabled gate → fetch reacted message text → parsePrRefs (cap) →
- *   emit review.triggered → for each PR (fail-soft):
- *     resolveProject → resolveRepoSlug → getPrHead →
- *     public/allowlist guard → claimReview →
- *     ensureReviewWorkspaceMeta + prepareReviewClone →
- *     getAuthUser == expectedGhUser →
- *     runMraReview → finalize + review.posted + thread status;
- *   on any pre-post failure: releaseReview + review.skipped + thread note;
- *   always: teardownReviewClone.
+ *   emit review.triggered → dispatch to runner via this.runner.runOne(…).
+ *
+ * The executor pipeline (claim → workspace → analysis → post → finalize) is now
+ * in ReviewRunner. See review-runner.ts for the per-PR execution flow.
+ *
+ * Also: on approval-confirmation reactions, routes to the approve-offer flow.
  */
 import * as fs from "node:fs";
 import { randomUUID } from "node:crypto";
 import * as path from "node:path";
 import type { WebClient } from "@slack/web-api";
 import type { GatewayConfig } from "../config";
-import { ReviewProgress } from "./review-progress";
 import {
   gatewayConfigPath,
   loadRawGatewayConfig,
@@ -28,18 +25,14 @@ import {
   isAdmin,
 } from "../config";
 import { appendGatewayEvent } from "../events";
-import { parsePrRefs, type PrRef } from "../pr-ref";
-import { claimReview, forceClaimReview, finalizeReview, releaseReview, type ReviewRef } from "../review-claim";
-import {
-  saveApprovalOffer,
-  type ApprovalOfferRef,
-} from "../review-approval";
+import { parsePrRefs } from "../pr-ref";
+import { type ApprovalOfferRef } from "../review-approval";
 import {
   resolveProjectByRemote as resolveProjectByRemoteImpl,
   runMraReview as runMraReviewImpl,
   runMraAnalyze as runMraAnalyzeImpl,
 } from "../../adapters/mra";
-import { effectiveMraReviewStrategy, findProtectionExemption } from "../review-policy";
+import { effectiveMraReviewStrategy } from "../review-policy";
 export { effectiveMraReviewStrategy } from "../review-policy";
 // protectionNotReadyMessage moved to the leaf review-policy module so
 // review-approve-flow can import it without a runtime cycle back through here.
@@ -63,12 +56,11 @@ import {
   pkbNeedsBuild as pkbNeedsBuildImpl,
 } from "../review-workspace";
 import { ApproveFlow } from "./review-approve-flow";
+import { ReviewRunner } from "./review-runner";
 // Pure request classifiers + result-text formatters live in sibling modules.
 // Imported for internal use, and re-exported so slack/index.ts and the review
 // tests keep importing them from "./review" unchanged.
 import { isReviewRequest, isApproveRequest } from "./review-requests";
-import { resolveReviewTarget } from "./review-target";
-import { admissionRefusal, admissionRefusalMessage } from "./review-admission";
 export {
   isReviewRequest,
   isApproveRequest,
@@ -78,12 +70,6 @@ export {
   isRetryRequest,
   isRerunRequest,
 } from "./review-requests";
-import {
-  canConfirmApproveFromReview,
-  reviewResultText,
-  approveResultText,
-  describeMraFailure,
-} from "./review-messages";
 export {
   type ReviewOutcome,
   canConfirmApproveFromReview,
@@ -91,11 +77,6 @@ export {
   approveResultText,
   describeMraFailure,
 } from "./review-messages";
-import {
-  buildReviewMraArgs,
-  runMraReviewWithRetry,
-  postProtocolV1Review,
-} from "./review-backend";
 
 export interface ReviewGateway {
   resolveProjectByRemote: typeof resolveProjectByRemoteImpl;
@@ -146,29 +127,23 @@ export interface ReviewCoordinatorOptions {
   strictLiveConfigReload?: boolean;
 }
 
-/** A review currently running detached — tracked so shutdown can drain it (A). */
-interface InFlightReview {
-  claimRef: ReviewRef;
-  controller: AbortController;
-  label: string;
-  /** Where to post the "interrupted by restart" notice on shutdown (B). */
-  channelId: string;
-  threadTs: string;
-  actorUserId: string;
-  projectKey: string;
-}
-
-
 export class ReviewCoordinator {
-  /** Reviews running right now (detached). Drained on shutdown (A). */
-  private readonly inFlight = new Set<InFlightReview>();
   private readonly approveFlow: ApproveFlow;
+  private readonly runner: ReviewRunner;
 
   constructor(private readonly opts: ReviewCoordinatorOptions) {
     this.approveFlow = new ApproveFlow({
       gateway: this.opts.gateway,
       currentConfig: () => this.currentConfig(),
       fetchMessageText: (ch, ts) => this.fetchMessageText(ch, ts),
+      reply: (ch, ts, text) => this.reply(ch, ts, text),
+    });
+    this.runner = new ReviewRunner({
+      gateway: this.opts.gateway,
+      web: this.opts.web,
+      onLog: this.opts.onLog,
+      sleep: this.opts.sleep,
+      currentConfig: () => this.currentConfig(),
       reply: (ch, ts, text) => this.reply(ch, ts, text),
     });
   }
@@ -204,40 +179,12 @@ export class ReviewCoordinator {
    * A (graceful drain): on gateway shutdown, abort every in-flight review —
    * SIGTERM its mra child so it doesn't run on as an orphan, and release its
    * claim so the PR is immediately re-reviewable (not falsely "already
-   * reviewed"). Called from the shutdown handler BEFORE process.exit; releases
-   * synchronously rather than waiting on each review's async finally (which the
-   * exit would pre-empt). Returns the number drained.
+   * reviewed"). Called from the shutdown handler BEFORE process.exit. Implemented
+   * in ReviewRunner; kept here so the coordinator's public surface (and
+   * slack/index.ts) is unchanged.
    */
   drainOnShutdown(log: (msg: string) => void): number {
-    const entries = [...this.inFlight];
-    for (const e of entries) {
-      try {
-        e.controller.abort();
-      } catch {
-        /* best-effort */
-      }
-      releaseReview(e.claimRef);
-      log(
-        `review: interrupted ${e.label} by shutdown — mra killed, claim released (re-send to retry)`,
-      );
-      // B: tell the thread its review was cut short + how to re-run. Fire-and-forget
-      // (void) — drainOnShutdown is sync; stop()'s 90s queue drain that follows gives
-      // these posts time to land. reply() is best-effort (swallows its own errors).
-      void this.reply(
-        e.channelId,
-        e.threadTs,
-        ":warning: 這個 PR review 因服務重新啟動中斷，上線後在本 thread 回 `retry` 即可重跑。",
-      );
-    }
-    this.inFlight.clear();
-    return entries.length;
-  }
-
-  /** Wait before a single retry, unless the run was aborted (shutdown drain). */
-  private async backoff(ms: number, signal: AbortSignal): Promise<void> {
-    if (signal.aborted) return;
-    const sleep = this.opts.sleep ?? ((m: number) => new Promise<void>((r) => setTimeout(r, m)));
-    await sleep(ms);
+    return this.runner.drainOnShutdown(log);
   }
 
   private async reply(channel: string, threadTs: string, text: string): Promise<void> {
@@ -245,17 +192,6 @@ export class ReviewCoordinator {
       await this.opts.web.chat.postMessage({ channel, thread_ts: threadTs, text });
     } catch (err) {
       this.opts.onLog(`review: reply failed: ${(err as Error).message}`);
-    }
-  }
-
-  /** Like reply() but returns the posted message ts (for in-place progress edits). */
-  private async replyWithTs(channel: string, threadTs: string, text: string): Promise<string | undefined> {
-    try {
-      const res = (await this.opts.web.chat.postMessage({ channel, thread_ts: threadTs, text })) as { ts?: string };
-      return res.ts;
-    } catch (err) {
-      this.opts.onLog(`review: reply failed: ${(err as Error).message}`);
-      return undefined;
     }
   }
 
@@ -402,7 +338,7 @@ export class ReviewCoordinator {
     });
 
     // Multi-PR summary ack only. For a single PR the per-PR progress bar (posted
-    // in runOne) IS the ack, so a separate "收到" message would just leave dead
+    // in the runner's runOne) IS the ack, so a separate "收到" message would just leave dead
     // clutter above the morphing progress message.
     if (refs.length > 1) {
       await this.reply(
@@ -419,7 +355,7 @@ export class ReviewCoordinator {
       const reviewWorkspace = path.join(reviewWorkspaceRoot, "runs", randomUUID());
       gateway.ensureReviewWorkspaceMeta(workspace, reviewWorkspace);
       try {
-      await this.runOne(ref, {
+      await this.runner.runOne(ref, {
         channelId,
         threadTs,
         reactorUserId: actorUserId,
@@ -551,7 +487,7 @@ export class ReviewCoordinator {
       forced: args.forced,
     });
 
-    // Multi-PR summary ack only — a single PR's own progress bar (runOne) is its
+    // Multi-PR summary ack only — a single PR's own progress bar (the runner's runOne) is its
     // ack. The review runs detached (minutes); for N>1 PRs this one message tells
     // the user all N were received before the per-PR bars start arriving.
     if (refs.length > 1) {
@@ -572,7 +508,7 @@ export class ReviewCoordinator {
       const reviewWorkspace = path.join(reviewWorkspaceRoot, "runs", randomUUID());
       gateway.ensureReviewWorkspaceMeta(workspace, reviewWorkspace);
       try {
-        await this.runOne(ref, {
+        await this.runner.runOne(ref, {
           channelId,
           threadTs,
           reactorUserId: actorUserId,
@@ -586,305 +522,6 @@ export class ReviewCoordinator {
       } finally {
         try { fs.rmSync(reviewWorkspace, { recursive: true, force: true }); } catch { /* best-effort */ }
       }
-    }
-  }
-
-  /**
-   * Shared per-PR pipeline for BOTH `:cr:` review and `:a:` approve. `mode`
-   * selects the only points that differ: the message verb, the progress-bar
-   * pacing (approve always runs the fast `standard` pass), the mra approve flags,
-   * and the result line. Everything else — project/slug/head resolution,
-   * public/allowlist guard, idempotent claim, in-flight registration for the
-   * shutdown drain, one-time PKB build, isolated clone prep, gh-actor identity
-   * verify, teardown — is identical, so a fix here lands on both paths at once
-   * (the reason not to keep two near-verbatim copies).
-   */
-  private async runOne(
-    ref: PrRef,
-    ctx: {
-      channelId: string;
-      threadTs: string;
-      reactorUserId: string;
-      workspace: string;
-      reviewWorkspace: string;
-      review: ReturnType<typeof resolveReviewConfig>;
-      token?: string;
-      authorizedHeads?: Map<string, string>;
-      forceRerun?: boolean;
-      /** Which command the user typed; only affects wording. */
-      origin?: "cr" | "a";
-    },
-    mode: "review" | "approve",
-  ): Promise<void> {
-    const { gateway, onLog } = this.opts;
-    const isApprove = mode === "approve";
-    const verb = isApprove ? "approve" : "review";
-    // approve always runs the fast single-agent pass. :cr: must run the
-    // configured review strategy for the selected provider; mra is responsible
-    // for rejecting unsupported provider+strategy pairs explicitly.
-    // The progress-bar pacing MUST match the strategy actually run.
-    const strategy = effectiveMraReviewStrategy(ctx.review.strategy, ctx.review.providerMode, isApprove);
-    const slugDisplay = `${ref.owner}/${ref.repo}`;
-
-    let progress: ReviewProgress | undefined = undefined;
-
-    const skip = async (reason: string, msg: string): Promise<void> => {
-      appendGatewayEvent({
-        type: "review.skipped",
-        actor: ctx.reactorUserId,
-        repo: slugDisplay,
-        pr: ref.number,
-        reason,
-      });
-      if (progress) await progress.finish(msg);
-      else await this.reply(ctx.channelId, ctx.threadTs, msg);
-    };
-
-    // Every pre-claim guard (workspace, slug, head, approve-head authorisation,
-    // allowlist, visibility) lives in resolveReviewTarget. Refusals never reach
-    // a claim, so a rejected PR does not burn one.
-    const target = await resolveReviewTarget(ref, ctx, gateway);
-    if (!target.ok) {
-      await skip(target.reason, target.message);
-      return;
-    }
-    const { project, slug, head } = target;
-
-    const slugParts = slug.split("/");
-    const [slugOwner, slugRepo] =
-      slugParts.length === 2
-        ? slugParts
-        : [ref.owner, ref.repo];
-    // No contextVersion: the claim identifies the COMMIT, and head.updatedAt
-    // moves on any PR activity — including the review this run is about to
-    // post. Keying on it re-opened the same commit for review (see
-    // reviewClaimKey).
-    const claimRef = {
-      owner: slugOwner,
-      repo: slugRepo,
-      pr: ref.number,
-      headSha: head.sha,
-      intent: isApprove ? "approve" as const : "review" as const,
-    };
-    const projectKey = `${slugOwner}/${slugRepo}`;
-    // Which of the three limits fired is decided in review-admission, so the
-    // reply can name it instead of listing all three joined by "或".
-    const refusal = admissionRefusal(this.inFlight, {
-      actorUserId: ctx.reactorUserId,
-      projectKey,
-      maxConcurrent: ctx.review.maxConcurrent,
-      maxConcurrentPerUser: ctx.review.maxConcurrentPerUser,
-    });
-    if (refusal) {
-      await skip("busy", admissionRefusalMessage(refusal));
-      return;
-    }
-    const claimed = ctx.forceRerun ? forceClaimReview(claimRef) : claimReview(claimRef);
-    if (!claimed) {
-      // Idempotency: this exact commit was already reviewed. Don't re-review
-      // (avoids duplicate posts) — but DON'T be silent: the user got the "收到"
-      // ack, so tell them why no result follows. (Benign; no review.skipped
-      // event so it doesn't read as a failure.)
-      onLog(`review: already done ${slug}#${ref.number}@${head.sha.slice(0, 8)}`);
-      const alreadyDone = isApprove
-        ? `:information_source: ${slug}#${ref.number} 這個 commit（\`${head.sha.slice(0, 7)}\`）已經執行過 approve check，略過（同一 commit 不重複 approve）。要重新判斷請推新 commit 後再發 :a:。`
-        : `:information_source: ${slug}#${ref.number} 這個 commit（\`${head.sha.slice(0, 7)}\`）已經 review 過了，略過（同一 commit 不重複審）。要重審請推新 commit 後再發。`;
-      await this.reply(
-        ctx.channelId,
-        ctx.threadTs,
-        alreadyDone,
-      );
-      return;
-    }
-
-    // A: register this review so a shutdown can abort it (SIGTERM the mra
-    // child) and release its claim, instead of orphaning it.
-    const controller = new AbortController();
-    const inflight: InFlightReview = {
-      claimRef,
-      controller,
-      label: `${slug}#${ref.number}`,
-      channelId: ctx.channelId,
-      threadTs: ctx.threadTs,
-      actorUserId: ctx.reactorUserId,
-      projectKey,
-    };
-    this.inFlight.add(inflight);
-
-    const headline = `:mag: ${verb} ${slug}#${ref.number}`;
-    const progressTs = await this.replyWithTs(
-      ctx.channelId, ctx.threadTs,
-      `${headline}\n▱▱▱▱▱ 5%\n目前:準備工作區`,
-    );
-    progress = progressTs
-      ? new ReviewProgress({
-          web: this.opts.web, channel: ctx.channelId, ts: progressTs,
-          strategy, headline, onLog: this.opts.onLog,
-        })
-      : undefined;
-
-    let posted = false;
-    try {
-      // Ensure a fresh PKB on the main clone BEFORE prepareReviewClone copies it
-      // into the review checkout. Without a PKB the review agents grep the whole
-      // codebase, hit --max-turns, and the review comes back REVIEW_INCOMPLETE.
-      // Best-effort: if the build fails we still review (the max-turns safety net
-      // + the honest verdict cover it). One-time ~few-min cost the first time a
-      // repo is reviewed (or after it goes stale).
-      const mainClone = `${ctx.workspace}/${project}`;
-      if (ctx.review.providerMode === "claude" && gateway.pkbNeedsBuild(mainClone)) {
-        onLog(`pkb: ${project} 缺/過時 PKB — 先建(一次性,之後 review 又快又完整)`);
-        const built = await gateway.runMraAnalyze(
-          { project, cwd: ctx.workspace, signal: controller.signal },
-          { onProgress: (line) => onLog(`mra analyze ${project}: ${line}`) },
-        );
-        if (!built.ok) {
-          onLog(`pkb: build 未完成(${built.reason ?? "unknown"})— 仍繼續 review`);
-        }
-      }
-
-      const prep = await gateway.prepareReviewClone({
-        mainClone,
-        reviewWorkspace: ctx.reviewWorkspace,
-        project,
-        slug,
-        pr: ref.number,
-        expectedHeadSha: head.sha,
-        baseRef: head.baseRef,
-        ghToken: ctx.token, // pin git clone/fetch auth (stable vs active gh)
-      });
-      if (!prep.ok) {
-        await skip(
-          "prepare-failed",
-          `:warning: PR #${ref.number} 準備失敗（${prep.reason}），略過`,
-        );
-        return;
-      }
-
-      // Verify the identity mra will POST under. With a pinned review token,
-      // mra posts as THAT token (reviewEnv sets GH_TOKEN), so we verify the
-      // token's identity. Without a pin, ctx.token is undefined → getAuthUser
-      // checks the HOST AMBIENT gh identity (what mra falls back to). Either
-      // way this checks "who the review will be posted as".
-      const actor = await gateway.getAuthUser({ token: ctx.token });
-      if (ctx.review.expectedGhUser && actor !== ctx.review.expectedGhUser) {
-        await skip(
-          "gh-actor",
-          `:no_entry: gh 身分為 \`${actor ?? "unknown"}\`，非預期帳號，未貼 review（避免身分混淆）`,
-        );
-        return;
-      }
-
-      const t0 = Date.now();
-      const mraArgs = buildReviewMraArgs({
-        reviewWorkspace: ctx.reviewWorkspace,
-        project,
-        pr: ref.number,
-        strategy,
-        providerMode: ctx.review.providerMode,
-        head,
-        baseRef: prep.baseRef,
-        signal: controller.signal,
-      });
-      const onProgress = (line: string) => {
-        onLog(`mra ${verb} ${slug}#${ref.number}: ${line}`);
-        progress?.onLine(line);
-      };
-      // Invoke the backend with the transient-failure / REVIEW_INCOMPLETE retry
-      // policy; res.status may be reassigned below on the protocol-v1 path.
-      const { res, retried } = await runMraReviewWithRetry(gateway, mraArgs, {
-        onProgress,
-        onLog,
-        backoff: (ms, signal) => this.backoff(ms, signal),
-        signal: controller.signal,
-        label: `${verb} ${slug}#${ref.number}`,
-      });
-      if (!res.ok) {
-        const { detail, logDump } = describeMraFailure(res);
-        onLog(`mra ${verb} ${slug}#${ref.number} FAILED${retried ? " (after retry)" : ""}: ${logDump}`);
-        await skip(
-          "mra-failed",
-          `:warning: PR #${ref.number} ${verb} 失敗${retried ? "（已重試）" : ""}：${res.reason ?? "unknown"}${detail ? `\n> ${detail}` : ""}`,
-        );
-        return;
-      }
-      if (res.incomplete) {
-        // Still REVIEW_INCOMPLETE after the retry: mra only posted a neutral
-        // placeholder, so the PR was never actually evaluated. Do NOT finalize the
-        // per-commit claim (that would reject a same-commit re-:a: as "already
-        // reviewed" and make the "請重試" advice a dead end) — route through skip so
-        // the finally releases the claim, and report honestly instead of the
-        // misleading ambiguous-approve line.
-        onLog(`mra ${verb} ${slug}#${ref.number} REVIEW_INCOMPLETE${retried ? "（重試後仍）" : ""} — 釋放 claim 供重試`);
-        await skip(
-          "review-incomplete",
-          isApprove ? approveResultText(slug, ref, res) : reviewResultText(slug, ref, res),
-        );
-        return;
-      }
-
-      if (res.protocolVersion === "1.0") {
-        // Re-validate live policy + head at post time, then POST the GitHub review.
-        const posting = await postProtocolV1Review(gateway, {
-          config: this.currentConfig(),
-          slug,
-          ref,
-          headSha: head.sha,
-          reactorUserId: ctx.reactorUserId,
-          res,
-        });
-        if (!posting.ok) {
-          await skip(posting.reason, posting.message);
-          return;
-        }
-        res.status = posting.status;
-      }
-
-      posted = true;
-      finalizeReview(claimRef, { status: res.status });
-      if (!isApprove && ctx.review.approval.enabled && canConfirmApproveFromReview(res)) {
-        saveApprovalOffer(ctx.channelId, ctx.threadTs, {
-          owner: slugOwner,
-          repo: slugRepo,
-          number: ref.number,
-          url: ref.url,
-          headSha: head.sha,
-          baseRef: head.baseRef,
-          artifactSha256: res.artifactSha256!,
-          contextVersion: head.updatedAt,
-        });
-      }
-      appendGatewayEvent({
-        type: "review.posted",
-        actor: ctx.reactorUserId,
-        repo: slug,
-        pr: ref.number,
-        status: res.status ?? "COMMENT",
-        commentCount: res.commentCount ?? 0,
-        blockerCount: res.blockerCount,
-        intent: mode,
-        providerMode: ctx.review.providerMode,
-        strategy,
-        headSha: head.sha,
-        forced: ctx.forceRerun,
-        durationMs: Date.now() - t0,
-      });
-      const resultText = isApprove
-        ? approveResultText(slug, ref, res)
-        : reviewResultText(slug, ref, res, ctx.review.approval.enabled,
-            !!findProtectionExemption(ctx.review.approval, slug), ctx.origin);
-      if (progress) await progress.finish(resultText);
-      else await this.reply(ctx.channelId, ctx.threadTs, resultText);
-    } catch (err) {
-      await skip(
-        "error",
-        `:warning: PR #${ref.number} ${verb} 例外：${(err as Error).message}`,
-      );
-    } finally {
-      progress?.dispose();
-      this.inFlight.delete(inflight);
-      if (!posted) releaseReview(claimRef);
-      gateway.teardownReviewClone({ reviewWorkspace: ctx.reviewWorkspace, project });
     }
   }
 

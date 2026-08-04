@@ -4,11 +4,11 @@
  * Three independent limits: total concurrency, per-actor concurrency, and
  * one-review-per-repo (a repo has a single review workspace, so two at once
  * would collide). They were a single `||` chain inside `runOne`, reachable
- * only by driving the coordinator with a populated in-flight set — so which
+ * only by driving the runner with a populated in-flight set — so which
  * limit fired was never asserted anywhere.
  *
  * The decision is pure: a snapshot of what is in flight plus the request. It
- * takes an iterable rather than the coordinator's Set so it never sees, and
+ * takes an iterable rather than the runner's Set so it never sees, and
  * cannot touch, the live collection.
  */
 
