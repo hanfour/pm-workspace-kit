@@ -1,16 +1,14 @@
 /**
- * ReviewCoordinator — orchestrates a single `:cr:` reaction into an mra PR review.
+ * ReviewCoordinator — parses `:cr:` reactions and gates them for admission.
  *
  * Flow per reaction:
  *   config.enabled gate → fetch reacted message text → parsePrRefs (cap) →
- *   emit review.triggered → for each PR (fail-soft):
- *     resolveProject → resolveRepoSlug → getPrHead →
- *     public/allowlist guard → claimReview →
- *     ensureReviewWorkspaceMeta + prepareReviewClone →
- *     getAuthUser == expectedGhUser →
- *     runMraReview → finalize + review.posted + thread status;
- *   on any pre-post failure: releaseReview + review.skipped + thread note;
- *   always: teardownReviewClone.
+ *   emit review.triggered → dispatch to runner via this.runner.runOne(…).
+ *
+ * The executor pipeline (claim → workspace → analysis → post → finalize) is now
+ * in ReviewRunner. See review-runner.ts for the per-PR execution flow.
+ *
+ * Also: on approval-confirmation reactions, routes to the approve-offer flow.
  */
 import * as fs from "node:fs";
 import { randomUUID } from "node:crypto";
@@ -340,7 +338,7 @@ export class ReviewCoordinator {
     });
 
     // Multi-PR summary ack only. For a single PR the per-PR progress bar (posted
-    // in runOne) IS the ack, so a separate "收到" message would just leave dead
+    // in the runner's runOne) IS the ack, so a separate "收到" message would just leave dead
     // clutter above the morphing progress message.
     if (refs.length > 1) {
       await this.reply(
@@ -489,7 +487,7 @@ export class ReviewCoordinator {
       forced: args.forced,
     });
 
-    // Multi-PR summary ack only — a single PR's own progress bar (runOne) is its
+    // Multi-PR summary ack only — a single PR's own progress bar (the runner's runOne) is its
     // ack. The review runs detached (minutes); for N>1 PRs this one message tells
     // the user all N were received before the per-PR bars start arriving.
     if (refs.length > 1) {
