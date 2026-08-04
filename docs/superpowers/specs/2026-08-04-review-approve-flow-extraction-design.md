@@ -104,12 +104,16 @@ The cluster's four external `this` dependencies become an explicit interface:
 ```ts
 export interface ApproveFlowDeps {
   gateway: ReviewGateway;
-  onLog: (m: string) => void;
   currentConfig: () => GatewayConfig;
   fetchMessageText: (ch: string, ts: string) => Promise<string | undefined>;
   reply: (ch: string, threadTs: string, text: string) => Promise<void>;
 }
 ```
+
+Four members, not five: the cluster never calls `onLog`. Measured, not assumed — the only
+`this.opts` access in lines 543–802 is `this.opts.gateway`, and only six of its methods
+(`getAuthUser`, `getPrHead`, `hasPullRequestApproval`, `approvalProtectionReady`,
+`reviewGateStatus`, `createPullRequestApproval`).
 
 **`currentConfig` must stay a function, not a snapshot.** `publishApprovalReservation` runs three
 revision fences that each re-read live config to detect a concurrent policy change mid-approve.
