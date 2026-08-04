@@ -48,7 +48,7 @@ export interface ReviewRunnerDeps {
 }
 
 /** A review currently running detached — tracked so shutdown can drain it (A). */
-export interface InFlightReview {
+interface InFlightReview {
   claimRef: ReviewRef;
   controller: AbortController;
   label: string;

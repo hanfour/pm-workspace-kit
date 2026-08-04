@@ -1,13 +1,13 @@
 /**
- * The review *backend* seam extracted from ReviewCoordinator.runOne: building the
+ * The review *backend* seam extracted from ReviewRunner.runOne: building the
  * mra review argv, invoking it with the transient-failure / REVIEW_INCOMPLETE
  * retry policy, and — for protocol-v1 (codex) results — re-validating live policy
  * and posting the GitHub review. These are the provider-facing steps; the
- * coordinator keeps the claim lifecycle, progress bar, and Slack replies.
+ * runner keeps the claim lifecycle, progress bar, and Slack replies.
  *
- * Everything the coordinator would reach via `this` (gateway, backoff, live
+ * Everything the runner would reach via `this` (gateway, backoff, live
  * config) is passed in explicitly, so these functions are testable in isolation
- * and free of the coordinator's state.
+ * and free of the runner's state.
  */
 import {
   type MraReviewResult,
@@ -93,7 +93,7 @@ export async function runMraReviewWithRetry(
   return { res, retried };
 }
 
-/** Skip verdict from {@link postProtocolV1Review} — carries the coordinator's skip args. */
+/** Skip verdict from {@link postProtocolV1Review} — carries the runner's skip args. */
 export type ProtocolV1PostResult =
   | { ok: true; status: string }
   | { ok: false; reason: string; message: string };
@@ -102,7 +102,7 @@ export type ProtocolV1PostResult =
  * Protocol-v1 (codex) path: re-validate live policy at post time (it may have
  * been revoked, or the head moved, during the analysis window) and, if still
  * valid, POST the GitHub review. Returns the posted GitHub state on success, or
- * an { ok: false } skip verdict the coordinator routes through its own skip().
+ * an { ok: false } skip verdict the runner routes through its own skip().
  */
 export async function postProtocolV1Review(
   gateway: Pick<ReviewGateway, "getAuthUser" | "getPrHead" | "createPullRequestReview">,
