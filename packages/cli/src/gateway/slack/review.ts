@@ -71,6 +71,7 @@ import {
 // tests keep importing them from "./review" unchanged.
 import { isReviewRequest, isApproveRequest } from "./review-requests";
 import { resolveReviewTarget } from "./review-target";
+import { admissionRefusal, admissionRefusalMessage } from "./review-admission";
 export {
   isReviewRequest,
   isApproveRequest,
@@ -950,9 +951,16 @@ export class ReviewCoordinator {
       intent: isApprove ? "approve" as const : "review" as const,
     };
     const projectKey = `${slugOwner}/${slugRepo}`;
-    const actorActive = [...this.inFlight].filter((r) => r.actorUserId === ctx.reactorUserId).length;
-    if (this.inFlight.size >= ctx.review.maxConcurrent || actorActive >= ctx.review.maxConcurrentPerUser || [...this.inFlight].some((r) => r.projectKey === projectKey)) {
-      await skip("busy", `:hourglass: review 目前已達併發上限，或同一 repo 正在 review；請稍後重試。`);
+    // Which of the three limits fired is decided in review-admission, so the
+    // reply can name it instead of listing all three joined by "或".
+    const refusal = admissionRefusal(this.inFlight, {
+      actorUserId: ctx.reactorUserId,
+      projectKey,
+      maxConcurrent: ctx.review.maxConcurrent,
+      maxConcurrentPerUser: ctx.review.maxConcurrentPerUser,
+    });
+    if (refusal) {
+      await skip("busy", admissionRefusalMessage(refusal));
       return;
     }
     const claimed = ctx.forceRerun ? forceClaimReview(claimRef) : claimReview(claimRef);
