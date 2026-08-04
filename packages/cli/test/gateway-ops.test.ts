@@ -8,11 +8,18 @@ import { stopCmdImpl, type OpsDeps } from "../src/commands/gateway/ops";
 import { restartCmdImpl, type RestartDeps } from "../src/commands/gateway/ops";
 import { writeRunState } from "../src/gateway/run-state";
 
-const ORIG_HOME = process.env.HOME;
+// Never point HOME back at the operator's home. Test files run in separate
+// processes, so restoring buys nothing — and it opens a window that has
+// already caused an outage: a cancelled test's abandoned continuation resumes
+// AFTER afterEach, sees the real HOME, and writes to the live ~/.pmk. On
+// 2026-08-04 that overwrote the gateway config with test fixtures and took
+// the bot down. ORIG_HOME is a throwaway directory, never the real one.
+const ORIG_HOME = fs.mkdtempSync(path.join(os.tmpdir(), "pmk-safe-home-"));
+process.env.HOME = ORIG_HOME;
 describe("gateway status (persisted)", () => {
   let tmp: string;
   beforeEach(() => { tmp = fs.mkdtempSync(path.join(os.tmpdir(), "pmk-ops-")); process.env.HOME = tmp; });
-  afterEach(() => { fs.rmSync(tmp, { recursive: true, force: true }); if (ORIG_HOME !== undefined) process.env.HOME = ORIG_HOME; });
+  afterEach(() => { fs.rmSync(tmp, { recursive: true, force: true }); process.env.HOME = ORIG_HOME; });
 
   it("dead pid → 🔴 down; never executes a {cmd} secret", () => {
     const sentinel = path.join(tmp, "RAN");
@@ -42,7 +49,7 @@ describe("gateway status (persisted)", () => {
 describe("gateway stop", () => {
   let tmp: string;
   beforeEach(() => { tmp = fs.mkdtempSync(path.join(os.tmpdir(), "pmk-stop-")); process.env.HOME = tmp; });
-  afterEach(() => { fs.rmSync(tmp, { recursive: true, force: true }); if (ORIG_HOME !== undefined) process.env.HOME = ORIG_HOME; });
+  afterEach(() => { fs.rmSync(tmp, { recursive: true, force: true }); process.env.HOME = ORIG_HOME; });
 
   function deps(over: Partial<OpsDeps> = {}): OpsDeps & { calls: string[][] } {
     const calls: string[][] = [];
@@ -75,7 +82,7 @@ describe("gateway stop", () => {
 describe("gateway restart", () => {
   let tmp: string;
   beforeEach(() => { tmp = fs.mkdtempSync(path.join(os.tmpdir(), "pmk-restart-")); process.env.HOME = tmp; });
-  afterEach(() => { fs.rmSync(tmp, { recursive: true, force: true }); if (ORIG_HOME !== undefined) process.env.HOME = ORIG_HOME; });
+  afterEach(() => { fs.rmSync(tmp, { recursive: true, force: true }); process.env.HOME = ORIG_HOME; });
 
   function base(over: Partial<RestartDeps> & { calls?: string[][] } = {}): RestartDeps & { calls: string[][] } {
     const calls = over.calls ?? [];

@@ -25,15 +25,24 @@ import * as path from "node:path";
  * this is the fallback for objects that reach the filesystem directly.
  */
 export function useIsolatedHome(prefix = "pmk-test-home-"): { dir: () => string } {
-  const original = process.env.HOME;
-  let tmp = "";
+  // Point HOME away from the operator's home ONCE, at module load, and never
+  // point it back. Test files run in separate processes, so there is nothing
+  // to restore for — and restoring opens a window that has already caused a
+  // production outage: a cancelled test's abandoned continuation resumes AFTER
+  // afterEach, sees the real HOME, and writes to the live ~/.pmk. That is how
+  // the gateway config was overwritten with test fixtures on 2026-08-04,
+  // taking the bot down.
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), `${prefix}base-`));
+  process.env.HOME = base;
+
+  let tmp = base;
   beforeEach(() => {
     tmp = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
     process.env.HOME = tmp;
   });
   afterEach(() => {
-    if (original !== undefined) process.env.HOME = original;
-    else delete process.env.HOME;
+    // Back to the throwaway base, NEVER to the operator's home.
+    process.env.HOME = base;
     try {
       fs.rmSync(tmp, { recursive: true, force: true });
     } catch {

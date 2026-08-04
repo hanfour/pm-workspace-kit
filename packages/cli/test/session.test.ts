@@ -5,7 +5,14 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { Session, listParks, parkPath, parksDir } from "../src/session";
 
-const ORIG_HOME = process.env.HOME;
+// Never point HOME back at the operator's home. Test files run in separate
+// processes, so restoring buys nothing — and it opens a window that has
+// already caused an outage: a cancelled test's abandoned continuation resumes
+// AFTER afterEach, sees the real HOME, and writes to the live ~/.pmk. On
+// 2026-08-04 that overwrote the gateway config with test fixtures and took
+// the bot down. ORIG_HOME is a throwaway directory, never the real one.
+const ORIG_HOME = fs.mkdtempSync(path.join(os.tmpdir(), "pmk-safe-home-"));
+process.env.HOME = ORIG_HOME;
 
 describe("Session.park + resumeFromPark", () => {
   let tmpHome: string;
@@ -17,7 +24,7 @@ describe("Session.park + resumeFromPark", () => {
 
   afterEach(() => {
     fs.rmSync(tmpHome, { recursive: true, force: true });
-    if (ORIG_HOME !== undefined) process.env.HOME = ORIG_HOME;
+    process.env.HOME = ORIG_HOME;
   });
 
   it("parks and restores message history", () => {
