@@ -1,3 +1,4 @@
+import * as os from "node:os";
 import * as path from "node:path";
 import * as fs from "node:fs";
 import { SlackAdapter } from "./slack";
@@ -25,9 +26,19 @@ import {
 } from "./crash-guard";
 import { recoverReviewClaims } from "./review-claim";
 import { sweepApprovalOffers } from "./review-approval";
+import { rotateLogIfLarge } from "./log-rotate";
 import { sweepStaleAudioTemp } from "./audio/temp";
 import { sweepStaleAudioClaims } from "./audio/claim";
 import { sweepStaleAtomMarkers } from "./audio/atom-marker";
+
+/**
+ * Rotate a gateway log once it passes this. 32 MB keeps a normal week of
+ * operation in one file while capping what a churn episode can leave behind
+ * (the 2026-07 incident wrote 151 MB of one repeated warning).
+ */
+const GATEWAY_LOG_MAX_BYTES = 32 * 1024 * 1024;
+/** Archives retained per log. Two generations span the last two incidents. */
+const GATEWAY_LOG_KEEP = 2;
 
 export interface GatewayRunOptions {
   /** Called for each one-line breadcrumb. Defaults to console.log. */
@@ -111,6 +122,23 @@ export async function runGateway(opts: GatewayRunOptions = {}): Promise<void> {
   }
   const sweptOffers = sweepApprovalOffers();
   if (sweptOffers > 0) log(`swept ${sweptOffers} expired review approval offer(s)`);
+
+  // Startup is the only safe moment to trim the launchd-owned logs: nothing of
+  // this run has been written yet, so the copytruncate race costs nothing.
+  // Left unbounded these only grow — one socket-churn episode put 151 MB of
+  // repeated rate-limit warnings into gateway.err.log.
+  for (const name of ["gateway.out.log", "gateway.err.log"]) {
+    const file = path.join(os.homedir(), ".pmk", "logs", name);
+    const res = rotateLogIfLarge(file, {
+      maxBytes: GATEWAY_LOG_MAX_BYTES,
+      keep: GATEWAY_LOG_KEEP,
+    });
+    if (res.rotated) {
+      log(`rotated ${name} (${Math.round((res.bytesArchived ?? 0) / 1_048_576)} MB archived to ${name}.1)`);
+    } else if (res.error) {
+      log(`could not rotate ${name}: ${res.error}`);
+    }
+  }
 
   const sweptTempDirs = sweepStaleAudioTemp();
   if (sweptTempDirs > 0) {
