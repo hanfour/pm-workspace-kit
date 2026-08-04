@@ -6,10 +6,17 @@ import * as path from "node:path";
 import { adminReview } from "../src/gateway/slack/admin-review";
 import { loadRawGatewayConfig, saveGatewayConfig } from "../src/gateway/config";
 
-const ORIG_HOME = process.env.HOME; // gatewayDir() is HOME-based
+// Never point HOME back at the operator's home. Test files run in separate
+// processes, so restoring buys nothing — and it opens a window that has
+// already caused an outage: a cancelled test's abandoned continuation resumes
+// AFTER afterEach, sees the real HOME, and writes to the live ~/.pmk. On
+// 2026-08-04 that overwrote the gateway config with test fixtures and took
+// the bot down. ORIG_HOME is a throwaway directory, never the real one.
+const ORIG_HOME = fs.mkdtempSync(path.join(os.tmpdir(), "pmk-safe-home-"));
+process.env.HOME = ORIG_HOME; // gatewayDir() is HOME-based
 let tmp: string;
 beforeEach(() => { tmp = fs.mkdtempSync(path.join(os.tmpdir(), "pmk-ar-")); process.env.HOME = tmp; });
-afterEach(() => { if (ORIG_HOME !== undefined) process.env.HOME = ORIG_HOME; fs.rmSync(tmp, { recursive: true, force: true }); });
+afterEach(() => { process.env.HOME = ORIG_HOME; fs.rmSync(tmp, { recursive: true, force: true }); });
 
 describe("adminReview approval toggle", () => {
   it("preserves protectionExemptions across an enable/disable cycle", () => {

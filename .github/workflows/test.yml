@@ -52,7 +52,16 @@ jobs:
         run: npm test --workspace=${{ matrix.workspace }}
 
       # A test that exercises production objects without isolating HOME writes
-      # into the operator's real ~/.pmk store. socket-watchdog-alert.test.ts did
+      # into the operator's real ~/.pmk store.
+      #
+      # This catches DETERMINISTIC pollution. It cannot catch the cancellation
+      # race that took the gateway down on 2026-08-04: a cancelled test's
+      # abandoned continuation resumed after afterEach had restored the real
+      # HOME, and overwrote ~/.pmk/gateway.json with fixtures. CI never sees it
+      # because cancellations only happen once another test has already failed.
+      # That one is handled in the tests themselves — HOME is now pointed at a
+      # throwaway for the whole process and never restored (test/helpers/
+      # isolated-home.ts). socket-watchdog-alert.test.ts did
       # this for two months: it constructs a PresenceBroadcaster and calls
       # watchdogTerminate, which appends the daemon's SELF-TERMINATION record.
       # By 2026-08-03 the live audit log held 1,056 fabricated terminations

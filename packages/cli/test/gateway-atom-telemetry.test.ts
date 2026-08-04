@@ -7,7 +7,14 @@ import type { WebClient } from "@slack/web-api";
 import type { EscalationCoordinator } from "../src/gateway/slack/escalation";
 import { GATEWAY_CONFIG_VERSION, type GatewayConfig } from "../src/gateway/config";
 
-const ORIG_HOME = process.env.HOME;
+// Never point HOME back at the operator's home. Test files run in separate
+// processes, so restoring buys nothing — and it opens a window that has
+// already caused an outage: a cancelled test's abandoned continuation resumes
+// AFTER afterEach, sees the real HOME, and writes to the live ~/.pmk. On
+// 2026-08-04 that overwrote the gateway config with test fixtures and took
+// the bot down. ORIG_HOME is a throwaway directory, never the real one.
+const ORIG_HOME = fs.mkdtempSync(path.join(os.tmpdir(), "pmk-safe-home-"));
+process.env.HOME = ORIG_HOME;
 
 describe("atom-telemetry sidecar", () => {
   let tmpHome: string;
@@ -17,7 +24,7 @@ describe("atom-telemetry sidecar", () => {
   });
   afterEach(() => {
     fs.rmSync(tmpHome, { recursive: true, force: true });
-    if (ORIG_HOME !== undefined) process.env.HOME = ORIG_HOME;
+    process.env.HOME = ORIG_HOME;
   });
 
   it("missing sidecar reads as empty", async () => {
@@ -82,7 +89,7 @@ describe("free-chat-turn telemetry wiring", () => {
   });
   afterEach(() => {
     fs.rmSync(tmpHome, { recursive: true, force: true });
-    if (ORIG_HOME !== undefined) process.env.HOME = ORIG_HOME;
+    process.env.HOME = ORIG_HOME;
   });
 
   it("bumpReuse is called after a successful LLM reply that injected an atom", async () => {

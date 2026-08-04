@@ -87,7 +87,14 @@ import { extractKnowledgeAtom } from "../src/gateway/extractor";
 import { slashCommandArgsFromBody } from "../src/gateway/slack";
 import type { LlmProvider } from "../src/llm";
 
-const ORIG_HOME = process.env.HOME;
+// Never point HOME back at the operator's home. Test files run in separate
+// processes, so restoring buys nothing — and it opens a window that has
+// already caused an outage: a cancelled test's abandoned continuation resumes
+// AFTER afterEach, sees the real HOME, and writes to the live ~/.pmk. On
+// 2026-08-04 that overwrote the gateway config with test fixtures and took
+// the bot down. ORIG_HOME is a throwaway directory, never the real one.
+const ORIG_HOME = fs.mkdtempSync(path.join(os.tmpdir(), "pmk-safe-home-"));
+process.env.HOME = ORIG_HOME;
 const ORIG_APP_TOKEN = process.env.PMK_SLACK_APP_TOKEN;
 const ORIG_BOT_TOKEN = process.env.PMK_SLACK_BOT_TOKEN;
 
@@ -103,7 +110,7 @@ describe("gateway config", () => {
 
   afterEach(() => {
     fs.rmSync(tmpHome, { recursive: true, force: true });
-    if (ORIG_HOME !== undefined) process.env.HOME = ORIG_HOME;
+    process.env.HOME = ORIG_HOME;
     if (ORIG_APP_TOKEN !== undefined)
       process.env.PMK_SLACK_APP_TOKEN = ORIG_APP_TOKEN;
     if (ORIG_BOT_TOKEN !== undefined)
@@ -447,7 +454,7 @@ describe("heartbeat", () => {
   afterEach(() => {
     clearHeartbeat();
     fs.rmSync(tmpHome, { recursive: true, force: true });
-    if (ORIG_HOME !== undefined) process.env.HOME = ORIG_HOME;
+    process.env.HOME = ORIG_HOME;
   });
 
   it("first start reports wasOffline=true (no prior heartbeat)", () => {
@@ -572,7 +579,7 @@ describe("session-store", () => {
   });
   afterEach(() => {
     fs.rmSync(tmpHome, { recursive: true, force: true });
-    if (ORIG_HOME !== undefined) process.env.HOME = ORIG_HOME;
+    process.env.HOME = ORIG_HOME;
   });
 
   it("loadUserSession returns empty session for new user", () => {
@@ -1120,7 +1127,7 @@ describe("mraDoctor workspace override", () => {
     fs.rmSync(tmpHome, { recursive: true, force: true });
     fs.rmSync(validWs, { recursive: true, force: true });
     fs.rmSync(invalidWs, { recursive: true, force: true });
-    if (ORIG_HOME !== undefined) process.env.HOME = ORIG_HOME;
+    process.env.HOME = ORIG_HOME;
   });
 
   it("explicit valid workspace short-circuits cwd walk", () => {
@@ -1158,7 +1165,7 @@ describe("thread-aware sessions", () => {
   });
   afterEach(() => {
     fs.rmSync(tmpHome, { recursive: true, force: true });
-    if (ORIG_HOME !== undefined) process.env.HOME = ORIG_HOME;
+    process.env.HOME = ORIG_HOME;
   });
 
   it("thread A and thread B have isolated histories", () => {
@@ -1199,7 +1206,7 @@ describe("audience picker", () => {
   });
   afterEach(() => {
     fs.rmSync(tmpHome, { recursive: true, force: true });
-    if (ORIG_HOME !== undefined) process.env.HOME = ORIG_HOME;
+    process.env.HOME = ORIG_HOME;
   });
 
   it("falls back to default when no override", () => {
@@ -1367,7 +1374,7 @@ describe("escalation pool picker", () => {
   });
   afterEach(() => {
     fs.rmSync(tmpHome, { recursive: true, force: true });
-    if (ORIG_HOME !== undefined) process.env.HOME = ORIG_HOME;
+    process.env.HOME = ORIG_HOME;
   });
 
   it("repo pool wins over default; default is fallback", () => {
@@ -1468,7 +1475,7 @@ describe("knowledge store", () => {
   });
   afterEach(() => {
     fs.rmSync(tmpHome, { recursive: true, force: true });
-    if (ORIG_HOME !== undefined) process.env.HOME = ORIG_HOME;
+    process.env.HOME = ORIG_HOME;
   });
 
   it("slugifyQuestion produces filesystem-safe slugs (CJK + ASCII)", () => {
@@ -1608,7 +1615,7 @@ describe("atom TTL approval", () => {
   });
   afterEach(() => {
     fs.rmSync(tmpHome, { recursive: true, force: true });
-    if (ORIG_HOME !== undefined) process.env.HOME = ORIG_HOME;
+    process.env.HOME = ORIG_HOME;
   });
 
   it("pending atoms are excluded from searchAtoms", () => {
@@ -1769,7 +1776,7 @@ describe("atom-index BM25 (#19)", () => {
   });
   afterEach(() => {
     fs.rmSync(tmpHome, { recursive: true, force: true });
-    if (ORIG_HOME !== undefined) process.env.HOME = ORIG_HOME;
+    process.env.HOME = ORIG_HOME;
   });
 
   function seedThreeApprovedAtoms() {
@@ -1922,7 +1929,7 @@ describe("findAtomByApprovalMessage (#21)", () => {
   });
   afterEach(() => {
     fs.rmSync(tmpHome, { recursive: true, force: true });
-    if (ORIG_HOME !== undefined) process.env.HOME = ORIG_HOME;
+    process.env.HOME = ORIG_HOME;
   });
 
   it("finds atom by approval anchor (channelId + messageTs)", () => {
@@ -2013,7 +2020,7 @@ describe("extractKnowledgeAtom", () => {
   });
   afterEach(() => {
     fs.rmSync(tmpHome, { recursive: true, force: true });
-    if (ORIG_HOME !== undefined) process.env.HOME = ORIG_HOME;
+    process.env.HOME = ORIG_HOME;
   });
 
   function stubLlm(reply: string): LlmProvider {
@@ -2112,7 +2119,7 @@ describe("thread escalation marker", () => {
   });
   afterEach(() => {
     fs.rmSync(tmpHome, { recursive: true, force: true });
-    if (ORIG_HOME !== undefined) process.env.HOME = ORIG_HOME;
+    process.env.HOME = ORIG_HOME;
   });
 
   it("save → load → clear", () => {
@@ -2148,7 +2155,7 @@ describe("isAdmin + admins back-fill (#31)", () => {
   });
   afterEach(() => {
     fs.rmSync(tmpHome, { recursive: true, force: true });
-    if (ORIG_HOME !== undefined) process.env.HOME = ORIG_HOME;
+    process.env.HOME = ORIG_HOME;
   });
 
   it("default empty admins → isAdmin returns false", async () => {
@@ -2201,7 +2208,7 @@ describe("admin-log (#31)", () => {
   });
   afterEach(() => {
     fs.rmSync(tmpHome, { recursive: true, force: true });
-    if (ORIG_HOME !== undefined) process.env.HOME = ORIG_HOME;
+    process.env.HOME = ORIG_HOME;
   });
 
   it("appendAdminLog → readAdminLog round-trips one entry", async () => {
@@ -2333,7 +2340,7 @@ describe("Slack admin handler (#31)", () => {
   });
   afterEach(() => {
     fs.rmSync(tmpHome, { recursive: true, force: true });
-    if (ORIG_HOME !== undefined) process.env.HOME = ORIG_HOME;
+    process.env.HOME = ORIG_HOME;
   });
 
   it("extractUserId handles <@U…> mention, <@U…|name>, bare U…, garbage", async () => {
