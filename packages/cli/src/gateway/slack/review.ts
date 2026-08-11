@@ -43,6 +43,7 @@ import {
   repoVisibility as repoVisibilityImpl,
   getAuthUser as getAuthUserImpl,
   getPrHead as getPrHeadImpl,
+  listPrDiscussion as listPrDiscussionImpl,
   approvalProtectionReady as approvalProtectionReadyImpl,
   reviewGateStatus as reviewGateStatusImpl,
   createPullRequestApproval as createPullRequestApprovalImpl,
@@ -86,6 +87,7 @@ export interface ReviewGateway {
   repoVisibility: typeof repoVisibilityImpl;
   getAuthUser: typeof getAuthUserImpl;
   getPrHead: typeof getPrHeadImpl;
+  listPrDiscussion: typeof listPrDiscussionImpl;
   approvalProtectionReady: typeof approvalProtectionReadyImpl;
   reviewGateStatus: typeof reviewGateStatusImpl;
   createPullRequestApproval: typeof createPullRequestApprovalImpl;
@@ -105,6 +107,7 @@ export const realReviewGateway: ReviewGateway = {
   repoVisibility: repoVisibilityImpl,
   getAuthUser: getAuthUserImpl,
   getPrHead: getPrHeadImpl,
+  listPrDiscussion: listPrDiscussionImpl,
   approvalProtectionReady: approvalProtectionReadyImpl,
   reviewGateStatus: reviewGateStatusImpl,
   createPullRequestApproval: createPullRequestApprovalImpl,

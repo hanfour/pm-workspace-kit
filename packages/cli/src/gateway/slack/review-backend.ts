@@ -24,6 +24,7 @@ import {
   type GatewayConfig,
 } from "../config";
 import type { PrRef } from "../pr-ref";
+import type { PrDiscussionItem } from "../../adapters/github";
 
 /** Backoff before a single transient-failure retry of the mra review call. */
 export const MRA_RETRY_BACKOFF_MS = 4000;
@@ -41,6 +42,12 @@ export function buildReviewMraArgs(params: {
   head: { sha: string; baseSha?: string; title?: string; body?: string; updatedAt?: string };
   baseRef: string;
   signal: AbortSignal;
+  /**
+   * The PR's existing discussion. mra's analysis stage holds no GitHub
+   * credential by design, so a reply refuting an earlier finding can only reach
+   * it through the request. Omitted → the review behaves exactly as before.
+   */
+  discussion?: readonly PrDiscussionItem[];
 }): MraReviewArgs {
   return {
     workspace: params.reviewWorkspace,
@@ -52,7 +59,12 @@ export function buildReviewMraArgs(params: {
     expectedHeadSha: params.head.sha,
     baseRef: params.baseRef,
     baseSha: params.head.baseSha,
-    prContext: { title: params.head.title, body: params.head.body, updatedAt: params.head.updatedAt },
+    prContext: {
+      title: params.head.title,
+      body: params.head.body,
+      updatedAt: params.head.updatedAt,
+      ...(params.discussion && params.discussion.length > 0 ? { discussion: params.discussion } : {}),
+    },
     signal: params.signal, // shutdown aborts → SIGTERM the review child
   };
 }

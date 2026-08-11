@@ -23,6 +23,7 @@ afterEach(() => { process.env.HOME = ORIG_HOME; fs.rmSync(tmp, { recursive: true
 function gw(over: Partial<ReviewGateway> = {}): ReviewGateway {
   return {
     resolveProjectByRemote: () => "proj",
+    listPrDiscussion: async () => [],
     getPrHead: async () => ({ sha: "headsha", baseRef: "main" }),
     repoVisibility: async () => "private",
     getAuthUser: async () => "expected-bot",
@@ -1098,6 +1099,7 @@ describe("ReviewCoordinator.confirmApproveInThread", () => {
     let approved = 0;
     let updatedAt = "2026-07-17T01:00:00Z";
     const gateway = gw({
+      listPrDiscussion: async () => [],
       getPrHead: async () => ({ sha: "headsha", baseRef: "main", updatedAt }),
       runMraReview: async () => eligibleReviewResult(),
       createPullRequestApproval: async (a: { commitId: string }) => {
@@ -1129,6 +1131,7 @@ describe("ReviewCoordinator.confirmApproveInThread", () => {
       runMraReview: async () => eligibleReviewResult(),
       // Slow preflight keeps the authorization lock held long enough for the
       // concurrent write attempt below to land INSIDE the critical section.
+      listPrDiscussion: async () => [],
       getPrHead: async () => {
         await new Promise((r) => setTimeout(r, 120));
         return { sha: "headsha", baseRef: "main" };
@@ -1262,6 +1265,7 @@ describe("ReviewCoordinator.confirmApproveInThread", () => {
       runMraReview: async () => eligibleReviewResult(),
       // Slow preflight holds the authorization lock long enough for the
       // concurrent write below to land inside the critical section.
+      listPrDiscussion: async () => [],
       getPrHead: async () => {
         await new Promise((r) => setTimeout(r, 120));
         return { sha: "headsha", baseRef: "main" };
@@ -1585,6 +1589,7 @@ describe("ReviewCoordinator exact-head approval offer", () => {
     let calls = 0;
     let approved = 0;
     const c = coord(web, gw({
+      listPrDiscussion: async () => [],
       getPrHead: async () => ({ sha: head, baseRef: "main" }),
       runMraReview: async () => { calls++; return eligibleReviewResult(head); },
       createPullRequestApproval: async () => { approved++; return { reviewId: 99, state: "APPROVED", commitId: head, actor: "expected-bot" }; },
@@ -1618,6 +1623,7 @@ describe("ReviewCoordinator project concurrency", () => {
     const gate = new Promise<void>((resolve) => { release = resolve; });
     let calls = 0;
     const c = coord(web, gw({
+      listPrDiscussion: async () => [],
       getPrHead: async ({ pr }: { pr: number }) => ({ sha: `head-${pr}`, baseRef: "main" }),
       runMraReview: async () => { calls++; await gate; return { ok: true, status: "COMMENT", commentCount: 0, stdout: "", stderr: "" }; },
     } as unknown as Partial<ReviewGateway>), () => {}, { maxConcurrent: 2, maxConcurrentPerUser: 2 });

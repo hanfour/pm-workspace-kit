@@ -18,6 +18,7 @@ function gw(over: Record<string, unknown> = {}) {
   return {
     resolveProjectByRemote: () => "proj",
     resolveRepoSlug: async () => "o/r",
+    listPrDiscussion: async () => [],
     getPrHead: async () => head,
     repoVisibility: async () => "private",
     ...over,

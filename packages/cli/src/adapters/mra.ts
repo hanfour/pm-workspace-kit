@@ -15,6 +15,7 @@
  *     the proxy for "install looks healthy".
  */
 
+import type { PrDiscussionItem } from "./github";
 import { execFileSync, spawn } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync, type Dirent } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
@@ -766,7 +767,7 @@ export async function runMraReview(
     expectedHeadSha?: string;
     baseRef?: string;
     baseSha?: string;
-    prContext?: { title?: string; body?: string; updatedAt?: string };
+    prContext?: { title?: string; body?: string; updatedAt?: string; discussion?: readonly PrDiscussionItem[] };
   },
   opts: { onProgress?: (line: string) => void } = {},
 ): Promise<MraReviewResult> {

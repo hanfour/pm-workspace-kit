@@ -105,6 +105,7 @@ function deps(over: Partial<ApproveFlowDeps> = {}) {
   const base: ApproveFlowDeps = {
     gateway: {
       getAuthUser: async () => "pmk-bot",
+      listPrDiscussion: async () => [],
       getPrHead: async () => ({ sha: HEAD, baseRef: "main", updatedAt: "2026-08-01T00:00:00Z" }),
       approvalProtectionReady: async () => true,
       reviewGateStatus: async () => false,
@@ -186,6 +187,7 @@ describe("publishReservation revision fences", () => {
     const { deps: d, posted } = deps({
       gateway: {
         getAuthUser: async () => "pmk-bot",
+        listPrDiscussion: async () => [],
         getPrHead: async () => ({ sha: "c".repeat(40), baseRef: "main" }),
         approvalProtectionReady: async () => true,
         reviewGateStatus: async () => false,

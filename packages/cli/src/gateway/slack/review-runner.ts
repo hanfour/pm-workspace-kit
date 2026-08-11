@@ -9,6 +9,7 @@
  * for retry. That is why the bracket is NOT split — it moved whole, and the
  * state it owns (`inFlight`) moved with it.
  */
+import { markPriorReviewComments } from "../../adapters/github";
 import type { WebClient } from "@slack/web-api";
 import type { GatewayConfig, resolveReviewConfig } from "../config";
 import { appendGatewayEvent } from "../events";
@@ -302,6 +303,20 @@ export class ReviewRunner {
         return;
       }
 
+      // A reply that refutes an earlier finding lives on GitHub, and mra's
+      // analysis stage runs with no credential by design — so it is fetched
+      // here and carried in the request. `actor` is the account the review
+      // posts as, which is what separates our own prior findings from
+      // everybody else's comments: mra reviews under a human's token, so
+      // authorship alone identifies nothing.
+      // Best-effort, like every other part of this: a review that cannot read
+      // the discussion still runs, it just runs without the benefit. Failing
+      // here would trade a missing rebuttal for no review at all.
+      const discussion = await gateway
+        .listPrDiscussion({ slug, pr: ref.number, token: ctx.token })
+        .then((items) => markPriorReviewComments(items, actor ?? undefined))
+        .catch(() => []);
+
       const t0 = Date.now();
       const mraArgs = buildReviewMraArgs({
         reviewWorkspace: ctx.reviewWorkspace,
@@ -312,6 +327,7 @@ export class ReviewRunner {
         head,
         baseRef: prep.baseRef,
         signal: controller.signal,
+        discussion,
       });
       const onProgress = (line: string) => {
         onLog(`mra ${verb} ${slug}#${ref.number}: ${line}`);

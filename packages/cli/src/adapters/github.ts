@@ -25,6 +25,56 @@ export type GithubExec = (
   opts: GithubExecOpts,
 ) => Promise<{ stdout: string }>;
 
+export type PrDiscussionKind = "inline" | "comment" | "review";
+
+/**
+ * One item of PR discussion, in the shape mra's review-request protocol takes.
+ *
+ * `inReplyToId` is the field that makes a rebuttal legible as an answer to a
+ * particular finding rather than a free-standing remark; dropping it was why a
+ * reviewer's refutation read as unrelated chatter.
+ */
+export interface PrDiscussionItem {
+  readonly id: number | string;
+  readonly inReplyToId: number | string | null;
+  readonly author: string;
+  readonly kind: PrDiscussionKind;
+  readonly path: string;
+  readonly line: number | null;
+  readonly body: string;
+  readonly createdAt: string;
+  readonly isPriorReview?: boolean;
+}
+
+/** Body shapes only we produce: mra's severity prefix, and our review footer. */
+const MRA_FINDING_RE = /^\[(CRITICAL|HIGH|MEDIUM|LOW)\]/;
+const MRA_REVIEW_RE = /MRA artifact:|## MRA Code Review Summary/;
+
+/**
+ * Mark the items we posted from an earlier review.
+ *
+ * Identity is not enough — mra reviews under the operator's own token, so our
+ * findings carry a human's login and that human also comments normally. A
+ * content marker is not enough either — a reviewer can type "[HIGH] ..." by
+ * hand. Both must hold.
+ *
+ * An unknown login marks nothing: a run that cannot tell which comments are its
+ * own must behave as it did before this existed, not invite the model to revise
+ * a human's comment as though it were its own draft.
+ *
+ * Returns a new array; the input is not touched.
+ */
+export function markPriorReviewComments(
+  items: readonly PrDiscussionItem[],
+  selfLogin: string | undefined,
+): PrDiscussionItem[] {
+  return items.map((item) => ({
+    ...item,
+    isPriorReview:
+      !!selfLogin && item.author === selfLogin && (MRA_FINDING_RE.test(item.body) || MRA_REVIEW_RE.test(item.body)),
+  }));
+}
+
 export interface GithubDeps {
   exec?: GithubExec;
   findBinary?: () => string | undefined;
@@ -170,6 +220,19 @@ export function buildGhArgs_getAuthUser(): string[] {
 /** Pure argv builder for `gh api repos/<slug>/pulls/<N> --jq ...` (exported for unit tests). */
 export function buildGhArgs_getPrHead(slug: string, pr: number): string[] {
   return ["api", `repos/${slug}/pulls/${pr}`, "--jq", "{sha:.head.sha,base:.base.ref,baseSha:.base.sha,title:.title,body:.body,updatedAt:.updated_at}"];
+}
+
+/**
+ * The PR's discussion, one endpoint per kind. `--paginate` matters: the API
+ * returns oldest-first, so a reply that answers a finding is always on the
+ * last page.
+ */
+export function buildGhArgs_listPrDiscussion(slug: string, pr: number, kind: PrDiscussionKind): string[] {
+  const path =
+    kind === "inline" ? `repos/${slug}/pulls/${pr}/comments`
+    : kind === "comment" ? `repos/${slug}/issues/${pr}/comments`
+    : `repos/${slug}/pulls/${pr}/reviews`;
+  return ["api", path, "--paginate"];
 }
 
 export function buildGhArgs_getApprovalProtection(slug: string, branch: string): string[] {
@@ -447,4 +510,57 @@ export async function githubDoctor(
   } catch {
     return { ok: false, reason: "gh auth status failed for the provided token" };
   }
+}
+
+
+/**
+ * Fetch a PR's inline comments, conversation comments, and review summaries.
+ *
+ * Best-effort in the same way the rest of this adapter is: any failure yields
+ * an empty list, because a review that cannot read the discussion must still
+ * run. It simply runs without the benefit — which is exactly the old behaviour.
+ */
+export async function listPrDiscussion(
+  args: { slug: string; pr: number; token?: string },
+  deps: GithubDeps = {},
+): Promise<PrDiscussionItem[]> {
+  const exec = deps.exec ?? defaultExec;
+  const findBinary = deps.findBinary ?? findGhBinary;
+  const gh = findBinary();
+  if (!gh) return [];
+  const env = args.token ? { ...process.env, GH_TOKEN: args.token } : process.env;
+
+  const fetchKind = async (kind: PrDiscussionKind): Promise<PrDiscussionItem[]> => {
+    try {
+      const { stdout } = await exec(gh, buildGhArgs_listPrDiscussion(args.slug, args.pr, kind), {
+        env,
+        timeoutMs: 20_000,
+      });
+      const rows = JSON.parse(stdout) as Array<Record<string, unknown>>;
+      if (!Array.isArray(rows)) return [];
+      return rows
+        .filter((r) => typeof r?.body === "string" && (r.body as string).length > 0)
+        .map((r) => {
+          const user = r.user as { login?: string } | undefined;
+          const state = typeof r.state === "string" ? r.state : "";
+          return {
+            id: (r.id as number | string) ?? "",
+            inReplyToId: (r.in_reply_to_id as number | string | null) ?? null,
+            author: user?.login ?? "?",
+            kind,
+            path: typeof r.path === "string" ? r.path : "",
+            line: typeof r.line === "number" ? r.line : null,
+            // A dismissed or changes-requested review reads very differently
+            // from a plain comment, and the state is the only thing that says so.
+            body: kind === "review" && state ? `[${state}] ${r.body as string}` : (r.body as string),
+            createdAt: (r.created_at as string) ?? (r.submitted_at as string) ?? "",
+          };
+        });
+    } catch {
+      return [];
+    }
+  };
+
+  const [inline, conv, reviews] = await Promise.all([fetchKind("inline"), fetchKind("comment"), fetchKind("review")]);
+  return [...inline, ...conv, ...reviews].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
 }
