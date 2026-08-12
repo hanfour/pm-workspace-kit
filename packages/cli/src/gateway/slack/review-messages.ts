@@ -4,6 +4,7 @@
  * for back-compat) so the coordinator holds orchestration, not copy.
  */
 import type { PrRef } from "../pr-ref";
+import type { FinalizedReview } from "../review-claim";
 
 /** Fields of an mra review result that shape the Slack result line. */
 export interface ReviewOutcome {
@@ -77,6 +78,81 @@ export function approveResultText(slug: string, ref: PrRef, res: ReviewOutcome):
   if (res.status === "CHANGES_REQUESTED")
     return `:no_entry: 未 approve ${slug}#${ref.number} — 發現重大問題，已請求修改（${cc} 則）：${ref.url}`;
   return `:information_source: 已完成 ${slug}#${ref.number} review（GitHub 未回報 approve 狀態，${cc} 則；請至 PR 確認是否已 approve）：${ref.url}`;
+}
+
+/** Taipei-local `MM/DD HH:mm` — the zone everyone reading the thread is in. */
+function taipeiStamp(iso?: string): string | undefined {
+  if (!iso) return undefined;
+  const ms = Date.parse(iso);
+  if (Number.isNaN(ms)) return undefined;
+  return new Date(ms).toLocaleString("zh-TW", {
+    timeZone: "Asia/Taipei",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
+}
+
+/**
+ * The note posted when a trigger names a commit that was already reviewed.
+ *
+ * It has to answer the question the user actually has — "so what happened to my
+ * push?" — because the person hitting it has almost always just pushed a fix.
+ * The 2026-08-12 incident (finance-system#363) was the whole failure mode: the
+ * note reported only the skip, so a user whose fix HAD been reviewed clean, and
+ * for whom an approve offer was sitting in the thread, was told to go push a
+ * commit. State the prior verdict, then the ONE next step that is actually open
+ * to this user — the waiting offer, or `rerun` if they may force one.
+ */
+export function alreadyReviewedMessage(input: {
+  slug: string;
+  pr: number;
+  headSha: string;
+  intent: "review" | "approve";
+  /** Which command was typed; `:a:` delegates a review first, so it lands here too. */
+  origin?: "cr" | "a";
+  /** Outcome of the review that claimed this commit; absent for pre-upgrade claims. */
+  prior?: FinalizedReview;
+  /** An unconsumed, unexpired approve offer exists in this thread. */
+  approveOfferPending?: boolean;
+  isAdmin?: boolean;
+}): string {
+  const { slug, pr, headSha, intent, prior } = input;
+  const isApprove = intent === "approve";
+  const what = isApprove ? "approve check" : "review";
+  const when = taipeiStamp(prior?.finalizedAt);
+
+  const lede = when
+    ? `已在 ${when} 完成 ${what}`
+    : prior
+      ? `已完成 ${what}`
+      : isApprove
+        ? "已經執行過 approve check"
+        : "已經 review 過了";
+
+  const facts = [
+    prior?.status,
+    typeof prior?.blockerCount === "number" ? `${prior.blockerCount} 個 blocker` : undefined,
+    typeof prior?.commentCount === "number" ? `${prior.commentCount} 則建議` : undefined,
+  ].filter(Boolean);
+  const verdict = facts.length > 0 ? `：${facts.join("、")}` : "";
+  const link = prior?.reviewUrl ? ` → ${prior.reviewUrl}` : "";
+
+  // The next step, in the order that matters: a waiting offer beats any advice
+  // to push, because the work it is waiting on is already done.
+  const next =
+    input.approveOfferPending && !isApprove
+      ? "這個結果可以 approve — 要核准請在這個 thread 回覆 `approve`。"
+      : isApprove
+        ? "同一 commit 不重複 approve；要重新判斷請推新 commit 後再發 `:a:`。"
+        : "同一 commit 不重複審；有新的修改請 push 後再發 `:cr:`。";
+  const adminHint = input.isAdmin
+    ? "（要對同一 commit 強制重跑：在這個 thread 回覆 `rerun`）"
+    : "";
+
+  return `:information_source: ${slug}#${pr} 這個 commit（\`${headSha.slice(0, 7)}\`）${lede}${verdict}${link}\n${next}${adminHint}`;
 }
 
 /** Last non-empty line of `s`, with ANSI colour escapes stripped and trimmed. */

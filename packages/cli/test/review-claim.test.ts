@@ -40,6 +40,36 @@ describe("review-claim", () => {
     assert.equal(isReviewDone(r), true);
   });
 
+  it("finalize records the outcome so a later trigger can report what was decided", async () => {
+    const { claimReview, finalizeReview, readFinalizedReview } = await import("../src/gateway/review-claim");
+    claimReview(r);
+    finalizeReview(r, {
+      status: "COMMENTED",
+      reviewUrl: "https://github.com/o/rr/pull/5",
+      blockerCount: 0,
+      commentCount: 1,
+    });
+    const prior = readFinalizedReview(r);
+    assert.equal(prior?.status, "COMMENTED");
+    assert.equal(prior?.reviewUrl, "https://github.com/o/rr/pull/5");
+    assert.equal(prior?.blockerCount, 0);
+    assert.equal(prior?.commentCount, 1);
+    assert.ok(
+      prior?.finalizedAt && !Number.isNaN(Date.parse(prior.finalizedAt)),
+      "finalizedAt must be a parsable instant — the note says WHEN the commit was reviewed",
+    );
+  });
+
+  it("a claim that is still running has no outcome to report", async () => {
+    const { claimReview, readFinalizedReview } = await import("../src/gateway/review-claim");
+    claimReview(r);
+    assert.equal(
+      readFinalizedReview(r),
+      undefined,
+      "an in-flight claim must not read back as a finished review",
+    );
+  });
+
   it("release allows a fresh claim", async () => {
     const { claimReview, releaseReview } = await import("../src/gateway/review-claim");
     claimReview(r);
