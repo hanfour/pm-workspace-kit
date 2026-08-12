@@ -111,6 +111,23 @@ export function saveApprovalOffer(
   }
 }
 
+/**
+ * Read a thread's live offer WITHOUT touching it — the read-only counterpart to
+ * consume/reserve, used to decide what a message should say ("reply `approve`")
+ * rather than to act. A reserved offer (an approve already in flight) is not
+ * available and reads as absent, so nothing invites a second reply to it.
+ */
+export function peekApprovalOffer(channelId: string, threadTs: string): ApprovalOfferRef[] | undefined {
+  try {
+    const offer = JSON.parse(fs.readFileSync(offerPath(channelId, threadTs), "utf8")) as ApprovalOffer;
+    if (offer.channelId !== channelId || offer.threadTs !== threadTs) return undefined;
+    if (Date.parse(offer.expiresAt) <= Date.now()) return undefined;
+    return offer.refs;
+  } catch {
+    return undefined;
+  }
+}
+
 /** Consume exactly once by renaming before reading. */
 export function consumeApprovalOffer(channelId: string, threadTs: string): ApprovalOfferRef[] | undefined {
   const p = offerPath(channelId, threadTs);

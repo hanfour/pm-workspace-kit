@@ -14,13 +14,15 @@ import type { WebClient } from "@slack/web-api";
 import type { GatewayConfig, resolveReviewConfig } from "../config";
 import { appendGatewayEvent } from "../events";
 import type { PrRef } from "../pr-ref";
-import { claimReview, forceClaimReview, finalizeReview, releaseReview, type ReviewRef } from "../review-claim";
-import { saveApprovalOffer } from "../review-approval";
+import { claimReview, forceClaimReview, finalizeReview, readFinalizedReview, releaseReview, type ReviewRef } from "../review-claim";
+import { peekApprovalOffer, saveApprovalOffer } from "../review-approval";
+import { isAdmin } from "../config";
 import { effectiveMraReviewStrategy, findProtectionExemption } from "../review-policy";
 import type { ReviewGateway } from "./review";
 import { admissionRefusal, admissionRefusalMessage } from "./review-admission";
 import { resolveReviewTarget } from "./review-target";
 import {
+  alreadyReviewedMessage,
   canConfirmApproveFromReview,
   reviewResultText,
   approveResultText,
@@ -214,13 +216,28 @@ export class ReviewRunner {
       // ack, so tell them why no result follows. (Benign; no review.skipped
       // event so it doesn't read as a failure.)
       onLog(`review: already done ${slug}#${ref.number}@${head.sha.slice(0, 8)}`);
-      const alreadyDone = isApprove
-        ? `:information_source: ${slug}#${ref.number} 這個 commit（\`${head.sha.slice(0, 7)}\`）已經執行過 approve check，略過（同一 commit 不重複 approve）。要重新判斷請推新 commit 後再發 :a:。`
-        : `:information_source: ${slug}#${ref.number} 這個 commit（\`${head.sha.slice(0, 7)}\`）已經 review 過了，略過（同一 commit 不重複審）。要重審請推新 commit 後再發。`;
+      // An offer for THIS commit means the work the user is re-triggering is
+      // not just done, it is waiting on one word from them. Match on headSha:
+      // an offer left over from an earlier commit is not a way forward for this
+      // one, and pointing at it would authorize the wrong code.
+      const offerPending = (peekApprovalOffer(ctx.channelId, ctx.threadTs) ?? []).some(
+        (o) =>
+          o.owner === slugOwner && o.repo === slugRepo &&
+          o.number === ref.number && o.headSha === head.sha,
+      );
       await this.deps.reply(
         ctx.channelId,
         ctx.threadTs,
-        alreadyDone,
+        alreadyReviewedMessage({
+          slug,
+          pr: ref.number,
+          headSha: head.sha,
+          intent: mode,
+          origin: ctx.origin,
+          prior: readFinalizedReview(claimRef),
+          approveOfferPending: offerPending,
+          isAdmin: isAdmin(this.deps.currentConfig(), ctx.reactorUserId),
+        }),
       );
       return;
     }
@@ -384,7 +401,15 @@ export class ReviewRunner {
       }
 
       posted = true;
-      finalizeReview(claimRef, { status: res.status });
+      // Record the verdict, not just "done": a later trigger on this same commit
+      // has to be able to say WHAT was decided, or its skip note reads as "your
+      // push was ignored" to the person who just pushed the fix.
+      finalizeReview(claimRef, {
+        status: res.status,
+        reviewUrl: ref.url,
+        blockerCount: res.blockerCount,
+        commentCount: res.commentCount,
+      });
       if (!isApprove && ctx.review.approval.enabled && canConfirmApproveFromReview(res)) {
         saveApprovalOffer(ctx.channelId, ctx.threadTs, {
           owner: slugOwner,

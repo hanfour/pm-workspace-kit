@@ -30,6 +30,23 @@ interface ClaimRecord {
   done?: boolean;
   status?: string;
   reviewUrl?: string;
+  blockerCount?: number;
+  commentCount?: number;
+  finalizedAt?: string;
+}
+
+/**
+ * What a finished review decided. Read back when a LATER trigger hits the same
+ * commit: the skip note can then say what was decided and where to read it,
+ * instead of only "already reviewed" — which reads as "your push was ignored"
+ * to someone who just pushed a fix.
+ */
+export interface FinalizedReview {
+  status?: string;
+  reviewUrl?: string;
+  blockerCount?: number;
+  commentCount?: number;
+  finalizedAt?: string;
 }
 
 const activeOwners = new Map<string, string>();
@@ -151,7 +168,15 @@ export function forceClaimReview(r: ReviewRef): boolean {
   return false;
 }
 
-export function finalizeReview(r: ReviewRef, info: { reviewUrl?: string; status?: string }): void {
+export function finalizeReview(
+  r: ReviewRef,
+  info: {
+    reviewUrl?: string;
+    status?: string;
+    blockerCount?: number;
+    commentCount?: number;
+  },
+): void {
   const p = claimPath(r);
   const key = reviewClaimKey(r);
   const ownerId = activeOwners.get(key);
@@ -163,9 +188,39 @@ export function finalizeReview(r: ReviewRef, info: { reviewUrl?: string; status?
     return;
   }
   if (rec.ownerId !== ownerId) return;
-  const updated: ClaimRecord = { ...rec, done: true, status: info.status, reviewUrl: info.reviewUrl };
+  const updated: ClaimRecord = {
+    ...rec,
+    done: true,
+    status: info.status,
+    reviewUrl: info.reviewUrl,
+    blockerCount: info.blockerCount,
+    commentCount: info.commentCount,
+    finalizedAt: nowIso(),
+  };
   fs.writeFileSync(p, JSON.stringify(updated), { mode: 0o600 });
   activeOwners.delete(key);
+}
+
+/**
+ * The outcome of a COMPLETED review of this exact commit, or undefined when
+ * there is none (never reviewed, still running, or a pre-upgrade claim that
+ * predates outcome recording). Callers treat undefined as "no detail to add".
+ */
+export function readFinalizedReview(r: ReviewRef): FinalizedReview | undefined {
+  let rec: ClaimRecord;
+  try {
+    rec = JSON.parse(fs.readFileSync(claimPath(r), "utf8")) as ClaimRecord;
+  } catch {
+    return undefined;
+  }
+  if (rec.done !== true) return undefined;
+  return {
+    status: rec.status,
+    reviewUrl: rec.reviewUrl,
+    blockerCount: rec.blockerCount,
+    commentCount: rec.commentCount,
+    finalizedAt: rec.finalizedAt,
+  };
 }
 
 export function releaseReview(r: ReviewRef): void {

@@ -726,8 +726,44 @@ describe("ReviewCoordinator idempotency UX (already-reviewed note)", () => {
     await c.fromMessage({ ...msg, threadTs: "1.2" }); // same PR + head → already done
     const after = web.posted.slice(n);
     assert.ok(
-      after.some((p) => /已經 review 過/.test(p.text ?? "")),
+      after.some((p) => /已經 review 過|完成 review/.test(p.text ?? "")),
       "second review of the same commit must post an 'already reviewed' note, not stay silent",
+    );
+  });
+
+  it("the note reports the prior verdict + link, and offers an admin `rerun`", async () => {
+    const web = new FakeWebClient();
+    const c = coord(web, gw()); // default result: CHANGES_REQUESTED, 2 comments
+    const msg = {
+      channelId: "C1", threadTs: "1.1", userId: "U1", // U1 is an admin
+      text: ":cr: https://github.com/onead/OnePixel/pull/12",
+    };
+    await c.fromMessage(msg);
+    const n = web.posted.length;
+    await c.fromMessage({ ...msg, threadTs: "1.2" });
+    const after = web.posted.slice(n).map((p) => p.text ?? "").join("\n");
+    assert.match(after, /CHANGES_REQUESTED/, "the skip note must carry what was decided last time");
+    assert.match(after, /pull\/12/, "and where to read it");
+    assert.match(after, /`rerun`/, "an admin must learn they can force a re-review");
+  });
+
+  it("`:a:` on an already-reviewed clean commit points at the waiting offer, not at pushing", async () => {
+    const web = new FakeWebClient();
+    const c = coord(web, gw({ runMraReview: async () => eligibleReviewResult() as never }));
+    const thread = { channelId: "C1", threadTs: "1.1", userId: "U1" };
+    // :cr: reviews the commit clean → an approve offer is saved on this thread.
+    await c.fromMessage({ ...thread, text: ":cr: https://github.com/onead/OnePixel/pull/12" });
+    const n = web.posted.length;
+    // Same commit, now via :a: — the pre-review hits the finalized claim.
+    await c.fromMessage({ ...thread, text: ":a: https://github.com/onead/OnePixel/pull/12" });
+    const after = web.posted.slice(n).map((p) => p.text ?? "");
+    assert.ok(
+      after.some((t) => /回覆 `approve`/.test(t)),
+      "the pending offer is the open next step and must be named",
+    );
+    assert.ok(
+      !after.some((t) => /推新 commit|push 後再發/.test(t)),
+      "must not send an approver off to push a commit that does not exist",
     );
   });
 });
