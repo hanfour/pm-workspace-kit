@@ -4,7 +4,7 @@
  * kind of review command. Extracted from review.ts to keep the coordinator lean;
  * re-exported from there for back-compat.
  */
-import { parsePrRefs } from "../pr-ref";
+import { parsePrRefs, type PrRef } from "../pr-ref";
 
 /** True when a message is a `:cr:` review request with at least one PR link. */
 export function isReviewRequest(text: string): boolean {
@@ -106,5 +106,29 @@ export function isRetryRequest(text: string): boolean {
 
 export function isRerunRequest(text: string): boolean {
   const t = text.trim().toLowerCase();
-  return t === "rerun" || t === "重跑";
+  if (t === "rerun" || t === "重跑") return true;
+  return rerunPrRefs(text).length > 0;
+}
+
+/**
+ * PR refs carried by a `rerun <PR 連結>` command; empty for a bare `rerun` and
+ * for ordinary chat.
+ *
+ * A bare `rerun` has to re-read the thread root to learn which PR it means, and
+ * that read is precisely what fails in a channel the bot lacks
+ * `channels:history` for (2026-08-14, finance-system#378) — leaving the user
+ * with a command the bot had just told them to use and no way to run it.
+ * Naming the PR on the command line keeps the text in hand, so the forced
+ * re-review works anywhere the user can type.
+ *
+ * The token must LEAD, matching `isReviewCommandMissingPr`: a sentence that
+ * merely mentions a rerun ("我剛 rerun 過 <link>") is chat, and hijacking it
+ * would force a re-review nobody asked for. Requiring whitespace after the
+ * token also keeps "rerunning …" out.
+ */
+export function rerunPrRefs(text: string): PrRef[] {
+  const t = text.trim();
+  const lead = /^(?:rerun|重跑)\s+/i.exec(t);
+  if (!lead) return [];
+  return parsePrRefs(t.slice(lead[0].length));
 }

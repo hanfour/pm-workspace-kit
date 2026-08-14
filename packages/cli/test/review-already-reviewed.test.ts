@@ -51,9 +51,18 @@ describe("alreadyReviewedMessage", () => {
     );
   });
 
-  it("tells an admin about `rerun`, since only an admin may force one", () => {
+  // 2026-08-14 (finance-system#378): the note offered a bare `rerun`, which has
+  // to re-read the thread root — the exact call that fails in a channel the bot
+  // lacks `channels:history` for. The admin was handed a command this note had
+  // just recommended and could not run. It now names the PR, so the command is
+  // self-contained wherever it is pasted.
+  it("offers an admin a self-contained `rerun` that names the PR", () => {
     const text = alreadyReviewedMessage({ ...base, isAdmin: true, prior: { status: "COMMENTED" } });
-    assert.match(text, /`rerun`/, "an admin has a way to re-review the same commit");
+    assert.match(
+      text,
+      /`rerun https:\/\/github\.com\/onead\/finance-system\/pull\/363`/,
+      "an admin has a way to re-review the same commit that does not depend on a thread read",
+    );
   });
 
   it("does not offer `rerun` to a non-admin who cannot use it", () => {

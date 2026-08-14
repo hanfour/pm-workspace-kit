@@ -5,7 +5,7 @@ import * as os from "node:os";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { FakeWebClient } from "./harness/slack-fakes";
-import { ReviewCoordinator, effectiveMraReviewStrategy, isReviewRequest, isRetryRequest, isRerunRequest, isApproveRequest, isApproveConfirmationRequest, isReviewCommandMissingPr, canConfirmApproveFromReview, reviewResultText, approveResultText, describeMraFailure, protectionNotReadyMessage, type ReviewGateway } from "../src/gateway/slack/review";
+import { ReviewCoordinator, effectiveMraReviewStrategy, isReviewRequest, isRetryRequest, isRerunRequest, rerunPrRefs, isApproveRequest, isApproveConfirmationRequest, isReviewCommandMissingPr, canConfirmApproveFromReview, reviewResultText, approveResultText, describeMraFailure, protectionNotReadyMessage, type ReviewGateway } from "../src/gateway/slack/review";
 import { gatewayConfigPath, resolveReviewConfig, saveGatewayConfig } from "../src/gateway/config";
 
 // Never point HOME back at the operator's home. Test files run in separate
@@ -744,7 +744,15 @@ describe("ReviewCoordinator idempotency UX (already-reviewed note)", () => {
     const after = web.posted.slice(n).map((p) => p.text ?? "").join("\n");
     assert.match(after, /CHANGES_REQUESTED/, "the skip note must carry what was decided last time");
     assert.match(after, /pull\/12/, "and where to read it");
-    assert.match(after, /`rerun`/, "an admin must learn they can force a re-review");
+    // The whole point of the 2026-08-14 incident: the note told an admin to
+    // reply `rerun`, and a bare `rerun` needs a thread read the bot could not
+    // do in that channel. The command it hands over must be one that runs
+    // wherever it is pasted, so it names the PR itself.
+    assert.match(
+      after,
+      /`rerun https:\/\/github\.com\/onead\/OnePixel\/pull\/12`/,
+      "the offered command must be copy-pasteable and self-contained",
+    );
   });
 
   it("`:a:` on an already-reviewed clean commit points at the waiting offer, not at pushing", async () => {
@@ -873,6 +881,87 @@ describe("isRetryRequest", () => {
     for (const t of ["please retry", "retry the build", "", ":cr: x"]) {
       assert.equal(isRetryRequest(t), false, `should not match: '${t}'`);
     }
+  });
+});
+
+// A bare `rerun` needs the thread root to know WHICH PR to re-review, and that
+// read is exactly what fails in a channel without `channels:history`. Carrying
+// the link on the command itself is the escape hatch: the text is already in
+// hand, so it works wherever the user can type.
+describe("isRerunRequest with an inline PR link", () => {
+  const PR = "https://github.com/onead/finance-system/pull/378";
+
+  it("matches `rerun <PR 連結>` in bare and Slack-wrapped forms", () => {
+    for (const t of [`rerun ${PR}`, `重跑 ${PR}`, `RERUN <${PR}>`, `rerun <${PR}|#378>`]) {
+      assert.equal(isRerunRequest(t), true, `should match: '${t}'`);
+    }
+  });
+
+  it("exposes the PR refs the command carried", () => {
+    const refs = rerunPrRefs(`rerun ${PR}`);
+    assert.equal(refs.length, 1);
+    assert.equal(refs[0]?.number, 378);
+    assert.equal(refs[0]?.repo, "finance-system");
+  });
+
+  it("reports no refs for a bare rerun, so the thread-root path still runs", () => {
+    assert.deepEqual(rerunPrRefs("rerun"), []);
+    assert.deepEqual(rerunPrRefs("重跑"), []);
+  });
+
+  // The token has to LEAD. Chat that mentions a rerun must stay in free chat,
+  // or an offhand sentence quoting a PR link would force a re-review.
+  it("does not match chat that merely mentions rerun and a PR", () => {
+    for (const t of [`我剛 rerun 過 ${PR}`, `rerunning ${PR}`, `要不要 rerun`, `rerun 沒有連結`]) {
+      assert.deepEqual(rerunPrRefs(t), [], `should carry no refs: '${t}'`);
+    }
+    assert.equal(isRerunRequest(`我剛 rerun 過 ${PR}`), false);
+    assert.equal(isRerunRequest(`rerunning ${PR}`), false);
+  });
+});
+
+describe("ReviewCoordinator.rerunInThread with an inline PR link", () => {
+  const PR = "https://github.com/onead/OnePixel/pull/12";
+
+  it("re-reviews the linked PR without reading the thread root", async () => {
+    const web = new FakeWebClient();
+    web.conversations.history = async () => {
+      throw new Error("An API error occurred: missing_scope");
+    };
+    let calls = 0;
+    const c = coord(web, gw({
+      runMraReview: async () => {
+        calls++;
+        return { ok: true, status: "COMMENT", commentCount: 0, stdout: "", stderr: "" };
+      },
+    } as unknown as Partial<ReviewGateway>));
+    await c.rerunInThread({ channelId: "C1", threadTs: "1.1", userId: "U1", text: `rerun ${PR}` });
+    assert.equal(calls, 1, "the linked PR must be reviewed even though the thread is unreadable");
+  });
+
+  it("forces a re-review of a commit already finalized", async () => {
+    const web = new FakeWebClient();
+    let calls = 0;
+    const c = coord(web, gw({
+      runMraReview: async () => {
+        calls++;
+        return { ok: true, status: "COMMENT", commentCount: 0, stdout: "", stderr: "" };
+      },
+    } as unknown as Partial<ReviewGateway>));
+    await c.fromMessage({ channelId: "C1", threadTs: "1.1", userId: "U1", text: `:cr: ${PR}` });
+    await c.rerunInThread({ channelId: "C1", threadTs: "1.1", userId: "U1", text: `rerun ${PR}` });
+    assert.equal(calls, 2, "rerun must skip the same-SHA already-done guard");
+  });
+
+  it("still refuses a non-admin, link or no link", async () => {
+    const web = new FakeWebClient();
+    let calls = 0;
+    const c = coord(web, gw({
+      runMraReview: async () => { calls++; return { ok: true, status: "COMMENT", commentCount: 0, stdout: "", stderr: "" }; },
+    } as unknown as Partial<ReviewGateway>));
+    await c.rerunInThread({ channelId: "C1", threadTs: "1.1", userId: "U-not-admin", text: `rerun ${PR}` });
+    assert.equal(calls, 0, "an inline link must not become a way around the admin gate");
+    assert.ok(web.posted.some((p) => /admin/.test(p.text ?? "")), "and the refusal must say why");
   });
 });
 

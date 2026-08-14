@@ -148,8 +148,13 @@ export function alreadyReviewedMessage(input: {
       : isApprove
         ? "同一 commit 不重複 approve；要重新判斷請推新 commit 後再發 `:a:`。"
         : "同一 commit 不重複審；有新的修改請 push 後再發 `:cr:`。";
+  // Name the PR in the offered command. A bare `rerun` has to re-read the thread
+  // root to learn which PR it means, and in a channel without `channels:history`
+  // that read fails — which on 2026-08-14 left an admin holding a command this
+  // very note had just told them to use. A self-contained command runs wherever
+  // it is pasted.
   const adminHint = input.isAdmin
-    ? "（要對同一 commit 強制重跑：在這個 thread 回覆 `rerun`）"
+    ? `（要對同一 commit 強制重跑：回覆 \`rerun https://github.com/${slug}/pull/${pr}\`）`
     : "";
 
   return `:information_source: ${slug}#${pr} 這個 commit（\`${headSha.slice(0, 7)}\`）${lede}${verdict}${link}\n${next}${adminHint}`;

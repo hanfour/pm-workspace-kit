@@ -722,7 +722,7 @@ export class SlackAdapter {
     // silently swallowed regardless of which coordinators are enabled.
     if (isRerunRequest(text)) {
       if (this.review.isEnabled()) {
-        await this.review.rerunInThread({ channelId, threadTs: replyThreadTs, userId }).catch((err) =>
+        await this.review.rerunInThread({ channelId, threadTs: replyThreadTs, userId, text }).catch((err) =>
           this.onLog(`review: mention rerun failed: ${(err as Error).message}`),
         );
       }
@@ -915,7 +915,7 @@ export class SlackAdapter {
     // silently swallowed regardless of which coordinators are enabled.
     if (isRerunRequest(text)) {
       if (this.review.isEnabled()) {
-        await this.review.rerunInThread({ channelId, threadTs, userId }).catch((err) =>
+        await this.review.rerunInThread({ channelId, threadTs, userId, text }).catch((err) =>
           this.onLog(`review: DM rerun failed: ${(err as Error).message}`),
         );
       }
