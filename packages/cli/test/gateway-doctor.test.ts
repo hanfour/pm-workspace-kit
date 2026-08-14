@@ -17,6 +17,7 @@ import {
   configFileCheck,
   slackAppTokenCheck,
   slackBotTokenCheck,
+  slackBotScopesCheck,
   anthropicKeyCheck,
   mraWorkspaceCheck,
   pkbContentCheck,
@@ -26,6 +27,7 @@ import {
   DEFAULT_CHECKS,
 } from "../src/gateway/doctor-checks";
 import type { GatewayConfig } from "../src/gateway/config";
+import { expectedScopes } from "../src/gateway/slack/manifest-version";
 
 const REPO_MANIFEST = path.resolve(
   __dirname,
@@ -166,6 +168,85 @@ describe("doctor — slack-bot-token check (FR2 #3)", () => {
     const r = await slackBotTokenCheck(makeCtx());
     assert.equal(r.severity, "pass");
     assert.match(r.message, /team=T123/);
+  });
+});
+
+// manifest-alignment compares the repo's manifest template against
+// expectedScopes() — both sides of a comparison the operator's INSTALLED app
+// never enters. On 2026-08-14 the installed app was missing `channels:history`
+// while doctor reported 0 failures, because nothing ever asked Slack what the
+// live token actually holds. auth.test returns the granted scopes in
+// response_metadata; this check is the one that would have caught it.
+describe("doctor — slack-bot-scopes check", () => {
+  it("FAILs and names the scopes the installed app is missing", async () => {
+    const r = await slackBotScopesCheck(
+      makeCtx({
+        runners: {
+          ...makeOkRunners(),
+          slackBotAuth: async () => ({
+            ok: true,
+            team: "T123",
+            user: "pmk",
+            scopes: ["app_mentions:read", "chat:write", "im:history"],
+          }),
+        },
+      }),
+    );
+    assert.equal(r.severity, "fail");
+    assert.match(
+      r.hint ?? "",
+      /channels:history/,
+      "the operator must learn WHICH scope to add, not just that something is missing",
+    );
+  });
+
+  it("PASSes when every expected scope is granted", async () => {
+    const r = await slackBotScopesCheck(
+      makeCtx({
+        runners: {
+          ...makeOkRunners(),
+          slackBotAuth: async () => ({
+            ok: true,
+            team: "T123",
+            user: "pmk",
+            scopes: [...expectedScopes()],
+          }),
+        },
+      }),
+    );
+    assert.equal(r.severity, "pass");
+  });
+
+  // Not knowing is not the same as being fine: a token check that cannot read
+  // the scope list must say so rather than report a clean bill of health.
+  it("WARNs when Slack returns no scope list", async () => {
+    const r = await slackBotScopesCheck(makeCtx());
+    assert.equal(r.severity, "warn");
+  });
+
+  it("FAILs when the token itself is rejected", async () => {
+    const r = await slackBotScopesCheck(
+      makeCtx({
+        runners: {
+          ...makeOkRunners(),
+          slackBotAuth: async () => ({ ok: false, error: "token_expired" }),
+        },
+      }),
+    );
+    assert.equal(r.severity, "fail");
+  });
+});
+
+// The review flow re-reads a thread's root message via conversations.history.
+// In a DM that needs `im:history`; in a channel it needs `channels:history`
+// (private: `groups:history`). The expected-scope list must carry them, or
+// both doctor and the manifest keep declaring an app that cannot run `rerun`,
+// `retry`, or the `:cr:` / `:a:` reaction paths outside a DM.
+describe("expectedScopes — channel thread re-read", () => {
+  it("includes the channel history scopes the review flow depends on", () => {
+    const scopes = expectedScopes() as readonly string[];
+    assert.ok(scopes.includes("channels:history"), "public channels");
+    assert.ok(scopes.includes("groups:history"), "private channels");
   });
 });
 
@@ -492,20 +573,10 @@ describe("doctor — manifest-alignment check (FR2 #8)", () => {
     fs.writeFileSync(
       file,
       JSON.stringify({
-        oauth_config: {
-          scopes: {
-            bot: [
-              "app_mentions:read",
-              "chat:write",
-              "files:read",
-              "im:history",
-              "im:read",
-              "im:write",
-              "users:read",
-              "reactions:read",
-            ],
-          },
-        },
+        // Complete on purpose: this fixture exercises the socket-mode branch,
+        // which is only reached once the scope and event checks pass. Spelling
+        // the list out by hand made an unrelated scope addition fail here.
+        oauth_config: { scopes: { bot: [...expectedScopes()] } },
         settings: {
           socket_mode_enabled: false,
           event_subscriptions: {
@@ -806,14 +877,15 @@ describe("doctor — allowWhenNoReviewGate", () => {
 });
 
 describe("doctor — DEFAULT_CHECKS shape", () => {
-  it("exports exactly 13 checks (FR2 + secret-sources + github-token + review + audio + audit-log)", () => {
-    assert.equal(DEFAULT_CHECKS.length, 13);
+  it("exports exactly 14 checks (FR2 + secret-sources + bot-scopes + github-token + review + audio + audit-log)", () => {
+    assert.equal(DEFAULT_CHECKS.length, 14);
     const names = DEFAULT_CHECKS.map((c) => c.name);
     assert.deepEqual(names, [
       "configFileCheck",
       "secretSourcesCheck",
       "slackAppTokenCheck",
       "slackBotTokenCheck",
+      "slackBotScopesCheck",
       "anthropicKeyCheck",
       "mraWorkspaceCheck",
       "pkbContentCheck",

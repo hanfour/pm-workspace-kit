@@ -20,6 +20,14 @@ const BOT_SCOPES = [
   "im:write",
   "users:read",
   "reactions:read",
+  // The review flow re-reads a thread's root message (conversations.history)
+  // for `rerun`, `retry`, and the `:cr:` / `:a:` reaction paths. `im:history`
+  // only covers DMs; without these two, every one of those commands fails in a
+  // channel with missing_scope. Added 2026-08-14 after finance-system#378,
+  // where `rerun` reported the thread as having no review because the read
+  // itself was refused.
+  "channels:history",
+  "groups:history",
 ] as const;
 
 const BOT_EVENTS = [

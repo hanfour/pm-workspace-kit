@@ -21,6 +21,11 @@ const REQUIRED_BOT_SCOPES = [
   "im:write",
   "users:read",
   "reactions:read",
+  // Thread-root re-reads (rerun / retry / the :cr: and :a: reaction paths) call
+  // conversations.history. `im:history` covers DMs only — these two cover
+  // public and private channels. Added 2026-08-14 (finance-system#378).
+  "channels:history",
+  "groups:history",
 ] as const;
 
 const REQUIRED_BOT_EVENTS = [

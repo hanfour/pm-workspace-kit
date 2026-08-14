@@ -2,6 +2,7 @@ import type { DoctorCheck } from "../doctor";
 import { configFileCheck } from "./config-file";
 import { slackAppTokenCheck } from "./slack-app-token";
 import { slackBotTokenCheck } from "./slack-bot-token";
+import { slackBotScopesCheck } from "./slack-bot-scopes";
 import { anthropicKeyCheck } from "./anthropic-key";
 import { mraWorkspaceCheck } from "./mra-workspace";
 import { pkbContentCheck } from "./pkb-content";
@@ -17,6 +18,7 @@ export {
   configFileCheck,
   slackAppTokenCheck,
   slackBotTokenCheck,
+  slackBotScopesCheck,
   anthropicKeyCheck,
   mraWorkspaceCheck,
   pkbContentCheck,
@@ -39,6 +41,9 @@ export const DEFAULT_CHECKS: DoctorCheck[] = [
   secretSourcesCheck,
   slackAppTokenCheck,
   slackBotTokenCheck,
+  // Right after the token check: a valid token with the wrong scopes fails
+  // silently at runtime, so the two belong side by side in the output.
+  slackBotScopesCheck,
   anthropicKeyCheck,
   mraWorkspaceCheck,
   pkbContentCheck,
