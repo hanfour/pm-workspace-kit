@@ -20,7 +20,9 @@
         "im:read",
         "im:write",
         "users:read",
-        "reactions:read"
+        "reactions:read",
+        "channels:history",
+        "groups:history"
       ]
     }
   },

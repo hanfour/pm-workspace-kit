@@ -137,7 +137,7 @@ Gateway 透過 `pickEscalationPool(cfg, repo)` 挑一組 IT 聯絡人（repo 特
 1. 這個 `(channelId, threadTs)` 有沒有 pending marker？
 2. 訊息發送者是不是 `marker.mentionedUserIds` 內的人？
 
-兩個都 yes → 就是 IT 同事的回覆 → 走 absorb path。發送者不在名單就維持 pending。（在 channel 場景，IT 同事必須 `@pmk` 才接得到 — 因為我們沒持有 `channels:history` scope；DM 不用這層因為 `im:history` 已經給我們訊息可見性。）
+兩個都 yes → 就是 IT 同事的回覆 → 走 absorb path。發送者不在名單就維持 pending。（在 channel 場景，IT 同事必須 `@pmk` 才接得到：gateway 只在 DM 處理原始 `message` 事件，其他一律走 `app_mention`，所以頻道裡沒 mention bot 的回覆不會進到這條路徑。2026-08 加的 `channels:history` scope 只讓 bot 能主動回讀指定的某一則訊息，不等於訂閱頻道流量。）
 
 ## 9. LLM extractor → KnowledgeAtom
 

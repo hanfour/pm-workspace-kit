@@ -43,6 +43,12 @@ export interface DoctorRunners {
     user?: string;
     botId?: string;
     error?: string;
+    /**
+     * Scopes Slack reports as granted to THIS token (auth.test's
+     * `response_metadata.scopes`). Absent when the response omits it — that is
+     * "unknown", never "none": the scopes check warns rather than passing.
+     */
+    scopes?: readonly string[];
   }>;
   anthropicEcho: (
     apiKey: string,
@@ -270,16 +276,19 @@ async function defaultSlackBotAuth(
   user?: string;
   botId?: string;
   error?: string;
+  scopes?: readonly string[];
 }> {
   if (!token) return { ok: false, error: "no bot token configured" };
   try {
     const res = await new WebClient(token).auth.test();
     if (!res.ok) return { ok: false, error: res.error ?? "unknown" };
+    const granted = (res.response_metadata as { scopes?: string[] } | undefined)?.scopes;
     return {
       ok: true,
       team: res.team,
       user: res.user,
       botId: res.bot_id,
+      scopes: granted,
     };
   } catch (err) {
     return {

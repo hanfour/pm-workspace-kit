@@ -143,7 +143,7 @@ The thread is now "pending escalation". When any subsequent message arrives in t
 1. Does this `(channelId, threadTs)` have a pending marker?
 2. Is the message's sender in `marker.mentionedUserIds`?
 
-If both true → it's an IT contact's reply → run the absorb path. If sender isn't on the list, the marker stays pending. (For channel context the IT contact must `@pmk` their reply because we don't hold `channels:history` scope — DMs don't need this since `im:history` already gives us message visibility.)
+If both true → it's an IT contact's reply → run the absorb path. If sender isn't on the list, the marker stays pending. (For channel context the IT contact must `@pmk` their reply: the gateway only handles raw `message` events in DMs and routes everything else through `app_mention`, so a channel reply that doesn't mention the bot never reaches this path. The `channels:history` scope added in 2026-08 lets the bot *re-read* a named message on demand; it does not subscribe it to channel traffic.)
 
 ## 9. LLM extractor → KnowledgeAtom
 

@@ -5,7 +5,7 @@ import * as os from "node:os";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { FakeWebClient } from "./harness/slack-fakes";
-import { ReviewCoordinator, effectiveMraReviewStrategy, isReviewRequest, isRetryRequest, isRerunRequest, isApproveRequest, isApproveConfirmationRequest, isReviewCommandMissingPr, canConfirmApproveFromReview, reviewResultText, approveResultText, describeMraFailure, protectionNotReadyMessage, type ReviewGateway } from "../src/gateway/slack/review";
+import { ReviewCoordinator, effectiveMraReviewStrategy, isReviewRequest, isRetryRequest, isRerunRequest, rerunPrRefs, isApproveRequest, isApproveConfirmationRequest, isReviewCommandMissingPr, canConfirmApproveFromReview, reviewResultText, approveResultText, describeMraFailure, protectionNotReadyMessage, type ReviewGateway } from "../src/gateway/slack/review";
 import { gatewayConfigPath, resolveReviewConfig, saveGatewayConfig } from "../src/gateway/config";
 
 // Never point HOME back at the operator's home. Test files run in separate
@@ -744,7 +744,15 @@ describe("ReviewCoordinator idempotency UX (already-reviewed note)", () => {
     const after = web.posted.slice(n).map((p) => p.text ?? "").join("\n");
     assert.match(after, /CHANGES_REQUESTED/, "the skip note must carry what was decided last time");
     assert.match(after, /pull\/12/, "and where to read it");
-    assert.match(after, /`rerun`/, "an admin must learn they can force a re-review");
+    // The whole point of the 2026-08-14 incident: the note told an admin to
+    // reply `rerun`, and a bare `rerun` needs a thread read the bot could not
+    // do in that channel. The command it hands over must be one that runs
+    // wherever it is pasted, so it names the PR itself.
+    assert.match(
+      after,
+      /`rerun https:\/\/github\.com\/onead\/OnePixel\/pull\/12`/,
+      "the offered command must be copy-pasteable and self-contained",
+    );
   });
 
   it("`:a:` on an already-reviewed clean commit points at the waiting offer, not at pushing", async () => {
@@ -873,6 +881,87 @@ describe("isRetryRequest", () => {
     for (const t of ["please retry", "retry the build", "", ":cr: x"]) {
       assert.equal(isRetryRequest(t), false, `should not match: '${t}'`);
     }
+  });
+});
+
+// A bare `rerun` needs the thread root to know WHICH PR to re-review, and that
+// read is exactly what fails in a channel without `channels:history`. Carrying
+// the link on the command itself is the escape hatch: the text is already in
+// hand, so it works wherever the user can type.
+describe("isRerunRequest with an inline PR link", () => {
+  const PR = "https://github.com/onead/finance-system/pull/378";
+
+  it("matches `rerun <PR 連結>` in bare and Slack-wrapped forms", () => {
+    for (const t of [`rerun ${PR}`, `重跑 ${PR}`, `RERUN <${PR}>`, `rerun <${PR}|#378>`]) {
+      assert.equal(isRerunRequest(t), true, `should match: '${t}'`);
+    }
+  });
+
+  it("exposes the PR refs the command carried", () => {
+    const refs = rerunPrRefs(`rerun ${PR}`);
+    assert.equal(refs.length, 1);
+    assert.equal(refs[0]?.number, 378);
+    assert.equal(refs[0]?.repo, "finance-system");
+  });
+
+  it("reports no refs for a bare rerun, so the thread-root path still runs", () => {
+    assert.deepEqual(rerunPrRefs("rerun"), []);
+    assert.deepEqual(rerunPrRefs("重跑"), []);
+  });
+
+  // The token has to LEAD. Chat that mentions a rerun must stay in free chat,
+  // or an offhand sentence quoting a PR link would force a re-review.
+  it("does not match chat that merely mentions rerun and a PR", () => {
+    for (const t of [`我剛 rerun 過 ${PR}`, `rerunning ${PR}`, `要不要 rerun`, `rerun 沒有連結`]) {
+      assert.deepEqual(rerunPrRefs(t), [], `should carry no refs: '${t}'`);
+    }
+    assert.equal(isRerunRequest(`我剛 rerun 過 ${PR}`), false);
+    assert.equal(isRerunRequest(`rerunning ${PR}`), false);
+  });
+});
+
+describe("ReviewCoordinator.rerunInThread with an inline PR link", () => {
+  const PR = "https://github.com/onead/OnePixel/pull/12";
+
+  it("re-reviews the linked PR without reading the thread root", async () => {
+    const web = new FakeWebClient();
+    web.conversations.history = async () => {
+      throw new Error("An API error occurred: missing_scope");
+    };
+    let calls = 0;
+    const c = coord(web, gw({
+      runMraReview: async () => {
+        calls++;
+        return { ok: true, status: "COMMENT", commentCount: 0, stdout: "", stderr: "" };
+      },
+    } as unknown as Partial<ReviewGateway>));
+    await c.rerunInThread({ channelId: "C1", threadTs: "1.1", userId: "U1", text: `rerun ${PR}` });
+    assert.equal(calls, 1, "the linked PR must be reviewed even though the thread is unreadable");
+  });
+
+  it("forces a re-review of a commit already finalized", async () => {
+    const web = new FakeWebClient();
+    let calls = 0;
+    const c = coord(web, gw({
+      runMraReview: async () => {
+        calls++;
+        return { ok: true, status: "COMMENT", commentCount: 0, stdout: "", stderr: "" };
+      },
+    } as unknown as Partial<ReviewGateway>));
+    await c.fromMessage({ channelId: "C1", threadTs: "1.1", userId: "U1", text: `:cr: ${PR}` });
+    await c.rerunInThread({ channelId: "C1", threadTs: "1.1", userId: "U1", text: `rerun ${PR}` });
+    assert.equal(calls, 2, "rerun must skip the same-SHA already-done guard");
+  });
+
+  it("still refuses a non-admin, link or no link", async () => {
+    const web = new FakeWebClient();
+    let calls = 0;
+    const c = coord(web, gw({
+      runMraReview: async () => { calls++; return { ok: true, status: "COMMENT", commentCount: 0, stdout: "", stderr: "" }; },
+    } as unknown as Partial<ReviewGateway>));
+    await c.rerunInThread({ channelId: "C1", threadTs: "1.1", userId: "U-not-admin", text: `rerun ${PR}` });
+    assert.equal(calls, 0, "an inline link must not become a way around the admin gate");
+    assert.ok(web.posted.some((p) => /admin/.test(p.text ?? "")), "and the refusal must say why");
   });
 });
 
@@ -1649,6 +1738,88 @@ describe("ReviewCoordinator forced rerun", () => {
     web.conversationsHistoryResponse = { ok: true, messages: [{ text: root }] };
     await c.rerunInThread({ channelId: "C1", threadTs: "1.1", userId: "U1" });
     assert.equal(calls, 2);
+  });
+});
+
+// 2026-08-14 live: `rerun` in a PUBLIC channel answered "這個 thread 沒有可重跑的
+// PR review". The thread root WAS an `:a:` request — the bot simply could not read
+// it, because the bot token holds `im:history` but not `channels:history`, so
+// conversations.history threw missing_scope and fetchMessageText swallowed the
+// error into `undefined`. Every caller then read that `undefined` as "the root is
+// not a review request" and blamed the user for the bot's own missing scope.
+// A read failure and an absent review are different facts and must read differently.
+describe("ReviewCoordinator thread-root read failure", () => {
+  function unreadableWeb(message = "An API error occurred: missing_scope"): FakeWebClient {
+    const web = new FakeWebClient();
+    web.conversations.history = async () => {
+      throw new Error(message);
+    };
+    return web;
+  }
+
+  it("rerun names the read failure instead of claiming the thread has no review", async () => {
+    const web = unreadableWeb();
+    await coord(web, gw()).rerunInThread({ channelId: "C1", threadTs: "1.1", userId: "U1" });
+    const texts = web.posted.map((p) => p.text ?? "");
+    assert.ok(
+      !texts.some((t) => /沒有可重跑/.test(t)),
+      `an unreadable thread must not be reported as having no review, got: ${JSON.stringify(texts)}`,
+    );
+    assert.ok(
+      texts.some((t) => /missing_scope/.test(t)),
+      `the reply must carry the real Slack error, got: ${JSON.stringify(texts)}`,
+    );
+  });
+
+  it("retry names the read failure instead of the no-review nudge", async () => {
+    const web = unreadableWeb();
+    await coord(web, gw()).retryInThread({ channelId: "C1", threadTs: "1.1", userId: "U1" });
+    const texts = web.posted.map((p) => p.text ?? "");
+    assert.ok(
+      !texts.some((t) => /沒有可重試/.test(t)),
+      `an unreadable thread must not be reported as having no review, got: ${JSON.stringify(texts)}`,
+    );
+    assert.ok(
+      texts.some((t) => /missing_scope/.test(t)),
+      `the reply must carry the real Slack error, got: ${JSON.stringify(texts)}`,
+    );
+  });
+
+  // The reaction paths are worse than a wrong message: `text ?? ""` parses to zero
+  // PR refs and processReviewRequest returns early, so a `:cr:` reaction in a
+  // channel produces NO reply at all. The user sees the bot ignore them.
+  it(":cr: reaction answers instead of silently doing nothing", async () => {
+    const web = unreadableWeb();
+    await coord(web, gw()).fromReaction({ channelId: "C1", messageTs: "1.1", reactorUserId: "U1" });
+    const texts = web.posted.map((p) => p.text ?? "");
+    assert.ok(texts.length > 0, "a reaction the bot cannot read must not be silently dropped");
+    assert.ok(
+      texts.some((t) => /missing_scope/.test(t)),
+      `the reply must carry the real Slack error, got: ${JSON.stringify(texts)}`,
+    );
+  });
+
+  it(":a: reaction answers instead of silently doing nothing", async () => {
+    const web = unreadableWeb();
+    await coord(web, gw()).fromApproveReaction({ channelId: "C1", messageTs: "1.1", reactorUserId: "U1" });
+    const texts = web.posted.map((p) => p.text ?? "");
+    assert.ok(texts.length > 0, "a reaction the bot cannot read must not be silently dropped");
+    assert.ok(
+      texts.some((t) => /missing_scope/.test(t)),
+      `the reply must carry the real Slack error, got: ${JSON.stringify(texts)}`,
+    );
+  });
+
+  // A readable thread whose root genuinely is not a review request keeps the
+  // existing nudge — the fix must separate the two facts, not merge them.
+  it("keeps the no-review nudge when the root IS readable and is not a review", async () => {
+    const web = new FakeWebClient();
+    web.conversationsHistoryResponse = { ok: true, messages: [{ text: "just chatting" }] };
+    await coord(web, gw()).rerunInThread({ channelId: "C1", threadTs: "1.1", userId: "U1" });
+    assert.ok(
+      web.posted.some((p) => /沒有可重跑/.test(p.text ?? "")),
+      "a readable non-review thread must still get the nudge",
+    );
   });
 });
 

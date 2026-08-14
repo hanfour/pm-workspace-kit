@@ -61,7 +61,8 @@ import { ReviewRunner } from "./review-runner";
 // Pure request classifiers + result-text formatters live in sibling modules.
 // Imported for internal use, and re-exported so slack/index.ts and the review
 // tests keep importing them from "./review" unchanged.
-import { isReviewRequest, isApproveRequest } from "./review-requests";
+import { isReviewRequest, isApproveRequest, rerunPrRefs } from "./review-requests";
+import { threadReadFailedMessage } from "./review-messages";
 export {
   isReviewRequest,
   isApproveRequest,
@@ -70,6 +71,7 @@ export {
   reviewCommandUsageText,
   isRetryRequest,
   isRerunRequest,
+  rerunPrRefs,
 } from "./review-requests";
 export {
   type ReviewOutcome,
@@ -77,7 +79,17 @@ export {
   reviewResultText,
   approveResultText,
   describeMraFailure,
+  threadReadFailedMessage,
 } from "./review-messages";
+
+/**
+ * Outcome of reading one Slack message. `ok: true` with an undefined `text`
+ * means the read succeeded and the message carries no text; `ok: false` means
+ * the read itself failed and NOTHING is known about the message.
+ */
+export type MessageTextRead =
+  | { readonly ok: true; readonly text: string | undefined }
+  | { readonly ok: false; readonly error: string };
 
 export interface ReviewGateway {
   resolveProjectByRemote: typeof resolveProjectByRemoteImpl;
@@ -209,12 +221,22 @@ export class ReviewCoordinator {
     messageTs: string;
     reactorUserId: string;
   }): Promise<void> {
-    const text = await this.fetchMessageText(args.channelId, args.messageTs);
+    const read = await this.readMessageText(args.channelId, args.messageTs);
+    if (!read.ok) {
+      // Without the text there are no PR refs, and processReviewRequest returns
+      // early on zero refs — so this used to be a completely silent drop.
+      await this.reply(
+        args.channelId,
+        args.messageTs,
+        threadReadFailedMessage({ error: read.error, command: "cr" }),
+      );
+      return;
+    }
     await this.processReviewRequest({
       channelId: args.channelId,
       threadTs: args.messageTs,
       actorUserId: args.reactorUserId,
-      text: text ?? "",
+      text: read.text ?? "",
     });
   }
 
@@ -243,12 +265,20 @@ export class ReviewCoordinator {
     messageTs: string;
     reactorUserId: string;
   }): Promise<void> {
-    const text = await this.fetchMessageText(args.channelId, args.messageTs);
+    const read = await this.readMessageText(args.channelId, args.messageTs);
+    if (!read.ok) {
+      await this.reply(
+        args.channelId,
+        args.messageTs,
+        threadReadFailedMessage({ error: read.error, command: "a" }),
+      );
+      return;
+    }
     await this.processApproveRequest({
       channelId: args.channelId,
       threadTs: args.messageTs,
       actorUserId: args.reactorUserId,
-      text: text ?? "",
+      text: read.text ?? "",
     });
   }
 
@@ -392,7 +422,16 @@ export class ReviewCoordinator {
     userId: string;
   }): Promise<void> {
     if (!resolveReviewConfig(this.currentConfig().review).enabled) return;
-    const rootText = await this.fetchMessageText(args.channelId, args.threadTs);
+    const read = await this.readMessageText(args.channelId, args.threadTs);
+    if (!read.ok) {
+      await this.reply(
+        args.channelId,
+        args.threadTs,
+        threadReadFailedMessage({ error: read.error, command: "retry" }),
+      );
+      return;
+    }
+    const rootText = read.text;
     // An approve thread (`:a:`) is drained the same way as a `:cr:` review and its
     // interruption notice tells the user to reply `retry` — so retry must re-run
     // the APPROVE flow for an `:a:` root, not fall through to the nudge (which
@@ -420,15 +459,46 @@ export class ReviewCoordinator {
     else await this.processReviewRequest(req);
   }
 
-  /** Admin-only forced re-review of an already finalized same-SHA claim. */
-  async rerunInThread(args: { channelId: string; threadTs: string; userId: string }): Promise<void> {
+  /**
+   * Admin-only forced re-review of an already finalized same-SHA claim.
+   *
+   * `rerun <PR 連結>` names its own target and skips the thread-root read
+   * entirely, so it works in a channel the bot cannot read back. A bare `rerun`
+   * still resolves the PR from the thread root.
+   */
+  async rerunInThread(args: {
+    channelId: string;
+    threadTs: string;
+    userId: string;
+    /** The rerun message itself; a PR link in it takes precedence over the root. */
+    text?: string;
+  }): Promise<void> {
     const config = this.currentConfig();
     if (!resolveReviewConfig(config.review).enabled) return;
     if (!isAdmin(config, args.userId)) {
       await this.reply(args.channelId, args.threadTs, ":no_entry: `rerun` 會略過同 commit 的完成紀錄，只允許 PMK admin 執行。");
       return;
     }
-    const rootText = await this.fetchMessageText(args.channelId, args.threadTs);
+    if (args.text && rerunPrRefs(args.text).length > 0) {
+      await this.processReviewRequest({
+        channelId: args.channelId,
+        threadTs: args.threadTs,
+        actorUserId: args.userId,
+        text: args.text,
+        forced: true,
+      });
+      return;
+    }
+    const read = await this.readMessageText(args.channelId, args.threadTs);
+    if (!read.ok) {
+      await this.reply(
+        args.channelId,
+        args.threadTs,
+        threadReadFailedMessage({ error: read.error, command: "rerun" }),
+      );
+      return;
+    }
+    const rootText = read.text;
     const approve = rootText ? isApproveRequest(rootText) : false;
     const review = rootText ? isReviewRequest(rootText) : false;
     if (!rootText || (!approve && !review)) {
@@ -528,10 +598,14 @@ export class ReviewCoordinator {
     }
   }
 
-  private async fetchMessageText(
-    channel: string,
-    ts: string,
-  ): Promise<string | undefined> {
+  /**
+   * Read one message's text. The result distinguishes "read it, here is the
+   * text" from "could not read it" — collapsing both into `undefined` is what
+   * let a missing `channels:history` scope surface to users as "this thread has
+   * no PR review" (2026-08-14, finance-system#378). Callers that speak to the
+   * user MUST branch on `ok` rather than on the text being empty.
+   */
+  private async readMessageText(channel: string, ts: string): Promise<MessageTextRead> {
     try {
       const res = (await this.opts.web.conversations.history({
         channel,
@@ -540,10 +614,20 @@ export class ReviewCoordinator {
         inclusive: true,
         limit: 1,
       } as never)) as { messages?: Array<{ text?: string }> };
-      return res.messages?.[0]?.text;
+      return { ok: true, text: res.messages?.[0]?.text };
     } catch (err) {
-      this.opts.onLog(`review: fetch message failed: ${(err as Error).message}`);
-      return undefined;
+      const error = (err as Error).message;
+      this.opts.onLog(`review: fetch message failed: ${error}`);
+      return { ok: false, error };
     }
+  }
+
+  /**
+   * Text-or-undefined view of {@link readMessageText}, for callers whose
+   * behaviour on a read failure is already the same as on a missing message.
+   */
+  private async fetchMessageText(channel: string, ts: string): Promise<string | undefined> {
+    const read = await this.readMessageText(channel, ts);
+    return read.ok ? read.text : undefined;
   }
 }
