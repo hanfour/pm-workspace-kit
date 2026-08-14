@@ -155,6 +155,34 @@ export function alreadyReviewedMessage(input: {
   return `:information_source: ${slug}#${pr} 這個 commit（\`${headSha.slice(0, 7)}\`）${lede}${verdict}${link}\n${next}${adminHint}`;
 }
 
+/**
+ * The reply when the bot cannot READ the thread root it needs. Distinct from
+ * "this thread has no PR review": that one is a fact about the thread, this one
+ * is a fact about the bot's own access, and reporting the second as the first
+ * sends the user to debug their own thread.
+ *
+ * Live on 2026-08-14 (finance-system#378): the bot token holds `im:history` but
+ * not `channels:history`, so every thread-root re-read in a CHANNEL threw
+ * missing_scope. `rerun` answered "這個 thread 沒有可重跑的 PR review" about a thread
+ * whose root was a valid `:a:` request, and the `:cr:` reaction path posted
+ * nothing at all. Both blamed the user for a scope the bot was never granted.
+ */
+export function threadReadFailedMessage(input: {
+  /** The Slack error, verbatim. Named so the operator can act without reading logs. */
+  error: string;
+  /** What the user did, so the suggested fallback matches their intent. */
+  command: "rerun" | "retry" | "cr" | "a";
+}): string {
+  const inline = input.command === "a" ? ":a:" : ":cr:";
+  const scopeHint = /missing_scope/.test(input.error)
+    ? "\n這是 bot 的權限問題，不是你的操作問題：在頻道回讀 thread 需要 `channels:history`（私有頻道另需 `groups:history`），DM 不受影響。"
+    : "";
+  return (
+    `:warning: 我讀不到這個 thread 的原始訊息（Slack 回：${input.error}），無法判斷要處理哪個 PR。\n` +
+    `請改用 \`${inline} <PR 連結>\` 直接發起。${scopeHint}`
+  );
+}
+
 /** Last non-empty line of `s`, with ANSI colour escapes stripped and trimmed. */
 function lastNonEmptyLine(s?: string): string | undefined {
   if (!s) return undefined;

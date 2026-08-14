@@ -1652,6 +1652,88 @@ describe("ReviewCoordinator forced rerun", () => {
   });
 });
 
+// 2026-08-14 live: `rerun` in a PUBLIC channel answered "這個 thread 沒有可重跑的
+// PR review". The thread root WAS an `:a:` request — the bot simply could not read
+// it, because the bot token holds `im:history` but not `channels:history`, so
+// conversations.history threw missing_scope and fetchMessageText swallowed the
+// error into `undefined`. Every caller then read that `undefined` as "the root is
+// not a review request" and blamed the user for the bot's own missing scope.
+// A read failure and an absent review are different facts and must read differently.
+describe("ReviewCoordinator thread-root read failure", () => {
+  function unreadableWeb(message = "An API error occurred: missing_scope"): FakeWebClient {
+    const web = new FakeWebClient();
+    web.conversations.history = async () => {
+      throw new Error(message);
+    };
+    return web;
+  }
+
+  it("rerun names the read failure instead of claiming the thread has no review", async () => {
+    const web = unreadableWeb();
+    await coord(web, gw()).rerunInThread({ channelId: "C1", threadTs: "1.1", userId: "U1" });
+    const texts = web.posted.map((p) => p.text ?? "");
+    assert.ok(
+      !texts.some((t) => /沒有可重跑/.test(t)),
+      `an unreadable thread must not be reported as having no review, got: ${JSON.stringify(texts)}`,
+    );
+    assert.ok(
+      texts.some((t) => /missing_scope/.test(t)),
+      `the reply must carry the real Slack error, got: ${JSON.stringify(texts)}`,
+    );
+  });
+
+  it("retry names the read failure instead of the no-review nudge", async () => {
+    const web = unreadableWeb();
+    await coord(web, gw()).retryInThread({ channelId: "C1", threadTs: "1.1", userId: "U1" });
+    const texts = web.posted.map((p) => p.text ?? "");
+    assert.ok(
+      !texts.some((t) => /沒有可重試/.test(t)),
+      `an unreadable thread must not be reported as having no review, got: ${JSON.stringify(texts)}`,
+    );
+    assert.ok(
+      texts.some((t) => /missing_scope/.test(t)),
+      `the reply must carry the real Slack error, got: ${JSON.stringify(texts)}`,
+    );
+  });
+
+  // The reaction paths are worse than a wrong message: `text ?? ""` parses to zero
+  // PR refs and processReviewRequest returns early, so a `:cr:` reaction in a
+  // channel produces NO reply at all. The user sees the bot ignore them.
+  it(":cr: reaction answers instead of silently doing nothing", async () => {
+    const web = unreadableWeb();
+    await coord(web, gw()).fromReaction({ channelId: "C1", messageTs: "1.1", reactorUserId: "U1" });
+    const texts = web.posted.map((p) => p.text ?? "");
+    assert.ok(texts.length > 0, "a reaction the bot cannot read must not be silently dropped");
+    assert.ok(
+      texts.some((t) => /missing_scope/.test(t)),
+      `the reply must carry the real Slack error, got: ${JSON.stringify(texts)}`,
+    );
+  });
+
+  it(":a: reaction answers instead of silently doing nothing", async () => {
+    const web = unreadableWeb();
+    await coord(web, gw()).fromApproveReaction({ channelId: "C1", messageTs: "1.1", reactorUserId: "U1" });
+    const texts = web.posted.map((p) => p.text ?? "");
+    assert.ok(texts.length > 0, "a reaction the bot cannot read must not be silently dropped");
+    assert.ok(
+      texts.some((t) => /missing_scope/.test(t)),
+      `the reply must carry the real Slack error, got: ${JSON.stringify(texts)}`,
+    );
+  });
+
+  // A readable thread whose root genuinely is not a review request keeps the
+  // existing nudge — the fix must separate the two facts, not merge them.
+  it("keeps the no-review nudge when the root IS readable and is not a review", async () => {
+    const web = new FakeWebClient();
+    web.conversationsHistoryResponse = { ok: true, messages: [{ text: "just chatting" }] };
+    await coord(web, gw()).rerunInThread({ channelId: "C1", threadTs: "1.1", userId: "U1" });
+    assert.ok(
+      web.posted.some((p) => /沒有可重跑/.test(p.text ?? "")),
+      "a readable non-review thread must still get the nudge",
+    );
+  });
+});
+
 describe("ReviewCoordinator project concurrency", () => {
   it("does not run two reviews against the same shared project checkout", async () => {
     const web = new FakeWebClient();
