@@ -6,6 +6,9 @@ import { useIsolatedHome } from "./helpers/isolated-home";
 import { parseDeployArgs, plistRunsCurrent, readPlistXml, runDeploy, type DeployDeps } from "../src/commands/gateway/deploy";
 import { currentEntry, listReleases, pointLink, readLink, releasesRoot, writeReleaseInfo } from "../src/gateway/deploy/paths";
 
+import { buildPlist } from "../src/commands/gateway/service";
+
+const plist = (distEntry: string) => buildPlist({ nodePath: "/usr/bin/node", distEntry, home: "/Users/x", workingDir: "/ws" });
 const SHA = "abcdef0aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
 function deps(o: { ready: boolean[]; buildFails?: boolean }): { d: DeployDeps; events: unknown[]; out: string[]; restarts: () => number } {
@@ -67,10 +70,15 @@ describe("readPlistXml", () => {
 });
 
 describe("plistRunsCurrent", () => {
+  it("recognizes an XML-escaped releases root", () => {
+    const root = "/Users/a&b/.pmk/releases";
+    assert.equal(plistRunsCurrent(plist(currentEntry(root)), root), true);
+  });
+
   it("is true only when the plist names releases/current's entry", () => {
     const root = "/Users/x/.pmk/releases";
-    assert.equal(plistRunsCurrent(`<string>${currentEntry(root)}</string>`, root), true);
-    assert.equal(plistRunsCurrent("<string>/Users/x/pm-workspace-kit/packages/cli/dist/index.js</string>", root), false);
+    assert.equal(plistRunsCurrent(plist(currentEntry(root)), root), true);
+    assert.equal(plistRunsCurrent(plist("/Users/x/pm-workspace-kit/packages/cli/dist/index.js"), root), false);
     assert.equal(plistRunsCurrent(undefined, root), false);
   });
 });

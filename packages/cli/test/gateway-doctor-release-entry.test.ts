@@ -6,6 +6,8 @@ import { useIsolatedHome } from "./helpers/isolated-home";
 import { evaluateReleaseEntry, releaseStatusLine } from "../src/gateway/doctor-checks/release-entry";
 import { currentEntry, pointLink, releasesRoot, writeReleaseInfo } from "../src/gateway/deploy/paths";
 
+import { buildPlist } from "../src/commands/gateway/service";
+
 const root = "/Users/x/.pmk/releases";
 const plist = (entry: string) =>
   `<key>ProgramArguments</key><array>\n    <string>/usr/bin/node</string><string>${entry}</string><string>gateway</string><string>start</string>\n  </array>`;
@@ -15,6 +17,25 @@ describe("release-entry doctor check", () => {
     const r = evaluateReleaseEntry({ plistXml: plist(currentEntry(root)), root, currentRelease: "0.45.0-abcdef0", insideGitTree: () => false });
     assert.equal(r.severity, "pass");
     assert.match(r.message, /0\.45\.0-abcdef0/);
+  });
+
+  it("recognizes an XML-escaped release entry", () => {
+    const root = "/Users/a&b/.pmk/releases";
+    const plistXml = buildPlist({ nodePath: "/usr/bin/node", distEntry: currentEntry(root), home: "/Users/a&b", workingDir: "/ws" });
+    const r = evaluateReleaseEntry({ plistXml, root, currentRelease: "0.45.0-abcdef0", insideGitTree: () => false });
+    assert.equal(r.severity, "pass");
+    assert.match(r.message, /0\.45\.0-abcdef0/);
+  });
+
+  it("warns with the decoded working-tree entry", () => {
+    const entry = "/Users/a&b/repo/packages/cli/dist/index.js";
+    const plistXml = buildPlist({ nodePath: "/usr/bin/node", distEntry: entry, home: "/Users/a&b", workingDir: "/ws" });
+    const r = evaluateReleaseEntry({ plistXml, root, currentRelease: undefined, insideGitTree: (dir) => {
+      assert.equal(dir, path.dirname(entry));
+      return true;
+    } });
+    assert.equal(r.severity, "warn");
+    assert.ok(r.message.includes(entry));
   });
 
   it("fails when it runs releases/current but the link is missing", () => {
@@ -47,6 +68,15 @@ describe("releaseStatusLine", () => {
     writeReleaseInfo(path.join(r, "0.45.0-abcdef0"), { ref: "main", sha: "abcdef0" + "1".repeat(33), version: "0.45.0", builtAt: "2026-09-21T00:00:00.000Z", nodeVersion: "v22" });
     pointLink(r, "current", "0.45.0-abcdef0");
     assert.equal(releaseStatusLine(r), "  release:    0.45.0-abcdef0 (main, built 2026-09-21T00:00:00.000Z)");
+  });
+
+  it("degrades when current points to an invalid release name", () => {
+    const root = releasesRoot(home.dir());
+    fs.mkdirSync(root, { recursive: true });
+    fs.symlinkSync("not-a-release", path.join(root, "current"));
+    const line = releaseStatusLine(root);
+    assert.ok(line.startsWith("  release:    (unreadable:"));
+    assert.equal(line, "  release:    (unreadable: invalid release name: not-a-release)");
   });
 
   it("says so when nothing is deployed", () => {

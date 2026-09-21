@@ -4,8 +4,9 @@ import type { DoctorCheckResult, DoctorContext } from "../doctor";
 import { installedPlist } from "../run-state";
 import { currentEntry, insideGitTree, readLink, readReleaseInfo, releaseDir, releasesRoot } from "../deploy/paths";
 
+import { plistEntryPoint } from "../deploy/plist-entry";
+
 const NAME = "release-entry";
-const ENTRY_RE = /<key>ProgramArguments<\/key>\s*<array>\s*<string>[^<]*<\/string>\s*<string>([^<]*)<\/string>/;
 
 /**
  * Is the service insulated from the repo? A LaunchAgent that runs a working
@@ -18,7 +19,7 @@ export function evaluateReleaseEntry(o: {
   currentRelease: string | undefined;
   insideGitTree: (dir: string) => boolean;
 }): DoctorCheckResult {
-  const entry = o.plistXml === undefined ? undefined : ENTRY_RE.exec(o.plistXml)?.[1];
+  const entry = plistEntryPoint(o.plistXml);
   if (!entry) return { name: NAME, severity: "pass", message: "no LaunchAgent installed" };
 
   if (entry === currentEntry(o.root)) {
@@ -55,8 +56,14 @@ export async function releaseEntryCheck(ctx: DoctorContext): Promise<DoctorCheck
 
 /** One line for `pmk gateway status`. */
 export function releaseStatusLine(root: string): string {
-  const name = readLink(root, "current");
-  if (!name) return "  release:    — (not deployed; see `pmk gateway deploy`)";
-  const info = readReleaseInfo(releaseDir(root, name));
-  return info ? `  release:    ${name} (${info.ref}, built ${info.builtAt})` : `  release:    ${name}`;
+  try {
+    const name = readLink(root, "current");
+    if (!name) return "  release:    — (not deployed; see `pmk gateway deploy`)";
+    const info = readReleaseInfo(releaseDir(root, name));
+    return info ? `  release:    ${name} (${info.ref}, built ${info.builtAt})` : `  release:    ${name}`;
+  } catch (error) {
+    // Status must degrade, never crash, when release state cannot be read.
+    const message = error instanceof Error ? error.message : String(error);
+    return `  release:    (unreadable: ${message})`;
+  }
 }

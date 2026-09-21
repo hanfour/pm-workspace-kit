@@ -9,13 +9,13 @@ import { buildRelease, type BuildDeps, type BuildResult } from "../../gateway/de
 import { activateRelease, rollbackRelease, type ActivateDeps, type ActivateResult } from "../../gateway/deploy/activate";
 import { pruneReleases } from "../../gateway/deploy/prune";
 import { currentEntry, readLink, readReleaseInfo, releaseDir, releasesRoot } from "../../gateway/deploy/paths";
+import { plistEntryPoint } from "../../gateway/deploy/plist-entry";
 import { restartGateway } from "./ops";
 
 const USAGE = "usage: pmk gateway deploy <ref> [--repo <path>] [--no-activate]";
 const MAX_TAR_BYTES = 512 * 1024 * 1024;
 const MAX_STDOUT_BYTES = 64 * 1024 * 1024;
 const LINKS_ONLY_REASON = "links only: service not restarted — LaunchAgent does not run releases/current";
-
 export interface DeployDeps {
   build: BuildDeps;
   activate: ActivateDeps;
@@ -41,7 +41,7 @@ export function parseDeployArgs(rest: string[]): { ref: string; repo?: string; a
 }
 
 export function plistRunsCurrent(plistXml: string | undefined, root: string): boolean {
-  return plistXml !== undefined && plistXml.includes(`<string>${currentEntry(root)}</string>`);
+  return plistEntryPoint(plistXml) === currentEntry(root);
 }
 
 export function readPlistXml(plistPath: string | undefined, read: (p: string) => string): string | undefined {
