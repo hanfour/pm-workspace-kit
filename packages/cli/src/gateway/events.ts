@@ -129,6 +129,8 @@ export interface GatewayDeployEvent {
   sha: string;
   ref?: string;
   previous?: string;
+  /** Release selected after activation/recovery; on failure reflects current, not verified readiness. Omitted for links-only. */
+  live?: string;
   reason?: string;
 }
 

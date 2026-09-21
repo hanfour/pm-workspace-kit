@@ -2,7 +2,10 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { RELEASE_INFO_FILE, pointLink, readLink, releaseDir, removeLink } from "./paths";
 
-/** ~1 s per poll. A cold gateway start reaches "ready" in well under this. */
+/**
+ * ~1 s per poll. The gateway's own drain can take up to 90 s, but launchd's
+ * default ExitTimeOut (20 s) kills the old process first, so 60 polls suffice.
+ */
 export const READY_POLL_MAX = 60;
 const POLL_INTERVAL_MS = 1000;
 

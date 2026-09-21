@@ -60,6 +60,18 @@ describe("buildRelease", () => {
     assert.deepEqual(fs.readdirSync(args().root).filter((n) => n.startsWith(".staging-")), []);
   });
 
+  it("reports export, install, build and smoke test phases in order", () => {
+    const lines: string[] = [];
+    buildRelease(args(), { ...fakeDeps().deps, progress: (line: string) => { lines.push(line); } });
+    assert.deepEqual(lines, ["exporting 2fa1497…", "installing dependencies…", "building…", "smoke test…"]);
+  });
+
+});
+
+describe("buildRelease reuse and failures", () => {
+  const home = useIsolatedHome("pmk-deploy-build-failures-");
+  const args = () => ({ repo: "/repo", ref: "HEAD", root: releasesRoot(home.dir()) });
+
   it("reuses an already-built release without running npm", () => {
     buildRelease(args(), fakeDeps().deps);
     const second = fakeDeps();

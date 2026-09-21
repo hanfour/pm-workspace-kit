@@ -45,6 +45,9 @@ describe("parseDeployArgs", () => {
     assert.deepEqual(parseDeployArgs(["HEAD"]), { ref: "HEAD", repo: undefined, activate: true });
     assert.deepEqual(parseDeployArgs(["v0.45.0", "--repo", "/r", "--no-activate"]), { ref: "v0.45.0", repo: "/r", activate: false });
   });
+  it("usage explains accepted refs and unsupported revision expressions", () => {
+    assert.throws(() => parseDeployArgs([]), /<ref> is a branch, tag or full\/short sha \(forms like HEAD~1 are not accepted\)/);
+  });
   it("requires exactly one ref", () => {
     assert.throws(() => parseDeployArgs([]), /usage: pmk gateway deploy/);
     assert.throws(() => parseDeployArgs(["a", "b"]), /usage: pmk gateway deploy/);
@@ -95,7 +98,7 @@ describe("runDeploy", () => {
     } };
     assert.equal(await runDeploy(base(), withPrune), 0);
     assert.equal(readLink(base().root, "current"), "0.45.0-abcdef0");
-    assert.deepEqual(events, [{ type: "gateway.deployed", release: "0.45.0-abcdef0", sha: SHA, ref: "HEAD", previous: undefined }]);
+    assert.deepEqual(events, [{ type: "gateway.deployed", release: "0.45.0-abcdef0", sha: SHA, ref: "HEAD", previous: undefined, live: "0.45.0-abcdef0" }]);
     assert.ok(out.includes("warning: could not prune old releases: permission denied"));
   });
 
@@ -121,6 +124,12 @@ describe("runDeploy", () => {
     }]);
   });
 
+});
+
+describe("runDeploy build and recovery", () => {
+  const home = useIsolatedHome("pmk-deploy-cmd-recovery-");
+  const base = () => ({ ref: "HEAD", repo: "/repo", root: releasesRoot(home.dir()), activate: true });
+
   it("build + activate: exit 0, gateway.deployed recorded, old releases pruned", async () => {
     const root = base().root;
     for (const [n, day] of [["0.1.0-0000001", "01"], ["0.2.0-0000002", "02"], ["0.3.0-0000003", "03"]] as const) {
@@ -131,7 +140,7 @@ describe("runDeploy", () => {
     const { d, events } = deps({ ready: [true] });
     assert.equal(await runDeploy(base(), d), 0);
     assert.equal(readLink(root, "current"), "0.45.0-abcdef0");
-    assert.deepEqual(events, [{ type: "gateway.deployed", release: "0.45.0-abcdef0", sha: SHA, ref: "HEAD", previous: "0.3.0-0000003" }]);
+    assert.deepEqual(events, [{ type: "gateway.deployed", release: "0.45.0-abcdef0", sha: SHA, ref: "HEAD", previous: "0.3.0-0000003", live: "0.45.0-abcdef0" }]);
     assert.deepEqual(listReleases(root), ["0.2.0-0000002", "0.3.0-0000003", "0.45.0-abcdef0"]);
   });
 
@@ -160,5 +169,6 @@ describe("runDeploy", () => {
     assert.equal(readLink(root, "current"), "0.3.0-0000003");
     assert.equal((events[0] as { type: string }).type, "gateway.rollback");
     assert.match((events[0] as { reason: string }).reason, /did not reach phase/);
+    assert.equal((events[0] as { live: string }).live, "0.3.0-0000003");
   });
 });

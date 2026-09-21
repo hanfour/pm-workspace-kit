@@ -3,18 +3,16 @@ import * as path from "node:path";
 import { execFileSync } from "node:child_process";
 import chalk from "chalk";
 import { println } from "../../io";
-import { appendGatewayEvent, type GatewayDeployEvent } from "../../gateway/events";
-import { installedPlist, readGatewayRunStateRaw } from "../../gateway/run-state";
+import { type GatewayDeployEvent } from "../../gateway/events";
 import { buildRelease, type BuildDeps, type BuildResult } from "../../gateway/deploy/build";
 import { activateRelease, rollbackRelease, type ActivateDeps, type ActivateResult } from "../../gateway/deploy/activate";
 import { pruneReleases } from "../../gateway/deploy/prune";
-import { currentEntry, readLink, readReleaseInfo, releaseDir, releasesRoot } from "../../gateway/deploy/paths";
-import { plistEntryPoint } from "../../gateway/deploy/plist-entry";
-import { restartGateway } from "./ops";
+import { readLink, readReleaseInfo, releaseDir, releasesRoot } from "../../gateway/deploy/paths";
+import { realDeps } from "./deploy-deps";
+export { plistRunsCurrent, readPlistXml } from "./deploy-deps";
 
-const USAGE = "usage: pmk gateway deploy <ref> [--repo <path>] [--no-activate]";
-const MAX_TAR_BYTES = 512 * 1024 * 1024;
-const MAX_STDOUT_BYTES = 64 * 1024 * 1024;
+const USAGE = "usage: pmk gateway deploy <ref> [--repo <path>] [--no-activate]\n" +
+  "<ref> is a branch, tag or full/short sha (forms like HEAD~1 are not accepted)";
 const LINKS_ONLY_REASON = "links only: service not restarted — LaunchAgent does not run releases/current";
 export interface DeployDeps {
   build: BuildDeps;
@@ -40,22 +38,9 @@ export function parseDeployArgs(rest: string[]): { ref: string; repo?: string; a
   return { ref: positional[0], repo, activate };
 }
 
-export function plistRunsCurrent(plistXml: string | undefined, root: string): boolean {
-  return plistEntryPoint(plistXml) === currentEntry(root);
-}
-
-export function readPlistXml(plistPath: string | undefined, read: (p: string) => string): string | undefined {
-  if (plistPath === undefined) return undefined;
-  try {
-    return read(plistPath);
-  } catch {
-    // False is the safe service-detection answer: an unreadable plist cannot justify restarting after the link flip.
-    return undefined;
-  }
-}
-
 /** Records outcomes; `onSuccess` is "gateway.rollback" for operator rollback. */
-function settle(
+export function settle(
+  root: string,
   r: ActivateResult,
   sha: string,
   ref: string | undefined,
@@ -63,18 +48,22 @@ function settle(
   onSuccess: GatewayDeployEvent["type"] = "gateway.deployed",
 ): number {
   d.print(r.message);
+  const live = r.outcome === "activated" ? r.release
+    : r.outcome === "rolled-back" ? r.previous
+    : r.outcome === "failed" ? readLink(root, "current") : undefined;
+  const liveField = live === undefined ? {} : { live };
   switch (r.outcome) {
     case "activated": {
       const reason = onSuccess === "gateway.rollback" ? "operator rollback" : undefined;
-      d.record({ type: onSuccess, release: r.release, sha, ref, previous: r.previous, ...(reason ? { reason } : {}) });
+      d.record({ type: onSuccess, release: r.release, sha, ref, previous: r.previous, ...liveField, ...(reason ? { reason } : {}) });
       return 0;
     }
     case "links-only":
-      d.record({ type: "gateway.deployed", release: r.release, sha, ref, previous: r.previous, reason: LINKS_ONLY_REASON });
+      d.record({ type: onSuccess, release: r.release, sha, ref, previous: r.previous, reason: LINKS_ONLY_REASON });
       return 0;
     case "rolled-back":
     case "failed":
-      d.record({ type: "gateway.rollback", release: r.release, sha, ref, previous: r.previous, reason: r.message });
+      d.record({ type: "gateway.rollback", release: r.release, sha, ref, previous: r.previous, ...liveField, reason: r.message });
       return 1;
     case "already-current":
       return 0;
@@ -102,7 +91,7 @@ export async function runDeploy(
     d.print(`not activated. When ready: pmk gateway activate ${built.name}`);
     return 0;
   }
-  const code = settle(await activateRelease({ root: a.root, name: built.name }, d.activate), built.sha, a.ref, d);
+  const code = settle(a.root, await activateRelease({ root: a.root, name: built.name }, d.activate), built.sha, a.ref, d);
   if (code === 0) {
     try {
       for (const removed of (d.prune ?? pruneReleases)(a.root)) d.print(`pruned ${removed}`);
@@ -111,31 +100,6 @@ export async function runDeploy(
     }
   }
   return code;
-}
-
-function realDeps(root: string): DeployDeps {
-  return {
-    record: appendGatewayEvent,
-    print: println,
-    build: {
-      nodeVersion: process.version,
-      nodePath: process.execPath,
-      now: () => new Date(),
-      run: (file, args, cwd) =>
-        execFileSync(file, args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "inherit"], maxBuffer: MAX_STDOUT_BYTES }),
-      exportTree: (repo, sha, dest) => {
-        const tar = execFileSync("git", ["-C", repo, "archive", "--format=tar", sha], { maxBuffer: MAX_TAR_BYTES });
-        execFileSync("tar", ["-x", "-C", dest], { input: tar });
-      },
-    },
-    activate: {
-      restart: restartGateway,
-      readReady: readGatewayRunStateRaw,
-      sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
-      serviceRunsCurrent: () =>
-        plistRunsCurrent(readPlistXml(installedPlist()?.plistPath, (p) => fs.readFileSync(p, "utf8")), root),
-    },
-  };
 }
 
 function repoToplevel(cwd: string): string {
@@ -153,8 +117,8 @@ export async function deployCmd(rest: string[]): Promise<void> {
   let repo: string;
   try {
     repo = path.resolve(args.repo ?? repoToplevel(process.cwd()));
-  } catch {
-    println(chalk.red("not inside a git repository; pass --repo <path>"));
+  } catch (error) {
+    println(chalk.red(`not inside a git repository; pass --repo <path>: ${error instanceof Error ? error.message : String(error)}`));
     process.exitCode = 1;
     return;
   }
@@ -174,7 +138,7 @@ async function activateNamed(name: string | undefined): Promise<void> {
   try {
     const r = name ? await activateRelease({ root, name }, d.activate) : await rollbackRelease(root, d.activate);
     const sha = readReleaseInfo(releaseDir(root, r.release))?.sha ?? "";
-    process.exitCode = settle(r, sha, undefined, d, name ? "gateway.deployed" : "gateway.rollback");
+    process.exitCode = settle(root, r, sha, undefined, d, name ? "gateway.deployed" : "gateway.rollback");
   } catch (e) {
     println(chalk.red((e as Error).message));
     process.exitCode = 1;

@@ -50,3 +50,23 @@ describe("pruneReleases", () => {
     assert.deepEqual(pruneReleases(root), ["0.1.0-0000001", "0.2.0-0000002"]);
   });
 });
+
+const cleanupHome = useIsolatedHome("pmk-prune-stale-");
+it("removes only stale staging directories and temporary links; keeps fresh and unrelated entries", () => {
+  const root = cleanupHome.dir();
+  const stale = new Date(Date.now() - 3_600_001);
+  for (const name of [".staging-old", ".staging-fresh", ".current.tmp-directory", "unrelated"]) {
+    fs.mkdirSync(path.join(root, name));
+  }
+  fs.utimesSync(path.join(root, ".staging-old"), stale, stale);
+  fs.utimesSync(path.join(root, "unrelated"), stale, stale);
+  fs.utimesSync(path.join(root, ".current.tmp-directory"), stale, stale);
+  for (const name of [".current.tmp-old", ".previous.tmp-old", ".current.tmp-fresh", ".staging-link", "other-link"]) {
+    fs.symlinkSync("unrelated", path.join(root, name));
+    if (!name.endsWith("fresh")) fs.lutimesSync(path.join(root, name), stale, stale);
+  }
+  fs.writeFileSync(path.join(root, ".staging-file"), "keep");
+  fs.utimesSync(path.join(root, ".staging-file"), stale, stale);
+  assert.deepEqual(pruneReleases(root).sort(), [".current.tmp-old", ".previous.tmp-old", ".staging-old"]);
+  assert.deepEqual(fs.readdirSync(root).sort(), [".current.tmp-directory", ".current.tmp-fresh", ".staging-file", ".staging-fresh", ".staging-link", "other-link", "unrelated"]);
+});

@@ -5,6 +5,8 @@ import {
 } from "./paths";
 
 export interface BuildDeps {
+  /** Report each build phase when an operator-facing sink is supplied. */
+  progress?: (line: string) => void;
   /** Run a command and return its stdout. Throws on a non-zero exit. */
   run: (file: string, args: string[], cwd: string) => string;
   /** Write the tracked files of `sha` into `dest` (git archive | tar). */
@@ -46,7 +48,9 @@ function versionAt(repo: string, sha: string, d: BuildDeps): string {
 
 function installAndBuild(staging: string, d: BuildDeps): void {
   const scope = INSTALL_WORKSPACES.flatMap((w) => ["-w", w]);
+  d.progress?.("installing dependencies…");
   d.run("npm", ["ci", ...scope, "--no-audit", "--no-fund"], staging);
+  d.progress?.("building…");
   for (const w of BUILD_WORKSPACES) d.run("npm", ["run", "build", `--workspace=${w}`], staging);
 }
 
@@ -79,8 +83,10 @@ export function buildRelease(a: { repo: string; ref: string; root: string }, d: 
   fs.rmSync(staging, { recursive: true, force: true });
   fs.mkdirSync(staging, { recursive: true });
   try {
+    d.progress?.(`exporting ${sha.slice(0, 7)}…`);
     d.exportTree(a.repo, sha, staging);
     installAndBuild(staging, d);
+    d.progress?.("smoke test…");
     smokeTest(staging, version, d);
     writeReleaseInfo(staging, {
       ref: a.ref, sha, version, builtAt: d.now().toISOString(), nodeVersion: d.nodeVersion,
