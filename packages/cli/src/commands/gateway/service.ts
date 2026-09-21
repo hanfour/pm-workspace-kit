@@ -6,6 +6,7 @@ import { println } from "../../io";
 import { loadRawGatewayConfig } from "../../gateway/config";
 import type { RawGatewayConfig } from "../../gateway/config";
 import { SERVICE_LABEL, installedPlist } from "../../gateway/run-state";
+import { currentEntry, insideGitTree, releasesRoot } from "../../gateway/deploy/paths";
 
 const LAUNCH_AGENTS_DIR = path.join("Library", "LaunchAgents");
 const COLLAB_SENTINEL = path.join(".collab", "repos.json");
@@ -73,6 +74,51 @@ export function envSecretWarnings(cfg: Pick<RawGatewayConfig, "slack" | "apiKey"
   return warns;
 }
 
+function isUnder(parent: string, child: string): boolean {
+  const rel = path.relative(parent, child);
+  return rel !== "" && rel !== ".." && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel);
+}
+
+function realpathOrLexical(p: string, realpath: (p: string) => string = fs.realpathSync): string {
+  try {
+    return realpath(p);
+  } catch {
+    // The releases root may not exist yet; lexical containment is still safe
+    // because there is no existing release beneath a missing root to canonicalize.
+    return p;
+  }
+}
+
+/**
+ * Which entry point the LaunchAgent should run.
+ *
+ * Node resolves the main module to its real path, so an installer started via
+ * `releases/current/...` sees the VERSIONED directory in `__dirname`. Writing
+ * that into the plist would pin the service to one release and defeat the
+ * `current` link, so a path under the releases root maps back to `current`.
+ */
+export function resolveServiceEntry(o: {
+  scriptDir: string;
+  home: string;
+  insideGitTree: (dir: string) => boolean;
+  realpath?: (p: string) => string;
+}): { entry: string; warning?: string } {
+  const actual = path.resolve(o.scriptDir, "../../index.js");
+  const root = releasesRoot(o.home);
+  if (isUnder(root, actual) || isUnder(realpathOrLexical(root, o.realpath), actual)) {
+    return { entry: currentEntry(root) };
+  }
+  if (o.insideGitTree(o.scriptDir)) {
+    return {
+      entry: actual,
+      warning:
+        `${actual} is inside a git working tree — any build there rewrites the running service. ` +
+        "Deploy a release instead: pmk gateway deploy <ref>, then re-run install-service --force from releases/current.",
+    };
+  }
+  return { entry: actual };
+}
+
 export function installServiceCmd(opts: { load?: boolean; uninstall?: boolean; force?: boolean } = {}): void {
   if (process.platform !== "darwin") { println("install-service is macOS-only (launchd)."); return; }
   const plistPath = path.join(os.homedir(), LAUNCH_AGENTS_DIR, `${SERVICE_LABEL}.plist`);
@@ -95,7 +141,9 @@ export function installServiceCmd(opts: { load?: boolean; uninstall?: boolean; f
     println("  ⚠️  mraWorkspace not set/valid — mra-ask falls back to cwd-walk from the install dir.");
     workingDir = process.cwd();
   }
-  const distEntry = path.resolve(__dirname, "../../index.js");
+  const resolved = resolveServiceEntry({ scriptDir: __dirname, home: os.homedir(), insideGitTree });
+  if (resolved.warning) println(`  ⚠️  ${resolved.warning}`);
+  const distEntry = resolved.entry;
   if (!fs.existsSync(distEntry)) {
     println(`⚠️ resolved gateway entry ${distEntry} does not exist — the LaunchAgent may fail to start; verify your build.`);
   }
