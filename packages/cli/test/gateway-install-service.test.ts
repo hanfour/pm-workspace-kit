@@ -1,6 +1,7 @@
 import { describe, it } from "node:test";
 import * as assert from "node:assert/strict";
-import { buildPlist, envSecretWarnings } from "../src/commands/gateway/service";
+import * as path from "node:path";
+import { buildPlist, envSecretWarnings, resolveServiceEntry } from "../src/commands/gateway/service";
 
 describe("install-service plist", () => {
   it("plist has Label/KeepAlive/PMK_SERVICE env, abs paths, NO secret", () => {
@@ -46,5 +47,39 @@ describe("install-service plist", () => {
     assert.match(xml, /\/a&amp;b\/dist\/index\.js/);
     assert.match(xml, /\/ws &amp; co/);
     assert.doesNotMatch(xml, /<string>[^<]*&(?!amp;|lt;|gt;|quot;|apos;)[^<]*<\/string>/);
+  });
+});
+
+describe("install-service entry point", () => {
+  const home = "/Users/x";
+  const root = path.join(home, ".pmk", "releases");
+  const never = () => false;
+
+  it("run from a release: writes releases/current, not the versioned directory", () => {
+    const scriptDir = path.join(root, "0.45.0-abcdef0", "packages", "cli", "dist", "commands", "gateway");
+    const r = resolveServiceEntry({ scriptDir, home, insideGitTree: never });
+    assert.equal(r.entry, path.join(root, "current", "packages", "cli", "dist", "index.js"));
+    assert.equal(r.warning, undefined);
+  });
+
+  it("run from a git working tree: keeps the path and warns", () => {
+    const scriptDir = "/Users/x/pm-workspace-kit/packages/cli/dist/commands/gateway";
+    const r = resolveServiceEntry({ scriptDir, home, insideGitTree: () => true });
+    assert.equal(r.entry, "/Users/x/pm-workspace-kit/packages/cli/dist/index.js");
+    assert.match(r.warning ?? "", /working tree/);
+    assert.match(r.warning ?? "", /pmk gateway deploy/);
+  });
+
+  it("run from anywhere else (global npm install): keeps the path, no warning", () => {
+    const scriptDir = "/usr/local/lib/node_modules/@pmk/cli/dist/commands/gateway";
+    const r = resolveServiceEntry({ scriptDir, home, insideGitTree: never });
+    assert.equal(r.entry, "/usr/local/lib/node_modules/@pmk/cli/dist/index.js");
+    assert.equal(r.warning, undefined);
+  });
+
+  it("a sibling directory that merely starts with the root's name is not a release", () => {
+    const scriptDir = path.join(home, ".pmk", "releases-old", "x", "packages", "cli", "dist", "commands", "gateway");
+    const r = resolveServiceEntry({ scriptDir, home, insideGitTree: never });
+    assert.ok(r.entry.includes("releases-old"));
   });
 });

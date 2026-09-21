@@ -118,3 +118,14 @@ export function listReleases(root: string): string[] {
     .sort((a, b) => a.info.builtAt.localeCompare(b.info.builtAt))
     .map((r) => r.n);
 }
+
+/** True when `dir` or any ancestor holds a `.git` entry. A `git archive` export never does. */
+export function insideGitTree(dir: string): boolean {
+  let at = path.resolve(dir);
+  for (;;) {
+    if (fs.existsSync(path.join(at, ".git"))) return true;
+    const parent = path.dirname(at);
+    if (parent === at) return false;
+    at = parent;
+  }
+}
