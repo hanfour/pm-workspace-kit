@@ -592,7 +592,8 @@ export async function restartCmdImpl(d: RestartDeps): Promise<string> {
   return "start may have failed — see ~/.pmk/logs/gateway.err.log";
 }
 
-export async function restartCmd(): Promise<void> {
+/** Restart through whichever supervisor is in use; returns the status line. */
+export async function restartGateway(): Promise<string> {
   const logsDir = path.join(gatewayDir(), "..", "logs"); // ~/.pmk/logs
   fs.mkdirSync(logsDir, { recursive: true });
 
@@ -613,5 +614,9 @@ export async function restartCmd(): Promise<void> {
       return child.pid ?? -1;
     },
   };
-  println(await restartCmdImpl(deps));
+  return restartCmdImpl(deps);
+}
+
+export async function restartCmd(): Promise<void> {
+  println(await restartGateway());
 }
