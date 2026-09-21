@@ -1839,7 +1839,7 @@ Expected: entry point `/Users/hanfourhuang/pm-workspace-kit/packages/cli/dist/in
 
 - [ ] **Step 2: Build the first release from source, without a repo build**
 
-From the repo root, on `feat/gateway-release-dir`:
+From the **worktree** that has `feat/gateway-release-dir` checked out (`.claude/worktrees/gateway-release-dir`) — `--repo` defaults to the git toplevel of the current directory, and `HEAD` must be the branch head:
 
 ```bash
 npx tsx packages/cli/src/index.ts gateway deploy HEAD
@@ -1857,12 +1857,20 @@ Verify: `ls -la ~/.pmk/releases/` shows the release directory and `current -> 0.
 
 - [ ] **Step 3: Rewrite the plist from the release**
 
+`install-service` writes `process.execPath` into `ProgramArguments[0]` and captures `PATH` from the invoking shell. The live plist runs nvm's Node 22; a shell where Volta's Node 24 comes first would silently move production to another Node version in the same step. Run it with the node the live plist already names:
+
 ```bash
-node ~/.pmk/releases/current/packages/cli/dist/index.js gateway install-service --force
-plutil -p ~/Library/LaunchAgents/com.pmk.gateway.plist | grep -A5 ProgramArguments
+NODE=$(plutil -extract ProgramArguments.0 raw ~/Library/LaunchAgents/com.pmk.gateway.plist.pre-release-dir)
+echo "$NODE"   # expect /Users/hanfourhuang/.nvm/versions/node/v22.21.1/bin/node
+"$NODE" ~/.pmk/releases/current/packages/cli/dist/index.js gateway install-service --force
+diff <(plutil -p ~/Library/LaunchAgents/com.pmk.gateway.plist.pre-release-dir) <(plutil -p ~/Library/LaunchAgents/com.pmk.gateway.plist)
 ```
 
+The diff must show `ProgramArguments[1]` changing to the `releases/current` path and, at most, `PATH`. Anything else: stop.
+
 Expected: the entry point is now `/Users/hanfourhuang/.pmk/releases/current/packages/cli/dist/index.js`, with no `⚠️ … working tree` warning. `WorkingDirectory` is still `/Users/hanfourhuang/OneAD` and `PATH` still contains the nvm `bin` directory (the plist captures `PATH` from the invoking shell — run this from the usual terminal, not from a stripped environment).
+
+**Between Step 3 and Step 4 do not run `deploy`, `activate`, `rollback` or `pmk gateway restart`.** The plist file now names `current`, but launchd still holds the old job definition: `kickstart -k` would relaunch the old working-tree build, it would report `ready`, and a deploy would record a false `gateway.deployed`.
 
 - [ ] **Step 4: Reload the LaunchAgent**
 
@@ -1874,7 +1882,7 @@ launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.pmk.gateway.plist
 launchctl enable gui/$(id -u)/com.pmk.gateway
 ```
 
-This interrupts the service for the length of a normal restart.
+This interrupts the service for the length of a normal restart. If `bootstrap` fails with `Bootstrap failed: 5: Input/output error`, the old process is still draining (up to 20 s): wait until `launchctl print gui/$(id -u)/com.pmk.gateway` fails, then run `bootstrap` again.
 
 - [ ] **Step 5: Verify the service runs the release**
 
@@ -1899,19 +1907,22 @@ tail -50 ~/.pmk/logs/gateway.err.log
 
 With the service confirmed on the release, run the command that used to be dangerous:
 
+In the **main checkout** (`/Users/hanfourhuang/pm-workspace-kit`):
+
 ```bash
 npm run cli:build
 cat ~/.pmk/gateway/runtime.json   # same pid, still "ready"
 ```
 
-Then exercise the full path once more with a real restart, which is the first end-to-end run of activate + ready-wait:
+Then exercise the full path once more with a real restart, which is the first end-to-end run of activate + ready-wait. `pmk` on PATH is an npm link into the main checkout's `dist`, which is on `main` and has no `deploy` command, so call the release's own CLI, from the **worktree**:
 
 ```bash
+PMK="node $HOME/.pmk/releases/current/packages/cli/dist/index.js"
 git commit --allow-empty -m "chore: exercise gateway deploy"
-pmk gateway deploy HEAD
+$PMK gateway deploy HEAD
 ```
 
-Expected: `built 0.44.0-<new sha7>`, `activated 0.44.0-<new sha7>.`, exit 0, and a `gateway.deployed` line in `~/.pmk/gateway/events-2026-09.log`. Then `pmk gateway rollback` → `activated 0.44.0-<first sha7>.` and a `gateway.rollback` line with `reason: "operator rollback"`. Drop the empty commit afterwards with `git reset --hard HEAD~1` **only if** it was not pushed.
+Expected: `built 0.44.0-<new sha7>`, `activated 0.44.0-<new sha7>.`, exit 0, and a `gateway.deployed` line in `~/.pmk/gateway/events-2026-09.log`. Then `$PMK gateway rollback` → `activated 0.44.0-<first sha7>.` and a `gateway.rollback` line with `reason: "operator rollback"`. Drop the empty commit afterwards with `git reset --hard HEAD~1` **only if** it was not pushed.
 
 - [ ] **Step 7: Live Slack verification**
 
@@ -1919,4 +1930,4 @@ In `#新頻道`: @-mention the bot with a question, and trigger one `:cr:` revie
 
 - [ ] **Step 8: Merge and release**
 
-Squash-merge the PR, then follow the usual release steps (`npm run version:bump`, changelog entry in `apps/docs/docs/changelog.md`, tag). From this release on, shipping to production is `pmk gateway deploy v<version>`. Remove `~/Library/LaunchAgents/com.pmk.gateway.plist.pre-release-dir` once the tagged release has run for a day.
+Squash-merge the PR, then follow the usual release steps (`npm run version:bump`, changelog entry in `apps/docs/docs/changelog.md`, tag). From this release on, shipping to production is `node ~/.pmk/releases/current/packages/cli/dist/index.js gateway deploy v<version>` run inside the repo (consider an alias; the `pmk` on PATH still links into the repo's `dist`). Update `apps/docs/docs/gateway/onboarding.md` and `getting-started.md`, which still describe `cli:build` + `install-service` from the repo. Open a follow-up issue: have the gateway write the realpath of its entry point into `runtime.json` so activation can verify which code the new pid runs. Remove `~/Library/LaunchAgents/com.pmk.gateway.plist.pre-release-dir` once the tagged release has run for a day.
