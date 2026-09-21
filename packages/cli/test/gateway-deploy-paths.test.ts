@@ -6,7 +6,7 @@ import { useIsolatedHome } from "./helpers/isolated-home";
 import {
   ENTRY_RELATIVE, assertSafeRef, assertSafeReleaseName, currentEntry, listReleases,
   pointLink, readLink, readReleaseInfo, releaseDir, releaseName, releasesRoot,
-  stagingDir, writeReleaseInfo,
+  removeLink, stagingDir, writeReleaseInfo,
 } from "../src/gateway/deploy/paths";
 
 const SHA = "2fa1497aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -67,6 +67,18 @@ describe("deploy paths", () => {
     assert.ok(fs.lstatSync(path.join(root, "current")).isSymbolicLink());
     assert.ok(fs.existsSync(path.join(root, "current", "RELEASE.json")), "link resolves into the release");
     assert.deepEqual(fs.readdirSync(root).filter((n) => n.includes(".tmp-")), [], "no temp link left behind");
+  });
+
+  it("removeLink removes only the link and tolerates a missing link", () => {
+    const root = releasesRoot(home.dir());
+    const name = "0.44.0-2fa1497";
+    makeRelease(root, name, "2026-09-21T00:00:00.000Z");
+    pointLink(root, "previous", name);
+    removeLink(root, "previous");
+    assert.equal(readLink(root, "previous"), undefined);
+    assert.ok(fs.statSync(path.join(root, name)).isDirectory());
+    assert.equal(readReleaseInfo(path.join(root, name))?.sha, SHA);
+    assert.doesNotThrow(() => removeLink(root, "previous"));
   });
 
   it("release info round-trips; a missing or corrupt file reads as undefined", () => {

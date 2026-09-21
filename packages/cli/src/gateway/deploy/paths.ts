@@ -80,6 +80,10 @@ export function pointLink(root: string, which: ReleaseLink, name: string): void 
   fs.renameSync(tmp, path.join(root, which));
 }
 
+export function removeLink(root: string, which: ReleaseLink): void {
+  fs.rmSync(path.join(root, which), { force: true });
+}
+
 export function writeReleaseInfo(dir: string, info: ReleaseInfo): void {
   fs.writeFileSync(path.join(dir, RELEASE_INFO_FILE), `${JSON.stringify(info, null, 2)}\n`, "utf8");
 }
