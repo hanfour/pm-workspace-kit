@@ -1917,12 +1917,13 @@ cat ~/.pmk/gateway/runtime.json   # same pid, still "ready"
 Then exercise the full path once more with a real restart, which is the first end-to-end run of activate + ready-wait. `pmk` on PATH is an npm link into the main checkout's `dist`, which is on `main` and has no `deploy` command, so call the release's own CLI, from the **worktree**:
 
 ```bash
-PMK="node $HOME/.pmk/releases/current/packages/cli/dist/index.js"
+# zsh does not word-split a variable, so keep `node` and the path separate
+CLI="$HOME/.pmk/releases/current/packages/cli/dist/index.js"
 git commit --allow-empty -m "chore: exercise gateway deploy"
-$PMK gateway deploy HEAD
+node "$CLI" gateway deploy HEAD
 ```
 
-Expected: `built 0.44.0-<new sha7>`, `activated 0.44.0-<new sha7>.`, exit 0, and a `gateway.deployed` line in `~/.pmk/gateway/events-2026-09.log`. Then `$PMK gateway rollback` → `activated 0.44.0-<first sha7>.` and a `gateway.rollback` line with `reason: "operator rollback"`. Drop the empty commit afterwards with `git reset --hard HEAD~1` **only if** it was not pushed.
+Expected: `built 0.44.0-<new sha7>`, `activated 0.44.0-<new sha7>.`, exit 0, and a `gateway.deployed` line in `~/.pmk/gateway/events-2026-09.log`. Then `node "$CLI" gateway rollback` → `activated 0.44.0-<first sha7>.` and a `gateway.rollback` line with `reason: "operator rollback"`. Drop the empty commit afterwards with `git reset --hard HEAD~1` **only if** it was not pushed.
 
 - [ ] **Step 7: Live Slack verification**
 
