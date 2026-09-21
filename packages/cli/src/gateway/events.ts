@@ -116,6 +116,23 @@ export interface GatewayPresenceEvent {
 }
 
 /**
+ * Which commit the service runs, and when that changed.
+ *
+ * Before releases existed the only way to tell was comparing `dist` mtime with
+ * tag time. `gateway.deployed` is written after a release is activated and
+ * confirmed ready; `gateway.rollback` when activation failed and the previous
+ * release was restored (`reason` says why) or when the operator rolled back.
+ */
+export interface GatewayDeployEvent {
+  type: "gateway.deployed" | "gateway.rollback";
+  release: string;
+  sha: string;
+  ref?: string;
+  previous?: string;
+  reason?: string;
+}
+
+/**
  * A process-level failure the crash guard intercepted.
  *
  * `kind: "unhandledRejection"` is survived (the daemon keeps running); the
@@ -339,6 +356,7 @@ export type GatewayEvent =
   | EscalateTriggeredEvent
   | EscalateAbsorbedEvent
   | GatewayPresenceEvent
+  | GatewayDeployEvent
   | GatewayRejectionEvent
   | ContextExceededEvent
   | ContextForcePrunedEvent
@@ -376,6 +394,8 @@ const EVENT_TYPE_TABLE: Record<GatewayEvent["type"], true> = {
   "escalate.absorbed": true,
   "gateway.online": true,
   "gateway.offline": true,
+  "gateway.deployed": true,
+  "gateway.rollback": true,
   "gateway.rejection": true,
   "context.exceeded": true,
   "context.force-pruned": true,

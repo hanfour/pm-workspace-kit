@@ -26,6 +26,12 @@ describe("gateway events log (#24)", () => {
     process.env.HOME = ORIG_HOME;
   });
 
+  it("gateway.deployed and gateway.rollback are readable event types", async () => {
+    const { GATEWAY_EVENT_TYPES } = await import("../src/gateway/events");
+    assert.ok(GATEWAY_EVENT_TYPES.includes("gateway.deployed" as never));
+    assert.ok(GATEWAY_EVENT_TYPES.includes("gateway.rollback" as never));
+  });
+
   it("appendGatewayEvent → readGatewayEvents round-trips a turn.processed event", async () => {
     const { appendGatewayEvent, readGatewayEvents } =
       await import("../src/gateway/events");
