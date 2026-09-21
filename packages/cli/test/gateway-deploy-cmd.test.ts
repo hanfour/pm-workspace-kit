@@ -3,12 +3,12 @@ import * as assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { useIsolatedHome } from "./helpers/isolated-home";
-import { parseDeployArgs, plistRunsCurrent, runDeploy, type DeployDeps } from "../src/commands/gateway/deploy";
+import { parseDeployArgs, plistRunsCurrent, readPlistXml, runDeploy, type DeployDeps } from "../src/commands/gateway/deploy";
 import { currentEntry, listReleases, pointLink, readLink, releasesRoot, writeReleaseInfo } from "../src/gateway/deploy/paths";
 
 const SHA = "abcdef0aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
-function deps(o: { ready: boolean[]; buildFails?: boolean }): { d: DeployDeps; events: unknown[]; out: string[] } {
+function deps(o: { ready: boolean[]; buildFails?: boolean }): { d: DeployDeps; events: unknown[]; out: string[]; restarts: () => number } {
   const events: unknown[] = [];
   const out: string[] = [];
   let restarts = 0;
@@ -34,7 +34,7 @@ function deps(o: { ready: boolean[]; buildFails?: boolean }): { d: DeployDeps; e
       readReady: () => ({ pid, phase }),
     },
   };
-  return { d, events, out };
+  return { d, events, out, restarts: () => restarts };
 }
 
 describe("parseDeployArgs", () => {
@@ -46,6 +46,23 @@ describe("parseDeployArgs", () => {
     assert.throws(() => parseDeployArgs([]), /usage: pmk gateway deploy/);
     assert.throws(() => parseDeployArgs(["a", "b"]), /usage: pmk gateway deploy/);
     assert.throws(() => parseDeployArgs(["HEAD", "--repo"]), /usage: pmk gateway deploy/);
+  });
+});
+
+describe("readPlistXml", () => {
+  it("returns undefined without reading when no plist path exists", () => {
+    assert.equal(readPlistXml(undefined, () => { assert.fail("must not read"); }), undefined);
+  });
+  it("returns undefined when reading throws, so service detection is false", () => {
+    const xml = readPlistXml("/fake.plist", () => { throw new Error("permission denied"); });
+    assert.equal(xml, undefined);
+    assert.equal(plistRunsCurrent(xml, "/releases"), false);
+  });
+  it("returns the XML read from the supplied path", () => {
+    assert.equal(readPlistXml("/fake.plist", (p) => {
+      assert.equal(p, "/fake.plist");
+      return "<plist/>";
+    }), "<plist/>");
   });
 });
 
@@ -61,6 +78,40 @@ describe("plistRunsCurrent", () => {
 describe("runDeploy", () => {
   const home = useIsolatedHome("pmk-deploy-cmd-");
   const base = () => ({ ref: "HEAD", repo: "/repo", root: releasesRoot(home.dir()), activate: true });
+
+  it("prune failure: preserves exit 0 and the deployment event, and prints a warning", async () => {
+    const { d, events, out } = deps({ ready: [true] });
+    const withPrune = { ...d, prune: (root: string): string[] => {
+      assert.equal(root, base().root);
+      throw new Error("permission denied");
+    } };
+    assert.equal(await runDeploy(base(), withPrune), 0);
+    assert.equal(readLink(base().root, "current"), "0.45.0-abcdef0");
+    assert.deepEqual(events, [{ type: "gateway.deployed", release: "0.45.0-abcdef0", sha: SHA, ref: "HEAD", previous: undefined }]);
+    assert.ok(out.includes("warning: could not prune old releases: permission denied"));
+  });
+
+  it("already-current: a second deploy exits 0 without another event or restart", async () => {
+    const { d, events, restarts } = deps({ ready: [true] });
+    assert.equal(await runDeploy(base(), d), 0);
+    const firstEvents = [...events];
+    assert.equal(firstEvents.length, 1);
+    assert.equal(restarts(), 1);
+    assert.equal(await runDeploy(base(), d), 0);
+    assert.deepEqual(events, firstEvents);
+    assert.equal(restarts(), 1);
+  });
+
+  it("links-only: exit 0, current changes and exactly one deployment is recorded", async () => {
+    const { d, events } = deps({ ready: [] });
+    const linksOnly = { ...d, activate: { ...d.activate, serviceRunsCurrent: () => false } };
+    assert.equal(await runDeploy(base(), linksOnly), 0);
+    assert.equal(readLink(base().root, "current"), "0.45.0-abcdef0");
+    assert.deepEqual(events, [{
+      type: "gateway.deployed", release: "0.45.0-abcdef0", sha: SHA, ref: "HEAD", previous: undefined,
+      reason: "links only: service not restarted — LaunchAgent does not run releases/current",
+    }]);
+  });
 
   it("build + activate: exit 0, gateway.deployed recorded, old releases pruned", async () => {
     const root = base().root;
