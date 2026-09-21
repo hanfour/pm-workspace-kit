@@ -74,6 +74,21 @@ export function envSecretWarnings(cfg: Pick<RawGatewayConfig, "slack" | "apiKey"
   return warns;
 }
 
+function isUnder(parent: string, child: string): boolean {
+  const rel = path.relative(parent, child);
+  return rel !== "" && rel !== ".." && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel);
+}
+
+function realpathOrLexical(p: string, realpath: (p: string) => string = fs.realpathSync): string {
+  try {
+    return realpath(p);
+  } catch {
+    // The releases root may not exist yet; lexical containment is still safe
+    // because there is no existing release beneath a missing root to canonicalize.
+    return p;
+  }
+}
+
 /**
  * Which entry point the LaunchAgent should run.
  *
@@ -86,11 +101,11 @@ export function resolveServiceEntry(o: {
   scriptDir: string;
   home: string;
   insideGitTree: (dir: string) => boolean;
+  realpath?: (p: string) => string;
 }): { entry: string; warning?: string } {
   const actual = path.resolve(o.scriptDir, "../../index.js");
   const root = releasesRoot(o.home);
-  const rel = path.relative(root, actual);
-  if (rel !== "" && !rel.startsWith("..") && !path.isAbsolute(rel)) {
+  if (isUnder(root, actual) || isUnder(realpathOrLexical(root, o.realpath), actual)) {
     return { entry: currentEntry(root) };
   }
   if (o.insideGitTree(o.scriptDir)) {

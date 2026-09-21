@@ -55,6 +55,30 @@ describe("install-service entry point", () => {
   const root = path.join(home, ".pmk", "releases");
   const never = () => false;
 
+  it("symlinked home: writes the lexical current entry, no warning", () => {
+    const scriptDir = "/Volumes/data/x/.pmk/releases/0.45.0-abcdef0/packages/cli/dist/commands/gateway";
+    const options = {
+      scriptDir, home, insideGitTree: never,
+      realpath: (p: string) => p === root ? "/Volumes/data/x/.pmk/releases" : p,
+    };
+    const r = resolveServiceEntry(options);
+    assert.equal(r.entry, path.join(root, "current", "packages", "cli", "dist", "index.js"));
+    assert.equal(r.warning, undefined);
+  });
+
+  it("missing releases root: a realpath failure falls back to the lexical check", () => {
+    const scriptDir = "/usr/local/lib/node_modules/@pmk/cli/dist/commands/gateway";
+    const options = {
+      scriptDir, home, insideGitTree: never,
+      realpath: (_p: string): string => { throw new Error("ENOENT: releases root does not exist"); },
+    };
+    assert.doesNotThrow(() => {
+      const r = resolveServiceEntry(options);
+      assert.equal(r.entry, "/usr/local/lib/node_modules/@pmk/cli/dist/index.js");
+      assert.equal(r.warning, undefined);
+    });
+  });
+
   it("run from a release: writes releases/current, not the versioned directory", () => {
     const scriptDir = path.join(root, "0.45.0-abcdef0", "packages", "cli", "dist", "commands", "gateway");
     const r = resolveServiceEntry({ scriptDir, home, insideGitTree: never });
