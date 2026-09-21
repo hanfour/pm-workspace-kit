@@ -84,10 +84,14 @@ symlinks point within that release — the directory has no dependency on the re
    2–5 deletes staging and exits non-zero. `current` is untouched.
 6. **Activate.** Point `previous` at the old `current`, then point `current` at the new
    release (create a temp symlink, `rename` over the old one — no intermediate state). Restart
-   through the existing `restartCmdImpl`, which already waits for `runtime.json`
-   `phase: "ready"` and already takes injected deps.
-7. **Verify or roll back.** No `ready` within 60 s → point `current` back, restart again, report
-   the failure and exit non-zero.
+   through the existing restart path. Under launchd that path only issues `kickstart -k` and
+   returns; it does not wait. Activation therefore records the pid before restarting and polls
+   `runtime.json` itself for a *different* pid with `phase: "ready"`.
+   If the installed LaunchAgent does not run `releases/current` (the pre-migration state), the
+   links are flipped but the service is not restarted — restarting would relaunch the old tree
+   and report a false success. The command says so and prints the `install-service` step.
+7. **Verify or roll back.** No `ready` within 60 s → point `current` and `previous` back,
+   restart again, report the failure and exit non-zero.
 8. **Prune.** Keep `current`, `previous`, and at most 3 releases total.
 9. **Record.** Append `gateway.deployed` (or `gateway.rollback`) to the events log with
    `{ release, sha, ref, previous }`.
@@ -138,18 +142,27 @@ The first deploy cannot be preceded by a repo build (that would delete the live 
 runs from source:
 
 ```
-npx tsx packages/cli/src/index.ts gateway deploy HEAD --no-activate
-~/.pmk/releases/<release>/packages/cli/dist/index.js gateway install-service --force
-pmk gateway restart
+npx tsx packages/cli/src/index.ts gateway deploy HEAD      # builds, flips links, does not restart
+node ~/.pmk/releases/current/packages/cli/dist/index.js gateway install-service --force
+launchctl bootout   gui/$UID/com.pmk.gateway
+launchctl bootstrap gui/$UID ~/Library/LaunchAgents/com.pmk.gateway.plist
 ```
 
-Done by hand, once, with the operator watching.
+`kickstart -k` restarts the loaded job definition, which still names the old entry point, so
+the agent has to be unloaded and loaded again. Done by hand, once, with the operator watching;
+the plan's last task has the verification and the fallback.
 
-## Open questions, resolved in the plan's first task
+## Measured (2026-09-21, spike on the production machine)
 
-- Does `npm ci` with `--workspace` filters install only those four workspaces' dependencies
-  from an exported monorepo? Measure release size and build time. Fallback: full install
-  (~1.1 GB per release) and retention of 2.
+`git archive HEAD` → `npm ci -w packages/cli -w packages/llm -w packages/rag -w packages/shared`
+→ build in CI order, in a scratch directory:
+
+- install 56 s, build 49 s
+- 310 MB per release (export itself 5.5 MB); no electron, no docusaurus
+- `node_modules/@pmk/*` are relative symlinks inside the export
+- `node packages/cli/dist/index.js --version` printed `0.44.0`
+
+Scoped install works; the full-install fallback is not needed. Retention of 3 ≈ 930 MB.
 
 ## Out of scope
 
