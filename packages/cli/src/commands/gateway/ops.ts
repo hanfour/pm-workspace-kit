@@ -22,6 +22,8 @@ import {
   formatDoctorReport,
   runDoctor,
 } from "../../gateway/doctor";
+import { releaseStatusLine } from "../../gateway/doctor-checks/release-entry";
+import { releasesRoot } from "../../gateway/deploy/paths";
 import { DEFAULT_CHECKS } from "../../gateway/doctor-checks";
 import {
   seedDemoAtom,
@@ -392,6 +394,7 @@ export function buildStatusReport(now: number): { level: string; text: string } 
     `  supervised: ${run?.supervised ?? "no"}${run?.serviceLabel ? ` (${run.serviceLabel})` : ""}`,
     `  heartbeat:  ${heartbeatAge === undefined ? "none" : `${Math.round(heartbeatAge / 1000)}s ago`}`,
     `  uptime:    ${run && pidAlive ? `${Math.round((now - run.startedAt) / 1000)}s` : "—"}`,
+    releaseStatusLine(releasesRoot()),
     `  turns/30m: ${turns}`,
     `  last offline reason: ${lastOffline?.reason ?? "—"}`,
     `  mra workspace: ${cfg.mraWorkspace ?? "(not configured)"}`,
