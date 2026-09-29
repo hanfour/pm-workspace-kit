@@ -361,6 +361,74 @@ launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.pmk.gateway.plist
 launchctl enable gui/$(id -u)/com.pmk.gateway
 ```
 
+### Deploying a release (v0.45.0+)
+
+The LaunchAgent should run a release directory, not the repo's `dist`.
+If the plist points into a git working tree, any `npm run cli:build` in
+that checkout rewrites the running service. `install-service` warns when
+it detects this.
+
+Each release is built from a git ref into its own directory:
+
+```
+~/.pmk/releases/
+  0.45.0-<sha7>/     # git archive of the ref + npm ci + build
+  current -> 0.45.0-<sha7>
+  previous -> 0.44.0-<sha7>
+```
+
+The plist runs `~/.pmk/releases/current/packages/cli/dist/index.js`.
+Three releases are kept; `current` and `previous` are never pruned.
+
+**Commands** (run inside the repo; `<ref>` is a branch, tag or sha):
+
+```bash
+CLI="$HOME/.pmk/releases/current/packages/cli/dist/index.js"
+node "$CLI" gateway deploy v0.45.0          # build, switch current, restart, wait for ready
+node "$CLI" gateway deploy v0.45.0 --no-activate   # build only
+node "$CLI" gateway activate 0.45.0-<sha7>  # switch to an existing release
+node "$CLI" gateway rollback                # switch back to previous
+```
+
+Call the release's own CLI as shown. A `pmk` on `PATH` that is
+`npm link`ed into the repo runs whatever that checkout last built. In
+zsh, keep `node` and the path as two words: `$CLI` alone as a command
+is not split.
+
+After a switch, `deploy` waits up to 60 s for a new process to report
+`ready`. If none does, it restores the links and restarts the previous
+release. Each outcome is written to the events log as `gateway.deployed`
+or `gateway.rollback`, with `live` naming the release that is running.
+`pmk gateway status` shows the release. `pmk gateway doctor` has a
+`release-entry` check: it warns when the plist runs code inside a git
+working tree, and fails when the plist runs `releases/current` but that
+link is missing.
+
+**First-time migration from a working-tree plist:**
+
+1. Back up the plist: `cp ~/Library/LaunchAgents/com.pmk.gateway.plist{,.pre-release-dir}`.
+2. Build the first release from the repo: `npx tsx packages/cli/src/index.ts gateway deploy <ref>`.
+   It only sets the links, because the service does not run `current` yet.
+3. Rewrite the plist with the **same node the old plist uses**:
+   `"$NODE" ~/.pmk/releases/current/packages/cli/dist/index.js gateway install-service --force`,
+   where `$NODE` is `ProgramArguments[0]` from the backup. `install-service`
+   writes `process.execPath` and your shell's `PATH` into the plist, so
+   running it from a shell with a different node silently changes the
+   service's runtime. Diff the new plist against the backup; only
+   `ProgramArguments[1]` (and possibly `PATH`) should change.
+4. Reload with `launchctl bootout` then `launchctl bootstrap`.
+   `kickstart -k` restarts the definition launchd already loaded, which
+   still names the old entry point. Do not run `deploy`, `activate`,
+   `rollback` or `restart` between steps 3 and 4.
+5. Check `pmk gateway doctor`: `release-entry` should pass.
+
+**`PATH` in the plist.** Without an API key the gateway calls the
+`claude` CLI, so `claude` must resolve on the plist's `PATH`. If you
+install `claude` through a version manager that uses shims (Volta,
+asdf), do not put the shim directory first: mra runs model commands
+under a temporary `HOME`, where shims for `node` or `codex` fail. Add a
+directory that contains only the `claude` binary, at the end of `PATH`.
+
 ## Reading uploaded files
 
 Attach files to a DM or @-mention and the bot reads them as reference context for

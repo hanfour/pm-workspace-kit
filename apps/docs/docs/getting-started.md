@@ -138,6 +138,8 @@ npx pmk gateway init    # one-time: paste Slack app + bot tokens, set mra worksp
 npx pmk gateway start   # foreground bridge — leave this running
 ```
 
+To keep it running as a macOS service, install it from a release directory rather than from the repo's build output. See [Deploying a release](./gateway/onboarding#deploying-a-release-v0450) in the gateway onboarding guide.
+
 The gateway is a host-run Slack bridge (Socket Mode), not a SaaS bot — your tokens and your code stay on your machine. See [ADR-0006: pmk gateway](./adr/pmk-gateway-slack) for the design rationale.
 
 ### v0.7 gateway features

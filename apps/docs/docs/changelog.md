@@ -8,6 +8,29 @@ All notable changes to **pm-workspace-kit** are documented here.
 
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Each release also has a longer narrative on [GitHub Releases](https://github.com/hanfour/pm-workspace-kit/releases) with rationale, dogfood notes, and test plans.
 
+## [v0.45.0] — 2026-09-29 — The live gateway runs a release directory
+
+[GitHub release](https://github.com/hanfour/pm-workspace-kit/releases/tag/v0.45.0)
+
+### Why
+
+The LaunchAgent ran `packages/cli/dist` inside the repo checkout. Any `npm run cli:build` there (switching branches, running a test build) replaced the code of the running service, and there was no way to go back to the previous build.
+
+### Added
+
+- **`pmk gateway deploy <ref> [--no-activate]`** ([#108](https://github.com/hanfour/pm-workspace-kit/pull/108)) builds a git ref into `~/.pmk/releases/<version>-<sha7>/` (`git archive` + `npm ci` for the gateway's workspaces + build), points `current` at it, restarts the service and waits up to 60 s for a new process to report `ready`. If none does, the links are restored and the previous release is restarted. Three releases are kept; `current` and `previous` are never pruned.
+- **`pmk gateway activate <release>`** and **`pmk gateway rollback`** switch between existing releases without building.
+- **Events** `gateway.deployed` / `gateway.rollback`, with `live` naming the release that is actually running after the command.
+- **`gateway doctor` `release-entry` check** and a release line in `gateway status`. `install-service` warns when the entry point is inside a git working tree.
+
+### Tests
+
+cli 1,188 → 1,272 (+84).
+
+### Operator note
+
+A one-time migration is needed to move an existing LaunchAgent onto `releases/current`; see [Deploying a release](./gateway/onboarding#deploying-a-release-v0450). It was run on the production host on 2026-09-21 and verified live on Slack (DM answer and a `:cr:` review) on 2026-09-29. From this release on, ship with `node ~/.pmk/releases/current/packages/cli/dist/index.js gateway deploy v<version>` run inside the repo.
+
 ## [v0.34.1] — 2026-07-21 — Honest no-offer message when a review blocked
 
 [GitHub release](https://github.com/hanfour/pm-workspace-kit/releases/tag/v0.34.1)
