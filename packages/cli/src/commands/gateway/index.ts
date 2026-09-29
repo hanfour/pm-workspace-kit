@@ -16,6 +16,7 @@ import { escalationCmd } from "./escalation";
 import { atomsCmd } from "./atoms";
 import { adminBootstrapCmd } from "./admin";
 import { installServiceCmd } from "./service";
+import { activateCmd, deployCmd, rollbackCmd } from "./deploy";
 
 export { buildAtomTelemetryReport } from "./atoms";
 
@@ -50,6 +51,12 @@ export async function gatewayCommand(
       return await stopCmd();
     case "restart":
       return await restartCmd();
+    case "deploy":
+      return await deployCmd(rest);
+    case "activate":
+      return await activateCmd(rest);
+    case "rollback":
+      return await rollbackCmd();
     case "install-service":
       return installServiceCmd({
         load: rest.includes("--load"),
@@ -59,7 +66,7 @@ export async function gatewayCommand(
     default:
       println(
         chalk.yellow(
-          "usage: pmk gateway <init|start|stop|restart|status|stats|audience|escalation|atoms|admin|audit|doctor|demo|install-service>",
+          "usage: pmk gateway <init|start|stop|restart|status|stats|audience|escalation|atoms|admin|audit|doctor|demo|install-service|deploy|activate|rollback>",
         ),
       );
       process.exit(1);

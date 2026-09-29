@@ -12,6 +12,7 @@ import { secretSourcesCheck } from "./secret-sources";
 import { githubTokenCheck } from "./github-token";
 import { reviewDoctorCheck } from "./review";
 import { audioDoctorCheck } from "./audio";
+import { releaseEntryCheck } from "./release-entry";
 import { auditLogCheck } from "./audit-log";
 
 export {
@@ -28,6 +29,7 @@ export {
   githubTokenCheck,
   reviewDoctorCheck,
   audioDoctorCheck,
+  releaseEntryCheck,
   auditLogCheck,
 };
 
@@ -52,6 +54,8 @@ export const DEFAULT_CHECKS: DoctorCheck[] = [
   githubTokenCheck,
   reviewDoctorCheck,
   audioDoctorCheck,
+  // Static, local: is the LaunchAgent insulated from repo builds?
+  releaseEntryCheck,
   // Last: reports what this process failed to record, including failures
   // produced by the checks above.
   auditLogCheck,
