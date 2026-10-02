@@ -1,33 +1,38 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!--
-  (c) PKB auto-refresh for the Slack code-review gateway.
-  Runs scripts/pkb-refresh.sh daily so each active OneAD repo keeps a fresh,
+  PKB auto-refresh for the Slack code-review gateway.
+  Runs scripts/pkb-refresh.sh daily so each active workspace repo keeps a fresh,
   valid PKB — which is what makes the gateway's reviews come out COMPLETE
   (the review agents lean on PKB instead of grepping the whole codebase and
   hitting --max-turns). Idempotent: skips fresh repos, rebuilds stale /
   missing / error-polluted ones.
 
   Install:
-    cp scripts/pkb-refresh.plist ~/Library/LaunchAgents/com.onead.pkb-refresh.plist
-    launchctl load  ~/Library/LaunchAgents/com.onead.pkb-refresh.plist
-    launchctl start com.onead.pkb-refresh        # optional: run once now
+    cp scripts/pkb-refresh.plist ~/Library/LaunchAgents/com.example.pkb-refresh.plist
+    launchctl load  ~/Library/LaunchAgents/com.example.pkb-refresh.plist
+    launchctl start com.example.pkb-refresh      # optional: run once now
   Inspect: tail -f /tmp/pkb-refresh.out.log
-  Adjust the PATH below if claude / gh / jq live elsewhere (`which claude gh jq`).
+  Set the placeholder paths below for this machine. Include the directory
+  containing `claude` on PATH; mra analyze calls the claude CLI. Also ensure
+  `gh` and `jq` are on PATH.
 -->
 <plist version="1.0">
 <dict>
-  <key>Label</key><string>com.onead.pkb-refresh</string>
+  <key>Label</key><string>com.example.pkb-refresh</string>
   <key>ProgramArguments</key>
   <array>
     <string>/bin/bash</string>
-    <string>/Users/hanfourhuang/pm-workspace-kit/scripts/pkb-refresh.sh</string>
+    <string>/path/to/pm-workspace-kit/scripts/pkb-refresh.sh</string>
   </array>
   <key>EnvironmentVariables</key>
   <dict>
+    <!-- Replace this with the gh account to use for `gh auth token`. -->
+    <key>PKB_REFRESH_GH_USER</key><string>your-github-user</string>
+    <!-- Replace /path/to/claude/bin with the directory containing `claude`. -->
     <key>PATH</key>
-    <string>/opt/homebrew/bin:/usr/local/bin:/Users/hanfourhuang/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
-    <key>HOME</key><string>/Users/hanfourhuang</string>
+    <string>/path/to/claude/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>HOME</key><string>/path/to/home</string>
   </dict>
   <key>StartCalendarInterval</key>
   <dict><key>Hour</key><integer>4</integer><key>Minute</key><integer>0</integer></dict>

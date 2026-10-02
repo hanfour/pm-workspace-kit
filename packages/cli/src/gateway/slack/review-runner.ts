@@ -280,7 +280,7 @@ export class ReviewRunner {
       if (ctx.review.providerMode === "claude" && gateway.pkbNeedsBuild(mainClone)) {
         onLog(`pkb: ${project} 缺/過時 PKB — 先建(一次性,之後 review 又快又完整)`);
         const built = await gateway.runMraAnalyze(
-          { project, cwd: ctx.workspace, signal: controller.signal },
+          { project, cwd: ctx.workspace, token: ctx.token, signal: controller.signal },
           { onProgress: (line) => onLog(`mra analyze ${project}: ${line}`) },
         );
         if (!built.ok) {

@@ -906,9 +906,10 @@ export async function runMraReview(
  * be the mra workspace (the project resolves under it; also pinned via
  * MRA_WORKSPACE). Secrets are stripped like the review path — claude authenticates
  * via its own session, not ANTHROPIC_API_KEY in this env.
+ * A supplied token is restored as MRA_GIT_FETCH_TOKEN for mra's GitHub fetch.
  */
 export async function runMraAnalyze(
-  args: { project: string; cwd: string; timeoutMs?: number; signal?: AbortSignal },
+  args: { project: string; cwd: string; token?: string; timeoutMs?: number; signal?: AbortSignal },
   opts: { onProgress?: (line: string) => void } = {},
 ): Promise<{ ok: boolean; stdout: string; stderr: string; reason?: string }> {
   const binary = findMraBinary();
@@ -918,6 +919,7 @@ export async function runMraAnalyze(
   const timeoutMs = args.timeoutMs ?? 900_000; // 15 min — PKB gen runs many agents
   const env = strippedChildEnv();
   env.MRA_WORKSPACE = args.cwd;
+  if (args.token !== undefined) env.MRA_GIT_FETCH_TOKEN = args.token;
   return spawnMraCommand(
     binary,
     ["analyze", args.project],
