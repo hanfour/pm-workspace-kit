@@ -369,9 +369,15 @@ export class FreeChatTurnRunner {
     // remember the thread so the next IT reply gets absorbed. The
     // asker is recorded so the post-absorb synthesis can reply to
     // them once IT answers.
-    const visible = stripEscalateBlock(
+    let visible = stripEscalateBlock(
       stripMraAskBlock(stripCaseUpdateBlock(full)),
     );
+    let renderedVisible = truncateForSlack(markdownToMrkdwn(visible));
+    if (!renderedVisible.trim()) {
+      onLog("LLM response had no visible text after cleanup; returning fallback");
+      visible = "這次沒有產生可顯示的回覆，請重新送出原問題。";
+      renderedVisible = visible;
+    }
     const escReq = parseEscalate(full);
     if (escReq) {
       await this.opts.escalation.escalate({
@@ -416,7 +422,7 @@ export class FreeChatTurnRunner {
     await web.chat.update({
       channel: channelId,
       ts: String(placeholder.ts),
-      text: scissorsPrefix + truncateForSlack(markdownToMrkdwn(visible)),
+      text: scissorsPrefix + renderedVisible,
     });
   }
 
