@@ -8,6 +8,14 @@ All notable changes to **pm-workspace-kit** are documented here.
 
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Each release also has a longer narrative on [GitHub Releases](https://github.com/hanfour/pm-workspace-kit/releases) with rationale, dogfood notes, and test plans.
 
+## [v0.46.0] — 2026-10-16 — Slack bug reports with draft auto-fix
+
+### Added
+
+- **`issue` / `bug` thread commands** collect the current Slack thread into a configured GitHub issue, then ask the host's Codex CLI to propose a bounded fix from an isolated checkout. Successful fixes open a draft PR for human review; PMK never auto-merges or deploys.
+- **Safe retry and public-repo controls** reuse the issue on retries, prevent concurrent repair attempts for one thread, and block public destinations by default. Public issue reporting requires explicit `github.allowPublicRepos: true`.
+- **Shared GitHub identity** — bug reports prefer `review.ghToken`, falling back to `github.token`, so issue creation and repair PRs can use the same account as review/approve.
+
 ## [v0.45.0] — 2026-09-29 — The live gateway runs a release directory
 
 [GitHub release](https://github.com/hanfour/pm-workspace-kit/releases/tag/v0.45.0)

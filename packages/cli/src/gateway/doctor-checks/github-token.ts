@@ -1,12 +1,12 @@
 import type { DoctorCheck, DoctorCheckResult } from "../doctor";
-import { resolveGithubToken } from "../config";
+import { resolveGithubToken, resolveReviewGhToken } from "../config";
 import { findGhBinary } from "../../adapters/github";
 import { recoverIssueClaims } from "../issue-candidate";
 
-const STALE_LOCK_MS = 10 * 60 * 1000;
+const STALE_LOCK_MS = 30 * 60 * 1000;
 
 /**
- * github-token check for the confirmed-problem → issue flow. PASSes when
+ * github-token check for the confirmed-problem and bug-report issue flows. PASSes when
  * github is unconfigured (flow off). When configured: gh present + token
  * resolves → pass, else fail. Also self-heals issue-candidate claim locks
  * (finalizes claiming-with-url; warns on stale bare locks). Never prints the token.
@@ -32,7 +32,7 @@ export const githubTokenCheck: DoctorCheck = async (
   let token: string | undefined;
   let tokenError: string | undefined;
   try {
-    token = resolveGithubToken(github);
+    token = resolveReviewGhToken(ctx.config?.review) ?? resolveGithubToken(github);
   } catch (e) {
     tokenError = (e as Error).message; // SecretResolutionError — no stdout/stderr in it
   }
@@ -45,6 +45,7 @@ export const githubTokenCheck: DoctorCheck = async (
   const detail = [
     `gh=${ghPresent ? "found" : "missing"}`,
     `token=${token ? "resolved" : "unresolved"}`,
+    `bugRepo=${github.bugRepo ?? "unset"}`,
     ...warnings,
   ].join("; ");
 

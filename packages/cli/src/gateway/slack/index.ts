@@ -54,7 +54,8 @@ import {
   mraDoctor as mraDoctorImpl,
   runMraAsk as runMraAskImpl,
 } from "../../adapters/mra";
-import { IssueCoordinator, realGithubGateway, type GithubGateway } from "./issue";
+import { IssueCoordinator, parseBugReportCommand, realGithubGateway, type GithubGateway } from "./issue";
+import type { AutoFixRequest } from "./auto-fix";
 import { ReviewCoordinator, realReviewGateway, isReviewRequest, isRetryRequest, isRerunRequest, isApproveRequest, isApproveConfirmationRequest, isReviewCommandMissingPr, reviewCommandUsageText } from "./review";
 import { AudioCoordinator, isAudioMessage } from "../audio/coordinator";
 import { needsConsentNotice } from "../audio/consent";
@@ -118,6 +119,8 @@ export interface SlackAdapterOptions {
    * gh-CLI-backed adapter (`realGithubGateway`).
    */
   github?: GithubGateway;
+  /** Optional auto-fix runner override for hosts that provide their own agent. */
+  autoFix?: (request: AutoFixRequest) => Promise<string>;
   /**
    * v0.16 (M3 / FR3): when true (or when `PMK_DRY_RUN=1` is set in the
    * env), the constructed WebClient is wrapped by
@@ -306,6 +309,7 @@ export class SlackAdapter {
       config: this.config,
       onLog: this.onLog,
       github: opts.github ?? realGithubGateway,
+      autoFix: opts.autoFix,
     });
     this.review = new ReviewCoordinator({
       web: this.web,
@@ -409,6 +413,8 @@ export class SlackAdapter {
             if (n > 0) this.onLog(`watchdog: drained ${n} in-flight review(s) before loud exit`);
             const na = this.audio.drainOnShutdown(this.onLog);
             if (na > 0) this.onLog(`watchdog: drained ${na} in-flight audio job(s) before loud exit`);
+            const ni = this.issue.drainOnShutdown();
+            if (ni > 0) this.onLog(`watchdog: drained ${ni} in-flight auto-fix job(s) before loud exit`);
           },
         }),
       );
@@ -461,6 +467,10 @@ export class SlackAdapter {
     const drainedAudio = this.audio.drainOnShutdown(this.onLog);
     if (drainedAudio > 0) {
       this.onLog(`stop: drained ${drainedAudio} in-flight audio job(s)`);
+    }
+    const drainedIssueFixes = this.issue.drainOnShutdown();
+    if (drainedIssueFixes > 0) {
+      this.onLog(`stop: drained ${drainedIssueFixes} in-flight auto-fix job(s)`);
     }
     try {
       await this.socket.disconnect();
@@ -571,6 +581,20 @@ export class SlackAdapter {
     if (!replyThreadTs) return;
 
     const channel = event.channel!;
+    const bugReport = parseBugReportCommand(text);
+    if (bugReport) {
+      void this.issue
+        .fromReport({
+          channelId: channel,
+          threadTs: replyThreadTs,
+          reporterUserId: userId,
+          repo: bugReport.repo,
+          commandText: event.text ?? text,
+        })
+        .catch((err) => this.onLog(`issue: detached DM report failed: ${(err as Error).message}`));
+      return;
+    }
+
     const work = async () => {
       try {
         // If this DM is in a thread that pmk previously escalated AND
@@ -606,7 +630,7 @@ export class SlackAdapter {
         await this.web.chat
           .postMessage({
             channel,
-            thread_ts: event.thread_ts,
+            thread_ts: replyThreadTs,
             text: `:warning: pmk 內部錯誤：${(err as Error).message}`,
           })
           .catch(() => {});
@@ -680,6 +704,20 @@ export class SlackAdapter {
     if (!text && files.length === 0) return;
 
     if (this.config.blocklist.includes(userId)) return;
+
+    const bugReport = parseBugReportCommand(text);
+    if (bugReport) {
+      void this.issue
+        .fromReport({
+          channelId,
+          threadTs: replyThreadTs,
+          reporterUserId: userId,
+          repo: bugReport.repo,
+          commandText: event.text ?? text,
+        })
+        .catch((err) => this.onLog(`issue: detached mention report failed: ${(err as Error).message}`));
+      return;
+    }
 
     // Inline `:cr:` + PR link in an @-mention → route to mra PR review
     // (option B-lite) instead of free-chat. DETACHED (same rationale as the DM
