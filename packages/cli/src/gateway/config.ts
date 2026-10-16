@@ -152,9 +152,10 @@ export interface ReviewConfig {
   providerMode: "codex" | "claude" | "fallback" | "dual";
   expectedGhUser?: string;           // gate: gh api user must equal this before posting
   /**
-   * Pinned GitHub token for PMK-owned review interactions (PR head, repo
-   * visibility, actor verification, review publication, approval). Literal or {env}/{cmd}
-   * secret reference. When set, the review uses THIS token's identity —
+   * Pinned GitHub token for PMK-owned review interactions and bug reports
+   * (PR head, repo visibility, actor verification, review publication,
+   * approval, issue creation, and repair PRs). Literal or {env}/{cmd} secret
+   * reference. When set, these flows use THIS token's identity —
    * stable, independent of the host's active `gh` account. Recommended:
    * `{ "cmd": "gh auth token --user <work-account>" }` (no raw token on disk,
    * no active-account switch). Unset → host ambient gh (default).
@@ -196,13 +197,21 @@ export interface GatewayConfig {
    */
   apiKey?: SecretSource;
   /**
-   * Work GitHub credentials for the confirmed-problem → issue flow.
-   * `token` is a literal or {env}/{cmd} reference, resolved lazily at
-   * 🎫 time (see resolveGithubToken) so a {cmd} never runs at load.
+   * GitHub credentials for confirmed-problem and Slack bug-report issues.
+   * `token` is an optional literal or {env}/{cmd} reference, resolved lazily
+   * when an issue is created. Bug reports prefer `review.ghToken` when set,
+   * then fall back to this token, so both flows can share one account.
    * `allowPublicRepos` (default false) blocks opening issues on a PUBLIC
-   * repo — internal diagnosis content must not leak to a public repo.
+   * repo. Bug reports can contain thread context, so public publishing is
+   * always an explicit host decision. `bugRepo` is the single configured
+   * destination for direct `issue` / `bug` commands.
    */
-  github?: { token: SecretSource; allowPublicRepos?: boolean };
+  github?: {
+    token?: SecretSource;
+    allowPublicRepos?: boolean;
+    /** Default repository slug for the `issue` / `bug` Slack commands. */
+    bugRepo?: string;
+  };
   /** Configuration for `:cr:` reaction → mra PR review feature. */
   review?: Partial<ReviewConfig>;
   /** Configuration for audio (voice message) transcription feature. */
@@ -352,16 +361,31 @@ function normaliseRawConfig(raw: unknown): RawGatewayConfig {
     workspaceName: asString(sRaw.workspaceName),
   };
   const rawGithub = (r as { github?: unknown }).github;
+  const bugRepoRaw =
+    rawGithub && typeof rawGithub === "object"
+      ? (rawGithub as { bugRepo?: unknown }).bugRepo
+      : undefined;
+  const bugRepo =
+    typeof bugRepoRaw === "string" &&
+    /^[A-Za-z0-9][A-Za-z0-9_.-]*\/[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(bugRepoRaw) &&
+    !bugRepoRaw.split("/").some((part) => part === "." || part === "..")
+      ? bugRepoRaw
+      : undefined;
+  const githubToken =
+    rawGithub && typeof rawGithub === "object"
+      ? validateSecretSource(
+          (rawGithub as { token?: unknown }).token,
+          "github.token",
+        )
+      : undefined;
   const github =
-    rawGithub && typeof rawGithub === "object" && "token" in rawGithub
+    rawGithub && typeof rawGithub === "object"
       ? {
-          token: validateSecretSource(
-            (rawGithub as { token?: unknown }).token,
-            "github.token",
-          )!,
+          ...(githubToken !== undefined ? { token: githubToken } : {}),
           ...((rawGithub as { allowPublicRepos?: unknown }).allowPublicRepos === true
             ? { allowPublicRepos: true as const }
             : {}),
+          ...(bugRepo ? { bugRepo } : {}),
         }
       : undefined;
   // `:cr:` review config. Carried through as a Partial<ReviewConfig>;

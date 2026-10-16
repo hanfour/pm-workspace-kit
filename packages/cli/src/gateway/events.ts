@@ -243,7 +243,7 @@ export interface TokenUsageEvent {
 
 export interface GithubIssueCreatedEvent {
   type: "github.issue.created";
-  /** Slack user id of the 🎫 reactor. */
+  /** Slack user id that triggered issue creation. */
   actor: string;
   /** owner/repo slug. */
   repo: string;
@@ -257,6 +257,21 @@ export interface GithubIssueFailedEvent {
   /** Optional — may fail before the slug resolves. */
   repo?: string;
   /** no-gh | token | slug | public-repo | gh-create-failed */
+  reason: string;
+}
+
+export interface GithubIssueAutofixCreatedEvent {
+  type: "github.issue.autofix.created";
+  actor: string;
+  repo: string;
+  issue: number;
+  url: string;
+}
+
+export interface GithubIssueAutofixFailedEvent {
+  type: "github.issue.autofix.failed";
+  actor: string;
+  repo?: string;
   reason: string;
 }
 
@@ -367,6 +382,8 @@ export type GatewayEvent =
   | TokenUsageEvent
   | GithubIssueCreatedEvent
   | GithubIssueFailedEvent
+  | GithubIssueAutofixCreatedEvent
+  | GithubIssueAutofixFailedEvent
   | ReviewTriggeredEvent
   | ReviewPostedEvent
   | ReviewApprovedEvent
@@ -406,6 +423,8 @@ const EVENT_TYPE_TABLE: Record<GatewayEvent["type"], true> = {
   "token.usage": true,
   "github.issue.created": true,
   "github.issue.failed": true,
+  "github.issue.autofix.created": true,
+  "github.issue.autofix.failed": true,
   "review.triggered": true,
   "review.posted": true,
   "review.approved": true,

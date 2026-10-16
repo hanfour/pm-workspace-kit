@@ -16,7 +16,7 @@ import { assertSafeSegment } from "./session-store";
 export interface IssueCandidate {
   channelId: string;
   threadTs: string;
-  /** Bot escalation message ts — the exact 🎫 react target + storage key. */
+  /** Escalation message ts for 🎫, or root thread ts for direct reports. */
   anchorTs: string;
   /** request.repo (always present — repo-less escalations write no candidate). */
   scope: string;
@@ -27,8 +27,14 @@ export interface IssueCandidate {
   diagnosis: string;
   /** Best-effort Slack permalink of the anchor message. */
   permalink?: string;
+  /** Resolved GitHub target for a direct issue/bug command. */
+  repoSlug?: string;
+  /** Direct issue/bug reports also request an isolated draft fix PR. */
+  autoFixRequested?: boolean;
   /** Set once the issue is created (idempotency / finalize commit). */
   issuedUrl?: string;
+  /** Set once the automated fix PR is opened. */
+  repairUrl?: string;
 }
 
 function issueCandidatesDir(): string {
@@ -53,7 +59,11 @@ function isIssueCandidate(v: unknown): v is IssueCandidate {
     typeof o.askerUserId === "string" &&
     Array.isArray(o.mentionedUserIds) &&
     typeof o.question === "string" &&
-    typeof o.diagnosis === "string"
+    typeof o.diagnosis === "string" &&
+    (o.repoSlug === undefined || typeof o.repoSlug === "string") &&
+    (o.autoFixRequested === undefined || typeof o.autoFixRequested === "boolean") &&
+    (o.issuedUrl === undefined || typeof o.issuedUrl === "string") &&
+    (o.repairUrl === undefined || typeof o.repairUrl === "string")
   );
 }
 
@@ -135,10 +145,58 @@ export function finalizeIssueCandidate(
   fs.renameSync(claiming, file);
 }
 
+/** Claim the automated repair stage without re-opening the GitHub issue. */
+export function claimIssueRepair(
+  channelId: string,
+  anchorTs: string,
+): IssueCandidate | undefined {
+  const file = issueCandidatePath(channelId, anchorTs);
+  const repairing = `${file}.repairing`;
+  try {
+    fs.renameSync(file, repairing);
+  } catch {
+    return undefined;
+  }
+  try {
+    const parsed = JSON.parse(fs.readFileSync(repairing, "utf8")) as unknown;
+    return isIssueCandidate(parsed) ? parsed : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export function releaseIssueRepair(
+  channelId: string,
+  anchorTs: string,
+): boolean {
+  const file = issueCandidatePath(channelId, anchorTs);
+  try {
+    fs.renameSync(`${file}.repairing`, file);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function finalizeIssueRepair(
+  channelId: string,
+  anchorTs: string,
+  url: string,
+): void {
+  const file = issueCandidatePath(channelId, anchorTs);
+  const repairing = `${file}.repairing`;
+  const parsed = JSON.parse(fs.readFileSync(repairing, "utf8")) as IssueCandidate;
+  fs.writeFileSync(
+    repairing,
+    JSON.stringify({ ...parsed, repairUrl: url }, null, 2),
+    { mode: 0o600 },
+  );
+  fs.renameSync(repairing, file);
+}
+
 /**
- * Recovery sweep (called by doctor). For each *.claiming file:
- *  - has issuedUrl → finalize (rename to .json); the issue exists, never re-create.
- *  - no issuedUrl and older than staleMs → warn (possible orphan; verify on GitHub).
+ * Recovery sweep (called by doctor). Finalize completed issue/repair claims,
+ * and release interrupted auto-fix claims only after their stale window expires.
  */
 export function recoverIssueClaims(
   staleMs: number,
@@ -147,12 +205,13 @@ export function recoverIssueClaims(
   const dir = issueCandidatesDir();
   if (!fs.existsSync(dir)) return;
   for (const name of fs.readdirSync(dir)) {
-    if (!name.endsWith(".claiming")) continue;
+    const isRepairing = name.endsWith(".repairing");
+    if (!name.endsWith(".claiming") && !isRepairing) continue;
     const claiming = path.join(dir, name);
-    const finalName = claiming.replace(/\.claiming$/, "");
+    const finalName = claiming.replace(/\.(?:claiming|repairing)$/, "");
     try {
       const parsed = JSON.parse(fs.readFileSync(claiming, "utf8")) as IssueCandidate;
-      if (parsed.issuedUrl) {
+      if ((!isRepairing && parsed.issuedUrl) || (isRepairing && parsed.repairUrl)) {
         try {
           fs.renameSync(claiming, finalName);
         } catch {
@@ -166,7 +225,16 @@ export function recoverIssueClaims(
     try {
       const ageMs = Math.max(0, Date.now() - fs.statSync(claiming).mtimeMs);
       if (ageMs >= staleMs) {
-        onWarn(`stale issue-candidate lock ${name} — verify on GitHub, then delete/restore`);
+        if (isRepairing) {
+          try {
+            fs.renameSync(claiming, finalName);
+          } catch {
+            /* a concurrent completion or permission error is handled next run */
+          }
+          onWarn(`stale issue auto-fix lock ${name} — released for retry`);
+        } else {
+          onWarn(`stale issue-candidate lock ${name} — verify on GitHub, then delete/restore`);
+        }
       }
     } catch {
       /* file disappeared between listing and statSync — skip, don't abort the sweep */

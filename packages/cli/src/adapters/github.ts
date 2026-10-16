@@ -18,6 +18,7 @@ const execFileAsync = promisify(execFile);
 export interface GithubExecOpts {
   env?: NodeJS.ProcessEnv;
   timeoutMs?: number;
+  signal?: AbortSignal;
 }
 export type GithubExec = (
   file: string,
@@ -84,6 +85,7 @@ const defaultExec: GithubExec = async (file, args, opts) => {
   const { stdout } = await execFileAsync(file, args, {
     env: opts.env,
     timeout: opts.timeoutMs,
+    signal: opts.signal,
     encoding: "utf8",
   });
   return { stdout };
@@ -205,6 +207,86 @@ export async function createIssue(
     // NO-LEAK: name only the exit code; never the token / stdout / stderr.
     const code = (err as { code?: number }).code ?? "?";
     throw new Error(`gh issue create failed (${code})`);
+  }
+}
+
+/** Clone an authenticated target without embedding credentials in its URL. */
+export async function cloneRepository(
+  args: { slug: string; destination: string; token: string; signal?: AbortSignal },
+  deps: GithubDeps = {},
+): Promise<void> {
+  const exec = deps.exec ?? defaultExec;
+  const findBinary = deps.findBinary ?? findGhBinary;
+  const gh = findBinary() ?? "gh";
+  try {
+    await exec(
+      gh,
+      ["repo", "clone", args.slug, args.destination],
+      {
+        env: { ...process.env, GH_TOKEN: args.token },
+        timeoutMs: 120_000,
+        signal: args.signal,
+      },
+    );
+  } catch (err) {
+    const code = (err as { code?: number }).code ?? "?";
+    throw new Error(`gh repo clone failed (${code})`);
+  }
+}
+
+export async function getDefaultBranch(
+  args: { slug: string; token: string; signal?: AbortSignal },
+  deps: GithubDeps = {},
+): Promise<string> {
+  const exec = deps.exec ?? defaultExec;
+  const findBinary = deps.findBinary ?? findGhBinary;
+  const gh = findBinary() ?? "gh";
+  try {
+    const { stdout } = await exec(
+      gh,
+      ["repo", "view", args.slug, "--json", "defaultBranchRef", "--jq", ".defaultBranchRef.name"],
+      { env: { ...process.env, GH_TOKEN: args.token }, timeoutMs: 15_000, signal: args.signal },
+    );
+    return stdout.trim();
+  } catch (err) {
+    const code = (err as { code?: number }).code ?? "?";
+    throw new Error(`gh repo view failed (${code})`);
+  }
+}
+
+/** Open a draft pull request for a generated fix. Never merges or deploys it. */
+export async function createDraftPullRequest(
+  args: {
+    slug: string;
+    head: string;
+    base: string;
+    title: string;
+    body: string;
+    token: string;
+    signal?: AbortSignal;
+  },
+  deps: GithubDeps = {},
+): Promise<string> {
+  const exec = deps.exec ?? defaultExec;
+  const findBinary = deps.findBinary ?? findGhBinary;
+  const gh = findBinary() ?? "gh";
+  try {
+    const { stdout } = await exec(
+      gh,
+      [
+        "pr", "create", "--repo", args.slug,
+        "--head", args.head,
+        "--base", args.base,
+        "--title", args.title,
+        "--body", args.body,
+        "--draft",
+      ],
+      { env: { ...process.env, GH_TOKEN: args.token }, timeoutMs: 60_000, signal: args.signal },
+    );
+    return stdout.trim();
+  } catch (err) {
+    const code = (err as { code?: number }).code ?? "?";
+    throw new Error(`gh pr create failed (${code})`);
   }
 }
 

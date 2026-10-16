@@ -442,6 +442,47 @@ fail with a "needs files:read" notice. Limits: 10 MB/file, 5 MB/image, 10 files 
 message; images are read once and kept as a text description (pixel detail isn't
 retained for follow-ups); linked Google/Box files and Office formats aren't supported.
 
+## Reporting bugs and requesting a fix
+
+In a DM thread where the error happened, reply `issue` or `bug`; in a channel
+thread, use `@pmk issue` or `@pmk bug`. PMK reads only that thread, caps and
+redacts the collected text, creates one GitHub issue, then asks the local Codex
+CLI to propose a repair from an isolated checkout. A
+successful repair is pushed as a branch and opened as a **draft PR**; PMK never
+auto-merges or deploys it. Repeating the command in the same thread reuses the
+issue and does not start a second repair while one is in progress.
+
+Set `github.bugRepo` to the single allowed `owner/repo` target. A command may
+include `owner/repo`, but it must match that host setting. Bug reports use
+`review.ghToken` when configured, then fall back to `github.token`, matching the
+review/approve identity. That token needs `Issues: write`, `Contents: write` to
+push a repair branch, and `Pull requests: write`. Public repositories remain
+blocked unless `github.allowPublicRepos` is explicitly `true`; enabling it sends
+the collected thread text to a public issue. Public issue bodies redact
+secret-like text, Slack IDs and Slack URLs. The flow also needs `gh` and the
+Codex CLI logged in on the gateway host. If Codex is unavailable or cannot
+produce a bounded diff, the issue stays open and a later `bug` reply can retry
+the repair.
+
+```jsonc
+{
+  "github": {
+    "bugRepo": "owner/repo",
+    "allowPublicRepos": false
+  },
+  "review": {
+    "ghToken": { "cmd": "gh auth token --user <work-account>" }
+  }
+}
+```
+
+When `review.ghToken` is present, `github.token` can be omitted; otherwise
+configure `github.token` as the fallback credential.
+
+The generated PR is intentionally a draft and must be reviewed and merged by a
+person. An actual `/pmk issue` slash command cannot identify an error thread;
+use a thread reply instead.
+
 ## Reviewing & approving PRs
 
 Post a GitHub PR link with a trigger, or react on someone else's PR-link message:

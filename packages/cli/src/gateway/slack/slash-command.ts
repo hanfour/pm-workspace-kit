@@ -127,8 +127,14 @@ export class SlashCommandHandler {
             "• `/pmk close <name> [reason]` — 結案\n" +
             "• `/pmk cases` — 列出此 scope 的 cases\n" +
             "• `/pmk help` — 這份說明\n" +
+            "\n*錯誤回報*:在錯誤 thread 回覆 `issue` 或 `bug [owner/repo]`（channel 使用 `@pmk issue` / `@pmk bug`）；建立 issue 後會嘗試修復並開 draft PR。\n" +
             "\n*附件*:直接附上檔案(文字 / markdown / 程式碼 / PDF / 圖片)我就會讀進來當這個對話的參考;在同一個 thread 裡接著問即可。",
         );
+        return;
+
+      case "issue":
+      case "bug":
+        await reply("請在發生錯誤的 Slack thread 回覆 `issue` 或 `bug [owner/repo]`，以便蒐集正確上下文。");
         return;
 
       case "open": {
