@@ -8,6 +8,12 @@ All notable changes to **pm-workspace-kit** are documented here.
 
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Each release also has a longer narrative on [GitHub Releases](https://github.com/hanfour/pm-workspace-kit/releases) with rationale, dogfood notes, and test plans.
 
+## [v0.46.1] — 2026-10-16 — Keep bug-report GitHub identity separate
+
+### Fixed
+
+- **Bug-report token precedence** — prefer `github.token` and use `review.ghToken` only as a fallback. This lets bug issues and repair PRs use a dedicated account without changing the existing review/approve identity.
+
 ## [v0.46.0] — 2026-10-16 — Slack bug reports with draft auto-fix
 
 ### Added

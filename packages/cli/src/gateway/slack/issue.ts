@@ -26,7 +26,7 @@ import {
 const MAX_CONCURRENT_AUTOFIXES = 1;
 
 function resolveBugReportToken(config: GatewayConfig): string | undefined {
-  return resolveReviewGhToken(config.review) ?? resolveGithubToken(config.github);
+  return resolveGithubToken(config.github) ?? resolveReviewGhToken(config.review);
 }
 
 export interface GithubGateway {

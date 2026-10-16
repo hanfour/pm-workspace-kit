@@ -152,10 +152,10 @@ export interface ReviewConfig {
   providerMode: "codex" | "claude" | "fallback" | "dual";
   expectedGhUser?: string;           // gate: gh api user must equal this before posting
   /**
-   * Pinned GitHub token for PMK-owned review interactions and bug reports
-   * (PR head, repo visibility, actor verification, review publication,
-   * approval, issue creation, and repair PRs). Literal or {env}/{cmd} secret
-   * reference. When set, these flows use THIS token's identity —
+   * Pinned GitHub token for PMK-owned review interactions (PR head, repo
+   * visibility, actor verification, review publication, and approval). Bug
+   * reports use it only when github.token is unset. Literal or {env}/{cmd}
+   * secret reference. When set, review uses THIS token's identity —
    * stable, independent of the host's active `gh` account. Recommended:
    * `{ "cmd": "gh auth token --user <work-account>" }` (no raw token on disk,
    * no active-account switch). Unset → host ambient gh (default).
@@ -199,8 +199,9 @@ export interface GatewayConfig {
   /**
    * GitHub credentials for confirmed-problem and Slack bug-report issues.
    * `token` is an optional literal or {env}/{cmd} reference, resolved lazily
-   * when an issue is created. Bug reports prefer `review.ghToken` when set,
-   * then fall back to this token, so both flows can share one account.
+   * when an issue is created. Bug reports prefer this token, then fall back
+   * to `review.ghToken`, so bug reporting can use a distinct account without
+   * changing the identity used for review and approval.
    * `allowPublicRepos` (default false) blocks opening issues on a PUBLIC
    * repo. Bug reports can contain thread context, so public publishing is
    * always an explicit host decision. `bugRepo` is the single configured

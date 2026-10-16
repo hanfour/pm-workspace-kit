@@ -32,7 +32,7 @@ export const githubTokenCheck: DoctorCheck = async (
   let token: string | undefined;
   let tokenError: string | undefined;
   try {
-    token = resolveReviewGhToken(ctx.config?.review) ?? resolveGithubToken(github);
+    token = resolveGithubToken(github) ?? resolveReviewGhToken(ctx.config?.review);
   } catch (e) {
     tokenError = (e as Error).message; // SecretResolutionError — no stdout/stderr in it
   }
